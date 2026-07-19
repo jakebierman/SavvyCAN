@@ -50,6 +50,7 @@ public:
     void setHexMode(bool);
     void setPayloadDisplayMode(PayloadDisplayMode mode);
     bool setPayloadFormat(const QString &format, QString *error = nullptr, bool repeatSingleField = false);
+    void setShowRawPayload(bool show);
     void setUseColorsByCanId(bool);
     void setClearMode(bool mode);
     void setTimeStyle(TimeStyle newStyle);
@@ -69,6 +70,7 @@ public:
     int getIndexFromTimeID(unsigned int ID, double timestamp);
     const QVector<CANFrame> *getListReference() const; //thou shalt not modify these frames externally!
     const QVector<CANFrame> *getFilteredListReference() const; //Thus saith the Lord, NO.
+    QByteArray payloadAtFilteredRow(int row) const;
     const QMap<int, bool> *getFiltersReference() const; //this neither
     const QMap<int, bool> *getBusFiltersReference() const; //this neither
 
@@ -99,6 +101,7 @@ private:
     TimeStyle timeStyle;
     PayloadDisplayMode payloadDisplayMode;
     PayloadFormatter payloadFormatter;
+    bool showRawPayload;
     bool useColorsByCanId;
     bool needFilterRefresh;
     bool ignoreDBCColors;

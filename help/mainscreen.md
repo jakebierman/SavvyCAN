@@ -25,6 +25,8 @@ The main frame list takes up the majority of the main screen. This list consists
   also see extra data at the end of any frames that have DBC data. To see the rest of this data click upon the frame in the list. It will automatically expand to show all signals attached to that frame.
   There is also a setting to limit the number of displayed bytes per line. This is especially useful for CAN-FD traffic.
 
+The Payload Display dock applies these choices without leaving the main window. It can be dragged between the right and bottom dock areas, floated, resized, or shown and hidden from the RE Tools menu. Custom formats are retained in the recent-formats list, and selecting a frame shows a live preview. "Show raw" places the original hexadecimal bytes beside decoded values. The frame-list context menu can copy either the raw or decoded payload for the selected frame.
+
 
 The Bottom Statusbar
 ====================

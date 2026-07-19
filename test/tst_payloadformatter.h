@@ -12,6 +12,8 @@ private slots:
     void supportsSequentialFields();
     void repeatsPresetAcrossPayload();
     void formats64BitValues();
+    void formatsNamedCalculatedFields();
+    void supportsOffsetsMasksAndFloats();
     void marksMissingData();
     void rejectsInvalidFormats();
 };

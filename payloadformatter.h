@@ -24,7 +24,8 @@ private:
     enum class ValueType
     {
         Unsigned,
-        Signed
+        Signed,
+        FloatingPoint
     };
 
     struct Field
@@ -33,11 +34,19 @@ private:
         int byteLength;
         bool littleEndian;
         int offset;
+        QString name;
+        bool hasMask = false;
+        quint64 mask = 0;
+        double multiplier = 1.0;
+        double divisor = 1.0;
+        double additiveOffset = 0.0;
+        bool hasTransform = false;
     };
 
     QVector<Field> fields;
     QString compiledFormat;
     bool repeatField = false;
+    static QString formatFieldValue(const Field &field, quint64 raw);
 };
 
 #endif // PAYLOADFORMATTER_H

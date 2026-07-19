@@ -39,6 +39,8 @@ class CANConnection;
 class ConnectionWindow;
 class ISOTP_InterpreterWindow;
 class ScriptingWindow;
+class QSortFilterProxyModel;
+class QDockWidget;
 
 enum SIMP_COL
 {
@@ -130,6 +132,10 @@ private slots:
     void onSenderCellChanged(int, int);
     void payloadDisplayChanged();
     void applyPayloadDisplay();
+    void updatePayloadPreview();
+    void recentPayloadFormatSelected(int index);
+    void copyRawPayload();
+    void copyDecodedPayload();
 
 public slots:
     void gotFrames(int);
@@ -150,8 +156,13 @@ signals:
 
 private:
     Ui::MainWindow *ui;
+    QSortFilterProxyModel *proxyModel;
+    QDockWidget *payloadDock;
     void populatePayloadDisplayCombo();
+    void setupPayloadDock();
     void syncPayloadDisplayControls(const QString &mode, const QString &format);
+    QString formatPayloadForControls(const QByteArray &payload, bool includeRaw) const;
+    int payloadContextSourceRow = -1;
     QAction *copyAct;
     static MainWindow *selfRef;
 

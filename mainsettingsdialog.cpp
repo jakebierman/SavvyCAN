@@ -80,6 +80,9 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
     ui->comboPayloadDisplay->addItem(tr("Signed 32-bit, little endian"), QStringLiteral("i32le"));
     ui->comboPayloadDisplay->addItem(tr("Signed 32-bit, big endian"), QStringLiteral("i32be"));
     ui->comboPayloadDisplay->addItem(tr("Custom format"), QStringLiteral("custom"));
+    ui->comboPayloadDockPosition->addItem(tr("Remember payload panel position"), QStringLiteral("remember"));
+    ui->comboPayloadDockPosition->addItem(tr("Payload panel on right"), QStringLiteral("right"));
+    ui->comboPayloadDockPosition->addItem(tr("Payload panel on bottom"), QStringLiteral("bottom"));
 
     //update the GUI with all the settings we have stored giving things
     //defaults if nothing was stored (if this is the first time)
@@ -94,6 +97,10 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
         payloadModeIndex = ui->comboPayloadDisplay->findData(QStringLiteral("custom"));
     ui->comboPayloadDisplay->setCurrentIndex(payloadModeIndex);
     ui->linePayloadFormat->setText(settings.value("Main/PayloadFormat", QStringLiteral("u16le")).toString());
+    ui->cbShowRawPayload->setChecked(settings.value("Main/PayloadShowRaw", false).toBool());
+    const int dockPosition = ui->comboPayloadDockPosition->findData(
+        settings.value("Main/PayloadDockPreference", QStringLiteral("remember")).toString());
+    ui->comboPayloadDockPosition->setCurrentIndex(dockPosition < 0 ? 0 : dockPosition);
     ui->cbFlowAutoRef->setChecked(settings.value("FlowView/AutoRef", false).toBool());
     ui->cbHexGraphFlow->setChecked(settings.value("FlowView/GraphHex", false).toBool());
     ui->cbFlowUseTimestamp->setChecked(settings.value("FlowView/UseTimestamp", true).toBool());
@@ -189,6 +196,8 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
     connect(ui->comboPayloadDisplay, SIGNAL(currentIndexChanged(int)), this, SLOT(updateSettings()));
     connect(ui->linePayloadFormat, SIGNAL(textChanged(QString)), this, SLOT(updatePayloadFormatState()));
     connect(ui->linePayloadFormat, SIGNAL(editingFinished()), this, SLOT(updateSettings()));
+    connect(ui->cbShowRawPayload, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
+    connect(ui->comboPayloadDockPosition, SIGNAL(currentIndexChanged(int)), this, SLOT(updateSettings()));
     connect(ui->cbFlowAutoRef, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
     connect(ui->cbFlowUseTimestamp, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
     connect(ui->cbInfoAutoExpand, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
@@ -265,6 +274,8 @@ void MainSettingsDialog::updateSettings()
     PayloadFormatter payloadFormatter;
     if (payloadFormatter.compile(ui->linePayloadFormat->text()))
         settings.setValue("Main/PayloadFormat", ui->linePayloadFormat->text().simplified());
+    settings.setValue("Main/PayloadShowRaw", ui->cbShowRawPayload->isChecked());
+    settings.setValue("Main/PayloadDockPreference", ui->comboPayloadDockPosition->currentData().toString());
     settings.setValue("FlowView/AutoRef", ui->cbFlowAutoRef->isChecked());
     settings.setValue("FlowView/UseTimestamp", ui->cbFlowUseTimestamp->isChecked());
     settings.setValue("FlowView/GraphHex", ui->cbHexGraphFlow->isChecked());

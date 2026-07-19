@@ -294,6 +294,13 @@
          </widget>
         </item>
         <item>
+         <widget class="QCheckBox" name="cbShowRawPayload">
+          <property name="text">
+           <string>Show raw alongside decoded</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QLineEdit" name="linePayloadFormat">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
@@ -313,6 +320,19 @@
          </widget>
         </item>
         <item>
+         <widget class="QComboBox" name="comboRecentPayloadFormats">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="placeholderText">
+           <string>Recent formats</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QLabel" name="lblPayloadFormatError">
           <property name="text">
            <string/>
@@ -326,6 +346,19 @@
          <widget class="QPushButton" name="btnApplyPayloadDisplay">
           <property name="text">
            <string>Apply Payload View</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="lblPayloadPreview">
+          <property name="text">
+           <string/>
+          </property>
+          <property name="textInteractionFlags">
+           <set>Qt::TextInteractionFlag::TextSelectableByMouse</set>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>

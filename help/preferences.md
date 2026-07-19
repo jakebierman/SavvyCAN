@@ -19,7 +19,9 @@ General Settings
 
 * "Display CAN IDs as hexadecimal": Select whether CAN identifiers are shown in hexadecimal or decimal.
 
-* "Payload display": Select how the Data column represents every frame payload. Raw hexadecimal and raw decimal show individual bytes. A typed preset repeats across the full payload, grouping bytes into signed or unsigned integers using the selected byte order. "Custom format" accepts a space-separated sequence such as `u16le u16le i32le`; fields consume bytes in order. Supported fields are `u8`, `i8`, and signed or unsigned 16, 32, and 64-bit values ending in `le` or `be`. A field that does not fit in a short payload is displayed as `--`.
+* "Payload display": Select how the Data column represents every frame payload. Raw hexadecimal and raw decimal show individual bytes. A typed preset repeats across the full payload, grouping bytes into signed or unsigned integers using the selected byte order. "Custom format" accepts space-separated fields. The compact form is `[name:]type[@byte-offset][&mask][*factor][/divisor][+/-offset]`; for example, `rpm:u16be@0*0.25 temp:i8@2-40`. Supported types are `u8`, `i8`, signed or unsigned 16, 32, and 64-bit integers ending in `le` or `be`, and `f32` or `f64` floating-point values ending in `le` or `be`. Fields without `@` consume bytes in sequence. A field that does not fit in a short payload is displayed as `--`. "Show raw bytes alongside decoded values" provides a direct raw/decoded comparison.
+
+* "Payload controls position": Keep the payload controls where you last docked them, or place them on the right or bottom when settings are applied. The panel can still be dragged, resized, floated, or hidden from the RE Tools menu.
 
 * "Require validation of GVRET connection": GVRET style devices run over a serial connection. Serial connections can be finicky sometimes and so the connection can be validated to prove that everything is really still operating and talking. There probably isn't any reason to turn this off except while debugging to see if it changes anything. Mostly just don't touch this.
 

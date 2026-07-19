@@ -12,6 +12,8 @@
 
 #include <QClipboard>
 #include <QSignalBlocker>
+#include <QDockWidget>
+#include <QVBoxLayout>
 /*
 Some notes on things I'd like to put into the program but haven't put on github (yet)
 
@@ -32,6 +34,7 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setupPayloadDock();
     populatePayloadDisplayCombo();
 #if QT_VERSION < QT_VERSION_CHECK( 6, 0, 0 )
     qRegisterMetaTypeStreamOperators<QVector<QString>>();
@@ -46,7 +49,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
     model = new CANFrameModel(this); // set parent to mainwindow to prevent canframemodel to change thread (might be done by setModel but just in case)
 
-    QSortFilterProxyModel* proxyModel = new QSortFilterProxyModel;
+    proxyModel = new QSortFilterProxyModel(this);
     proxyModel->setSourceModel(model);
 
     ui->canFramesView->setModel(proxyModel);
@@ -174,6 +177,10 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->comboPayloadDisplay, SIGNAL(currentIndexChanged(int)), this, SLOT(payloadDisplayChanged()));
     connect(ui->linePayloadFormat, SIGNAL(textChanged(QString)), this, SLOT(payloadDisplayChanged()));
     connect(ui->btnApplyPayloadDisplay, &QAbstractButton::clicked, this, &MainWindow::applyPayloadDisplay);
+    connect(ui->cbShowRawPayload, &QAbstractButton::toggled, this, &MainWindow::applyPayloadDisplay);
+    connect(ui->comboRecentPayloadFormats, SIGNAL(currentIndexChanged(int)), this, SLOT(recentPayloadFormatSelected(int)));
+    connect(ui->canFramesView->selectionModel(), &QItemSelectionModel::currentRowChanged,
+            this, [this](const QModelIndex &, const QModelIndex &) { updatePayloadPreview(); });
 
     connect(ui->tableSimpleSender, SIGNAL(cellChanged(int,int)), this, SLOT(onSenderCellChanged(int,int)));
 
@@ -387,6 +394,8 @@ void MainWindow::updateSettings()
 void MainWindow::readSettings()
 {
     QSettings settings;
+    if (settings.contains("Main/PayloadDockState"))
+        restoreState(settings.value("Main/PayloadDockState").toByteArray());
     if (settings.value("Main/SaveRestorePositions", false).toBool())
     {
         resize(settings.value("Main/WindowSize", QSize(800, 750)).toSize());
@@ -422,6 +431,14 @@ void MainWindow::readSettings()
 void MainWindow::readUpdateableSettings()
 {
     QSettings settings;
+    const QString dockPreference = settings.value("Main/PayloadDockPreference", QStringLiteral("remember")).toString();
+    if (dockPreference == QStringLiteral("right") || dockPreference == QStringLiteral("bottom"))
+    {
+        const QSignalBlocker dockBlocker(payloadDock);
+        addDockWidget(dockPreference == QStringLiteral("bottom")
+                          ? Qt::BottomDockWidgetArea : Qt::RightDockWidgetArea,
+                      payloadDock);
+    }
     useHex = settings.value("Main/UseHex", true).toBool();
     QString payloadMode;
     if (settings.contains("Main/PayloadDisplayMode"))
@@ -430,7 +447,10 @@ void MainWindow::readUpdateableSettings()
         payloadMode = settings.value("Main/UseHex", true).toBool() ? QStringLiteral("raw-hex") : QStringLiteral("raw-decimal");
 
     const QString customPayloadFormat = settings.value("Main/PayloadFormat", QStringLiteral("u16le")).toString();
+    const QSignalBlocker rawBlocker(ui->cbShowRawPayload);
     syncPayloadDisplayControls(payloadMode, customPayloadFormat);
+    ui->cbShowRawPayload->setChecked(settings.value("Main/PayloadShowRaw", false).toBool());
+    model->setShowRawPayload(ui->cbShowRawPayload->isChecked());
 
     if (payloadMode == QStringLiteral("raw-hex"))
         model->setPayloadDisplayMode(PayloadDisplayMode::RawHex);
@@ -475,6 +495,7 @@ void MainWindow::readUpdateableSettings()
     else
         ui->listFilters->setMaximumWidth(175);
     updateFilterList();    
+    updatePayloadPreview();
 }    
 
 void MainWindow::populatePayloadDisplayCombo()
@@ -494,6 +515,47 @@ void MainWindow::populatePayloadDisplayCombo()
     ui->comboPayloadDisplay->addItem(tr("Custom format"), QStringLiteral("custom"));
 }
 
+void MainWindow::setupPayloadDock()
+{
+    payloadDock = new QDockWidget(tr("Payload View"), this);
+    payloadDock->setObjectName(QStringLiteral("payloadViewDock"));
+    payloadDock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    payloadDock->setFeatures(QDockWidget::DockWidgetMovable |
+                             QDockWidget::DockWidgetFloatable |
+                             QDockWidget::DockWidgetClosable);
+
+    QWidget *panel = new QWidget(payloadDock);
+    QBoxLayout *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->addWidget(ui->comboPayloadDisplay);
+    layout->addWidget(ui->cbShowRawPayload);
+    layout->addWidget(ui->linePayloadFormat);
+    layout->addWidget(ui->comboRecentPayloadFormats);
+    layout->addWidget(ui->lblPayloadFormatError);
+    layout->addWidget(ui->btnApplyPayloadDisplay);
+    layout->addWidget(ui->lblPayloadPreview);
+    payloadDock->setWidget(panel);
+    ui->labelPayloadView->hide();
+
+    QSettings settings;
+    const Qt::DockWidgetArea area = static_cast<Qt::DockWidgetArea>(
+        settings.value("Main/PayloadDockArea", Qt::RightDockWidgetArea).toInt());
+    addDockWidget(area == Qt::BottomDockWidgetArea ? Qt::BottomDockWidgetArea : Qt::RightDockWidgetArea,
+                  payloadDock);
+    layout->setDirection(area == Qt::BottomDockWidgetArea
+                             ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom);
+    ui->menu_RE_Tools->addSeparator();
+    ui->menu_RE_Tools->addAction(payloadDock->toggleViewAction());
+    connect(payloadDock, &QDockWidget::dockLocationChanged, this, [this, layout](Qt::DockWidgetArea area) {
+        layout->setDirection(area == Qt::BottomDockWidgetArea
+                                 ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom);
+        QSettings settings;
+        settings.setValue("Main/PayloadDockArea", static_cast<int>(area));
+        settings.setValue("Main/PayloadDockPreference", QStringLiteral("remember"));
+        settings.setValue("Main/PayloadDockState", saveState());
+    });
+}
+
 void MainWindow::syncPayloadDisplayControls(const QString &mode, const QString &format)
 {
     const QSignalBlocker comboBlocker(ui->comboPayloadDisplay);
@@ -503,6 +565,10 @@ void MainWindow::syncPayloadDisplayControls(const QString &mode, const QString &
         index = ui->comboPayloadDisplay->findData(QStringLiteral("raw-hex"));
     ui->comboPayloadDisplay->setCurrentIndex(index);
     ui->linePayloadFormat->setText(format);
+    const QSignalBlocker recentBlocker(ui->comboRecentPayloadFormats);
+    ui->comboRecentPayloadFormats->clear();
+    ui->comboRecentPayloadFormats->addItems(QSettings().value("Main/PayloadRecentFormats").toStringList());
+    ui->comboRecentPayloadFormats->setCurrentIndex(-1);
     payloadDisplayChanged();
 }
 
@@ -510,6 +576,7 @@ void MainWindow::payloadDisplayChanged()
 {
     const bool custom = ui->comboPayloadDisplay->currentData().toString() == QStringLiteral("custom");
     ui->linePayloadFormat->setVisible(custom);
+    ui->comboRecentPayloadFormats->setVisible(custom && ui->comboRecentPayloadFormats->count() > 0);
     ui->lblPayloadFormatError->setVisible(custom);
 
     PayloadFormatter formatter;
@@ -517,6 +584,7 @@ void MainWindow::payloadDisplayChanged()
     const bool valid = !custom || formatter.compile(ui->linePayloadFormat->text(), &error);
     ui->lblPayloadFormatError->setText(valid ? QString() : error);
     ui->btnApplyPayloadDisplay->setEnabled(valid);
+    updatePayloadPreview();
 }
 
 void MainWindow::applyPayloadDisplay()
@@ -532,16 +600,74 @@ void MainWindow::applyPayloadDisplay()
 
     QSettings settings;
     settings.setValue("Main/PayloadDisplayMode", mode);
+    settings.setValue("Main/PayloadShowRaw", ui->cbShowRawPayload->isChecked());
     if (mode == QStringLiteral("custom"))
+    {
         settings.setValue("Main/PayloadFormat", ui->linePayloadFormat->text().simplified());
+        QStringList recent = settings.value("Main/PayloadRecentFormats").toStringList();
+        const QString current = ui->linePayloadFormat->text().simplified();
+        recent.removeAll(current);
+        recent.prepend(current);
+        while (recent.size() > 10)
+            recent.removeLast();
+        settings.setValue("Main/PayloadRecentFormats", recent);
+    }
     settings.sync();
     readUpdateableSettings();
+}
+
+void MainWindow::recentPayloadFormatSelected(int index)
+{
+    if (index >= 0)
+        ui->linePayloadFormat->setText(ui->comboRecentPayloadFormats->itemText(index));
+}
+
+QString MainWindow::formatPayloadForControls(const QByteArray &payload, bool includeRaw) const
+{
+    const QString mode = ui->comboPayloadDisplay->currentData().toString();
+    QString raw;
+    for (const char byte : payload)
+    {
+        if (!raw.isEmpty()) raw.append(' ');
+        raw.append(QString::number(static_cast<quint8>(byte), 16).toUpper().rightJustified(2, '0'));
+    }
+    if (mode == QStringLiteral("raw-hex"))
+        return raw;
+    if (mode == QStringLiteral("raw-decimal"))
+    {
+        QStringList decimal;
+        for (const char byte : payload)
+            decimal.append(QString::number(static_cast<quint8>(byte)));
+        return decimal.join(' ');
+    }
+
+    PayloadFormatter formatter;
+    const QString format = mode == QStringLiteral("custom") ? ui->linePayloadFormat->text() : mode;
+    if (!formatter.compile(format, nullptr, mode != QStringLiteral("custom")))
+        return QString();
+    const QString decoded = formatter.format(payload);
+    return includeRaw ? raw + QStringLiteral(" | ") + decoded : decoded;
+}
+
+void MainWindow::updatePayloadPreview()
+{
+    const QModelIndex proxyIndex = ui->canFramesView->currentIndex();
+    if (!proxyIndex.isValid())
+    {
+        ui->lblPayloadPreview->setText(tr("Select a frame to preview"));
+        return;
+    }
+    const int sourceRow = proxyModel->mapToSource(proxyIndex).row();
+    ui->lblPayloadPreview->setText(formatPayloadForControls(
+        model->payloadAtFilteredRow(sourceRow), ui->cbShowRawPayload->isChecked()));
 }
 
 
 void MainWindow::writeSettings()
 {
     QSettings settings;
+    settings.setValue("Main/PayloadDockState", saveState());
+    settings.setValue("Main/PayloadDockArea", static_cast<int>(dockWidgetArea(payloadDock)));
 
     if (settings.value("Main/SaveRestorePositions", false).toBool())
     {
@@ -849,12 +975,34 @@ void MainWindow::gridContextMenuRequest(QPoint pos)
     if (idx.column() == 8) //we're over the DATA column
     {
         contextMenuPosition = pos;
+        payloadContextSourceRow = proxyModel->mapToSource(idx).row();
+        menu->addSeparator();
+        menu->addAction(tr("Copy raw payload"), this, SLOT(copyRawPayload()));
+        menu->addAction(tr("Copy decoded payload"), this, SLOT(copyDecodedPayload()));
         menu->addSeparator();
         menu->addAction(tr("Add to a new graphing window"), this, SLOT(setupAddToNewGraph()));
         menu->addAction(tr("Add to latest graphing window"), this, SLOT(setupSendToLatestGraphWindow()));
     }
 
     menu->popup(ui->canFramesView->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::copyRawPayload()
+{
+    const QByteArray payload = model->payloadAtFilteredRow(payloadContextSourceRow);
+    QString raw;
+    for (const char byte : payload)
+    {
+        if (!raw.isEmpty()) raw.append(' ');
+        raw.append(QString::number(static_cast<quint8>(byte), 16).toUpper().rightJustified(2, '0'));
+    }
+    QApplication::clipboard()->setText(raw);
+}
+
+void MainWindow::copyDecodedPayload()
+{
+    const QByteArray payload = model->payloadAtFilteredRow(payloadContextSourceRow);
+    QApplication::clipboard()->setText(formatPayloadForControls(payload, false));
 }
 
 void MainWindow::copyFromTable()

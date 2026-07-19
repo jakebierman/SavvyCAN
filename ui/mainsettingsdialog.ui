@@ -110,6 +110,16 @@
            <widget class="QComboBox" name="comboPayloadDisplay"/>
           </item>
           <item>
+           <widget class="QCheckBox" name="cbShowRawPayload">
+            <property name="text">
+             <string>Show raw bytes alongside typed payloads</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="comboPayloadDockPosition"/>
+          </item>
+          <item>
            <widget class="QLineEdit" name="linePayloadFormat">
             <property name="placeholderText">
              <string>Example: u16le u16le i32le</string>

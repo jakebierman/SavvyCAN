@@ -42,6 +42,25 @@ void TestPayloadFormatter::formats64BitValues()
              QString("18446744073709551615 -9223372036854775808"));
 }
 
+void TestPayloadFormatter::formatsNamedCalculatedFields()
+{
+    PayloadFormatter formatter;
+    QVERIFY(formatter.compile("rpm:u16be*0.25 temp:i8-40 voltage:u16le/10"));
+
+    QCOMPARE(formatter.format(QByteArray::fromHex("1C84C87405")),
+             QString("rpm=1825 temp=-96 voltage=139.6"));
+}
+
+void TestPayloadFormatter::supportsOffsetsMasksAndFloats()
+{
+    PayloadFormatter formatter;
+    QVERIFY(formatter.compile("flags:u16be@1&0x07FF single:f32le@3 precise:f64be@7"));
+
+    QCOMPARE(formatter.format(QByteArray::fromHex(
+                 "AAFFFF0000C03F4004000000000000")),
+             QString("flags=2047 single=1.5 precise=2.5"));
+}
+
 void TestPayloadFormatter::marksMissingData()
 {
     PayloadFormatter formatter;
@@ -58,5 +77,7 @@ void TestPayloadFormatter::rejectsInvalidFormats()
     QVERIFY(!formatter.compile("", &error));
     QVERIFY(!error.isEmpty());
     QVERIFY(!formatter.compile("u24le", &error));
-    QCOMPARE(error, QString("Unknown payload type: u24le"));
+    QCOMPARE(error, QString("Invalid payload field: u24le"));
+    QVERIFY(!formatter.compile("value:u16le/0", &error));
+    QVERIFY(error.contains("zero"));
 }

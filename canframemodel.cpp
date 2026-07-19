@@ -39,6 +39,13 @@ int CANFrameModel::totalFrameCount()
     return count;
 }
 
+QByteArray CANFrameModel::payloadAtFilteredRow(int row) const
+{
+    if (row < 0 || row >= filteredFrames.size())
+        return QByteArray();
+    return filteredFrames.at(row).payload();
+}
+
 int CANFrameModel::columnCount(const QModelIndex &index) const
 {
     Q_UNUSED(index);
@@ -79,6 +86,7 @@ CANFrameModel::CANFrameModel(QObject *parent)
     filtersPersistDuringClear = false;
     payloadDisplayMode = PayloadDisplayMode::RawHex;
     payloadFormatter.compile(QStringLiteral("u16le"));
+    showRawPayload = false;
     useColorsByCanId = false;
     timeStyle = TS_MICROS;
     timeOffset = 0;
@@ -124,6 +132,16 @@ bool CANFrameModel::setPayloadFormat(const QString &format, QString *error, bool
         endResetModel();
     }
     return true;
+}
+
+void CANFrameModel::setShowRawPayload(bool show)
+{
+    if (showRawPayload != show)
+    {
+        beginResetModel();
+        showRawPayload = show;
+        endResetModel();
+    }
 }
 
 void CANFrameModel::setUseColorsByCanId(bool mode)
@@ -566,6 +584,17 @@ QVariant CANFrameModel::data(const QModelIndex &index, int role) const
             if (payloadDisplayMode == PayloadDisplayMode::Typed)
             {
                 tempString = payloadFormatter.format(thisFrame.payload());
+                if (showRawPayload)
+                {
+                    QString rawString;
+                    for (int i = 0; i < dataLen; ++i)
+                    {
+                        if (!rawString.isEmpty())
+                            rawString.append(' ');
+                        rawString.append(QString::number(data[i], 16).toUpper().rightJustified(2, '0'));
+                    }
+                    tempString.prepend(rawString + QStringLiteral(" | "));
+                }
             }
             else
             {
