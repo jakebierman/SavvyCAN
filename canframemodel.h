@@ -10,6 +10,7 @@
 #include "dbc/dbchandler.h"
 #include "connections/canconnection.h"
 #include "utility.h"
+#include "payloadformatter.h"
 
 enum class Column {
     TimeStamp = 0, ///< The timestamp when the frame was transmitted or received
@@ -47,6 +48,8 @@ public:
     bool getInterpretMode();
     void setOverwriteMode(bool);
     void setHexMode(bool);
+    void setPayloadDisplayMode(PayloadDisplayMode mode);
+    bool setPayloadFormat(const QString &format, QString *error = nullptr, bool repeatSingleField = false);
     void setUseColorsByCanId(bool);
     void setClearMode(bool mode);
     void setTimeStyle(TimeStyle newStyle);
@@ -94,7 +97,8 @@ private:
     bool filtersPersistDuringClear;
     QString timeFormat;
     TimeStyle timeStyle;
-    bool useHexMode;
+    PayloadDisplayMode payloadDisplayMode;
+    PayloadFormatter payloadFormatter;
     bool useColorsByCanId;
     bool needFilterRefresh;
     bool ignoreDBCColors;
@@ -107,4 +111,3 @@ private:
 
 
 #endif // CANFRAMEMODEL_H
-

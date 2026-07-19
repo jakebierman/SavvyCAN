@@ -17,7 +17,9 @@ General Settings
 
 * "Save/Restore CAN bus connections": This will cause the program to remember the devices you were connected to last time you ran the program and attempt to reconnect to them upon start up.
 
-* "Display values as hexadecimal": A lot of the time people who are doing CAN reverse engineering like to see values in hexadecimal (base 16) instead of the more familiar decimal (base 10) system. Checking this box will cause most of the values in the application to show up in hex. This applies to CAN ids and data bytes. Unchecking this causes values to default to decimal instead. The reason for using hex is that each hex digit is 4 bits. Integers on a computer tend to be in multiples of 8 - 8, 16, 32, 64. So, hex digits have a direct mapping to the underlying binary. Decimal does not have this correspondence AT ALL. But, the choice is yours.
+* "Display CAN IDs as hexadecimal": Select whether CAN identifiers are shown in hexadecimal or decimal.
+
+* "Payload display": Select how the Data column represents every frame payload. Raw hexadecimal and raw decimal show individual bytes. A typed preset repeats across the full payload, grouping bytes into signed or unsigned integers using the selected byte order. "Custom format" accepts a space-separated sequence such as `u16le u16le i32le`; fields consume bytes in order. Supported fields are `u8`, `i8`, and signed or unsigned 16, 32, and 64-bit values ending in `le` or `be`. A field that does not fit in a short payload is displayed as `--`.
 
 * "Require validation of GVRET connection": GVRET style devices run over a serial connection. Serial connections can be finicky sometimes and so the connection can be validated to prove that everything is really still operating and talking. There probably isn't any reason to turn this off except while debugging to see if it changes anything. Mostly just don't touch this.
 

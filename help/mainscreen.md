@@ -21,7 +21,7 @@ The main frame list takes up the majority of the main screen. This list consists
   is specified here. Many file formats do not specify bus and thus all frames will be loaded as bus 0.
 - Len: The number of data bytes that were sent with this frame. It can range from 0 to 8 for standard CAN and 0 to 64 for CAN-FD.
 - ASCII: A character based view of the CAN bytes in ASCII characters. Many systems that send serial numbers or VIN numbers will send them in ASCII and these will thus be visible here.
-- Data: All of the data bytes separated by spaces. Can be in either hexadecimal or decimal (preference). If "Interpret Frames" is checked you will
+- Data: The payload shown using the global payload display preference. It can show raw hexadecimal or decimal bytes, or group every frame's bytes into typed signed or unsigned integer values. If "Interpret Frames" is checked you will
   also see extra data at the end of any frames that have DBC data. To see the rest of this data click upon the frame in the list. It will automatically expand to show all signals attached to that frame.
   There is also a setting to limit the number of displayed bytes per line. This is especially useful for CAN-FD traffic.
 
@@ -55,6 +55,8 @@ scrolled to the bottom four times per second.
 
 *The "Interpret Frames" checkbox is used to specify whether the loaded DBC file should be used to interpret all available messages and signals. One might want
 this off for performance reasons (interpreting takes some extra processor power and RAM) or to declutter the main frame list.
+
+*The "Payload View" controls apply a global raw or typed interpretation to the Data column. Select a preset and click "Apply Payload View." Selecting "Custom format" reveals a field for a sequential layout such as `u16le u16le i32le`; invalid layouts are shown before Apply is enabled.
 
 *The "Overwrite Mode" checkbox is used to ensure that only the newest frame for each message ID is shown. That is, if 100 messages with ID 0x105 come in you
 will see only the newest one. This is generally used alongside "Interpret Frames" to interpret frames and always see the up-to-date information.

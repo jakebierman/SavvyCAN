@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include "simplecrypt.h"
+#include "payloadformatter.h"
 
 //using this simple encryption library to obfuscate stored password a bit. It's not super secure but better than
 //storing a password in straight plaintext. You have the source to this application anyway, whatever algorithm used,
@@ -66,9 +67,33 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
     ui->comboSendingBus->addItem(tr("All"));
     ui->comboSendingBus->addItem(tr("From File"));
 
+    ui->comboPayloadDisplay->addItem(tr("Raw hexadecimal"), QStringLiteral("raw-hex"));
+    ui->comboPayloadDisplay->addItem(tr("Raw decimal"), QStringLiteral("raw-decimal"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 8-bit"), QStringLiteral("u8"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 8-bit"), QStringLiteral("i8"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 16-bit, little endian"), QStringLiteral("u16le"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 16-bit, big endian"), QStringLiteral("u16be"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 16-bit, little endian"), QStringLiteral("i16le"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 16-bit, big endian"), QStringLiteral("i16be"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 32-bit, little endian"), QStringLiteral("u32le"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 32-bit, big endian"), QStringLiteral("u32be"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 32-bit, little endian"), QStringLiteral("i32le"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 32-bit, big endian"), QStringLiteral("i32be"));
+    ui->comboPayloadDisplay->addItem(tr("Custom format"), QStringLiteral("custom"));
+
     //update the GUI with all the settings we have stored giving things
     //defaults if nothing was stored (if this is the first time)
     ui->cbDisplayHex->setChecked(settings.value("Main/UseHex", true).toBool());
+    QString payloadMode;
+    if (settings.contains("Main/PayloadDisplayMode"))
+        payloadMode = settings.value("Main/PayloadDisplayMode").toString();
+    else
+        payloadMode = settings.value("Main/UseHex", true).toBool() ? QStringLiteral("raw-hex") : QStringLiteral("raw-decimal");
+    int payloadModeIndex = ui->comboPayloadDisplay->findData(payloadMode);
+    if (payloadModeIndex < 0)
+        payloadModeIndex = ui->comboPayloadDisplay->findData(QStringLiteral("custom"));
+    ui->comboPayloadDisplay->setCurrentIndex(payloadModeIndex);
+    ui->linePayloadFormat->setText(settings.value("Main/PayloadFormat", QStringLiteral("u16le")).toString());
     ui->cbFlowAutoRef->setChecked(settings.value("FlowView/AutoRef", false).toBool());
     ui->cbHexGraphFlow->setChecked(settings.value("FlowView/GraphHex", false).toBool());
     ui->cbFlowUseTimestamp->setChecked(settings.value("FlowView/UseTimestamp", true).toBool());
@@ -160,6 +185,10 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
     //just for simplicity they all call the same function and that function updates all settings at once
     connect(ui->comboLanguage, SIGNAL(currentIndexChanged(int)), this, SLOT(updateSettings()));
     connect(ui->cbDisplayHex, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
+    connect(ui->comboPayloadDisplay, SIGNAL(currentIndexChanged(int)), this, SLOT(updatePayloadFormatState()));
+    connect(ui->comboPayloadDisplay, SIGNAL(currentIndexChanged(int)), this, SLOT(updateSettings()));
+    connect(ui->linePayloadFormat, SIGNAL(textChanged(QString)), this, SLOT(updatePayloadFormatState()));
+    connect(ui->linePayloadFormat, SIGNAL(editingFinished()), this, SLOT(updateSettings()));
     connect(ui->cbFlowAutoRef, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
     connect(ui->cbFlowUseTimestamp, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
     connect(ui->cbInfoAutoExpand, SIGNAL(toggled(bool)), this, SLOT(updateSettings()));
@@ -191,6 +220,7 @@ MainSettingsDialog::MainSettingsDialog(QWidget *parent) :
     connect(ui->spinBytesPerLine, SIGNAL(valueChanged(int)), this, SLOT(updateSettings()));
 
     installEventFilter(this);
+    updatePayloadFormatState();
 }
 
 MainSettingsDialog::~MainSettingsDialog()
@@ -230,6 +260,11 @@ void MainSettingsDialog::updateSettings()
 
     settings.setValue("Main/Language", ui->comboLanguage->currentData().toString());
     settings.setValue("Main/UseHex", ui->cbDisplayHex->isChecked());
+    const QString payloadMode = ui->comboPayloadDisplay->currentData().toString();
+    settings.setValue("Main/PayloadDisplayMode", payloadMode);
+    PayloadFormatter payloadFormatter;
+    if (payloadFormatter.compile(ui->linePayloadFormat->text()))
+        settings.setValue("Main/PayloadFormat", ui->linePayloadFormat->text().simplified());
     settings.setValue("FlowView/AutoRef", ui->cbFlowAutoRef->isChecked());
     settings.setValue("FlowView/UseTimestamp", ui->cbFlowUseTimestamp->isChecked());
     settings.setValue("FlowView/GraphHex", ui->cbHexGraphFlow->isChecked());
@@ -264,4 +299,15 @@ void MainSettingsDialog::updateSettings()
 
     settings.sync();
     emit updatedSettings();
+}
+
+void MainSettingsDialog::updatePayloadFormatState()
+{
+    const bool custom = ui->comboPayloadDisplay->currentData().toString() == QStringLiteral("custom");
+    ui->linePayloadFormat->setEnabled(custom);
+
+    PayloadFormatter formatter;
+    QString error;
+    const bool valid = formatter.compile(ui->linePayloadFormat->text(), &error);
+    ui->lblPayloadFormatError->setText(custom && !valid ? error : QString());
 }

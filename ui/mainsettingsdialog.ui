@@ -93,9 +93,40 @@
         <item>
          <widget class="QCheckBox" name="cbDisplayHex">
           <property name="text">
-           <string>Display values as hexadecimal</string>
+           <string>Display CAN IDs as hexadecimal</string>
           </property>
          </widget>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="verticalLayoutPayloadDisplay">
+          <item>
+           <widget class="QLabel" name="labelPayloadDisplay">
+            <property name="text">
+             <string>Payload display</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="comboPayloadDisplay"/>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="linePayloadFormat">
+            <property name="placeholderText">
+             <string>Example: u16le u16le i32le</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblPayloadFormatError">
+            <property name="text">
+             <string/>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </item>
         <item>
          <widget class="QCheckBox" name="cbValidate">
@@ -507,6 +538,8 @@
   <tabstop>cbMainAutoScroll</tabstop>
   <tabstop>cbRestorePositions</tabstop>
   <tabstop>cbLoadConnections</tabstop>
+  <tabstop>comboPayloadDisplay</tabstop>
+  <tabstop>linePayloadFormat</tabstop>
   <tabstop>cbDisplayHex</tabstop>
   <tabstop>cbValidate</tabstop>
   <tabstop>cbUseFiltered</tabstop>

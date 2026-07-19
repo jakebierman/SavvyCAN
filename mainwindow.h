@@ -128,6 +128,8 @@ private slots:
     void headerClicked (int logicalIndex);
     void DBCSettingsUpdated();
     void onSenderCellChanged(int, int);
+    void payloadDisplayChanged();
+    void applyPayloadDisplay();
 
 public slots:
     void gotFrames(int);
@@ -148,6 +150,8 @@ signals:
 
 private:
     Ui::MainWindow *ui;
+    void populatePayloadDisplayCombo();
+    void syncPayloadDisplayControls(const QString &mode, const QString &format);
     QAction *copyAct;
     static MainWindow *selfRef;
 

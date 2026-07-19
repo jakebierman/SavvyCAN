@@ -77,7 +77,8 @@ CANFrameModel::CANFrameModel(QObject *parent)
     interpretFrames = false;
     overwriteDups = false;
     filtersPersistDuringClear = false;
-    useHexMode = true;
+    payloadDisplayMode = PayloadDisplayMode::RawHex;
+    payloadFormatter.compile(QStringLiteral("u16le"));
     useColorsByCanId = false;
     timeStyle = TS_MICROS;
     timeOffset = 0;
@@ -95,13 +96,34 @@ void CANFrameModel::setBytesPerLine(int bpl)
 
 void CANFrameModel::setHexMode(bool mode)
 {
-    if (useHexMode != mode)
+    setPayloadDisplayMode(mode ? PayloadDisplayMode::RawHex : PayloadDisplayMode::RawDecimal);
+    Utility::decimalMode = !mode;
+}
+
+void CANFrameModel::setPayloadDisplayMode(PayloadDisplayMode mode)
+{
+    if (payloadDisplayMode != mode)
     {
         this->beginResetModel();
-        useHexMode = mode;
-        Utility::decimalMode = !useHexMode;
+        payloadDisplayMode = mode;
         this->endResetModel();
     }
+}
+
+bool CANFrameModel::setPayloadFormat(const QString &format, QString *error, bool repeatSingleField)
+{
+    PayloadFormatter formatter;
+    if (!formatter.compile(format, error, repeatSingleField))
+        return false;
+
+    if (payloadFormatter.sourceFormat() != formatter.sourceFormat() ||
+        payloadFormatter.repeatsSingleField() != formatter.repeatsSingleField())
+    {
+        beginResetModel();
+        payloadFormatter = formatter;
+        endResetModel();
+    }
+    return true;
 }
 
 void CANFrameModel::setUseColorsByCanId(bool mode)
@@ -538,16 +560,24 @@ QVariant CANFrameModel::data(const QModelIndex &index, int role) const
             return tempString;
         case Column::Data:
             if (dataLen < 0) dataLen = 0;
-            //if (useHexMode) tempString.append("0x ");
             if (thisFrame.frameType() == QCanBusFrame::RemoteRequestFrame) {
                 return tempString;
             }
-            for (int i = 0; i < dataLen; i++)
+            if (payloadDisplayMode == PayloadDisplayMode::Typed)
             {
-                if (useHexMode) tempString.append( QString::number(data[i], 16).toUpper().rightJustified(2, '0'));
-                else tempString.append(QString::number(data[i], 10));
-                if (!((i+1) % bytesPerLine) && (i != (dataLen - 1))) tempString.append("\n");
-                else tempString.append(" ");
+                tempString = payloadFormatter.format(thisFrame.payload());
+            }
+            else
+            {
+                for (int i = 0; i < dataLen; i++)
+                {
+                    if (payloadDisplayMode == PayloadDisplayMode::RawHex)
+                        tempString.append(QString::number(data[i], 16).toUpper().rightJustified(2, '0'));
+                    else
+                        tempString.append(QString::number(data[i], 10));
+                    if (!((i+1) % bytesPerLine) && (i != (dataLen - 1))) tempString.append("\n");
+                    else tempString.append(" ");
+                }
             }
             if (thisFrame.frameType() == thisFrame.ErrorFrame)
             {
@@ -570,7 +600,9 @@ QVariant CANFrameModel::data(const QModelIndex &index, int role) const
                 DBC_MESSAGE *msg = dbcHandler->findMessage(thisFrame);
                 if (msg != nullptr)
                 {
-                    tempString.append("   <" + msg->name + ">\n");
+                    if (!tempString.isEmpty() && !tempString.endsWith('\n'))
+                        tempString.append("   ");
+                    tempString.append("<" + msg->name + ">\n");
                     if (msg->comment.length() > 1) tempString.append(msg->comment + "\n");
                     for (int j = 0; j < msg->sigHandler->getCount(); j++)
                     {                        

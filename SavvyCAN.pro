@@ -47,6 +47,7 @@ SOURCES += main.cpp\
     re/dbccomparatorwindow.cpp \
     mainwindow.cpp \
     canframemodel.cpp \
+    payloadformatter.cpp \
     simplecrypt.cpp \
     triggerdialog.cpp \
     utility.cpp \
@@ -111,6 +112,7 @@ HEADERS  += mainwindow.h \
     can_structs.h \
     canbridgewindow.h \
     canframemodel.h \
+    payloadformatter.h \
     connections/canlogserver.h \
     connections/canserver.h \
     connections/lawicel_serial.h \

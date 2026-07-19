@@ -11,6 +11,7 @@
 #include "filterutility.h"
 
 #include <QClipboard>
+#include <QSignalBlocker>
 /*
 Some notes on things I'd like to put into the program but haven't put on github (yet)
 
@@ -31,6 +32,7 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    populatePayloadDisplayCombo();
 #if QT_VERSION < QT_VERSION_CHECK( 6, 0, 0 )
     qRegisterMetaTypeStreamOperators<QVector<QString>>();
     qRegisterMetaTypeStreamOperators<QVector<int>>();
@@ -169,6 +171,9 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->btnFilterNone, &QAbstractButton::clicked, this, &MainWindow::filterClearAll);
     connect(ui->btnExpandAll, &QAbstractButton::clicked, this, &MainWindow::expandAllRows);
     connect(ui->btnCollapseAll, &QAbstractButton::clicked, this, &MainWindow::collapseAllRows);
+    connect(ui->comboPayloadDisplay, SIGNAL(currentIndexChanged(int)), this, SLOT(payloadDisplayChanged()));
+    connect(ui->linePayloadFormat, SIGNAL(textChanged(QString)), this, SLOT(payloadDisplayChanged()));
+    connect(ui->btnApplyPayloadDisplay, &QAbstractButton::clicked, this, &MainWindow::applyPayloadDisplay);
 
     connect(ui->tableSimpleSender, SIGNAL(cellChanged(int,int)), this, SLOT(onSenderCellChanged(int,int)));
 
@@ -418,7 +423,29 @@ void MainWindow::readUpdateableSettings()
 {
     QSettings settings;
     useHex = settings.value("Main/UseHex", true).toBool();
-    model->setHexMode(useHex);
+    QString payloadMode;
+    if (settings.contains("Main/PayloadDisplayMode"))
+        payloadMode = settings.value("Main/PayloadDisplayMode").toString();
+    else
+        payloadMode = settings.value("Main/UseHex", true).toBool() ? QStringLiteral("raw-hex") : QStringLiteral("raw-decimal");
+
+    const QString customPayloadFormat = settings.value("Main/PayloadFormat", QStringLiteral("u16le")).toString();
+    syncPayloadDisplayControls(payloadMode, customPayloadFormat);
+
+    if (payloadMode == QStringLiteral("raw-hex"))
+        model->setPayloadDisplayMode(PayloadDisplayMode::RawHex);
+    else if (payloadMode == QStringLiteral("raw-decimal"))
+        model->setPayloadDisplayMode(PayloadDisplayMode::RawDecimal);
+    else
+    {
+        const QString format = payloadMode == QStringLiteral("custom")
+            ? customPayloadFormat
+            : payloadMode;
+        if (model->setPayloadFormat(format, nullptr, payloadMode != QStringLiteral("custom")))
+            model->setPayloadDisplayMode(PayloadDisplayMode::Typed);
+        else
+            model->setPayloadDisplayMode(PayloadDisplayMode::RawHex);
+    }
     Utility::decimalMode = !useHex;
 
     useColorsByCanId = settings.value("Main/ColorsByCanId", false).toBool();
@@ -449,6 +476,67 @@ void MainWindow::readUpdateableSettings()
         ui->listFilters->setMaximumWidth(175);
     updateFilterList();    
 }    
+
+void MainWindow::populatePayloadDisplayCombo()
+{
+    ui->comboPayloadDisplay->addItem(tr("Raw hexadecimal"), QStringLiteral("raw-hex"));
+    ui->comboPayloadDisplay->addItem(tr("Raw decimal"), QStringLiteral("raw-decimal"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 8-bit"), QStringLiteral("u8"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 8-bit"), QStringLiteral("i8"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 16-bit LE"), QStringLiteral("u16le"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 16-bit BE"), QStringLiteral("u16be"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 16-bit LE"), QStringLiteral("i16le"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 16-bit BE"), QStringLiteral("i16be"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 32-bit LE"), QStringLiteral("u32le"));
+    ui->comboPayloadDisplay->addItem(tr("Unsigned 32-bit BE"), QStringLiteral("u32be"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 32-bit LE"), QStringLiteral("i32le"));
+    ui->comboPayloadDisplay->addItem(tr("Signed 32-bit BE"), QStringLiteral("i32be"));
+    ui->comboPayloadDisplay->addItem(tr("Custom format"), QStringLiteral("custom"));
+}
+
+void MainWindow::syncPayloadDisplayControls(const QString &mode, const QString &format)
+{
+    const QSignalBlocker comboBlocker(ui->comboPayloadDisplay);
+    const QSignalBlocker formatBlocker(ui->linePayloadFormat);
+    int index = ui->comboPayloadDisplay->findData(mode);
+    if (index < 0)
+        index = ui->comboPayloadDisplay->findData(QStringLiteral("raw-hex"));
+    ui->comboPayloadDisplay->setCurrentIndex(index);
+    ui->linePayloadFormat->setText(format);
+    payloadDisplayChanged();
+}
+
+void MainWindow::payloadDisplayChanged()
+{
+    const bool custom = ui->comboPayloadDisplay->currentData().toString() == QStringLiteral("custom");
+    ui->linePayloadFormat->setVisible(custom);
+    ui->lblPayloadFormatError->setVisible(custom);
+
+    PayloadFormatter formatter;
+    QString error;
+    const bool valid = !custom || formatter.compile(ui->linePayloadFormat->text(), &error);
+    ui->lblPayloadFormatError->setText(valid ? QString() : error);
+    ui->btnApplyPayloadDisplay->setEnabled(valid);
+}
+
+void MainWindow::applyPayloadDisplay()
+{
+    const QString mode = ui->comboPayloadDisplay->currentData().toString();
+    PayloadFormatter formatter;
+    QString error;
+    if (mode == QStringLiteral("custom") && !formatter.compile(ui->linePayloadFormat->text(), &error))
+    {
+        ui->lblPayloadFormatError->setText(error);
+        return;
+    }
+
+    QSettings settings;
+    settings.setValue("Main/PayloadDisplayMode", mode);
+    if (mode == QStringLiteral("custom"))
+        settings.setValue("Main/PayloadFormat", ui->linePayloadFormat->text().simplified());
+    settings.sync();
+    readUpdateableSettings();
+}
 
 
 void MainWindow::writeSettings()

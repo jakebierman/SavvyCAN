@@ -22,6 +22,9 @@ signals:
 public slots:
     void updateSettings();
 
+private slots:
+    void updatePayloadFormatState();
+
 private:
     Ui::MainSettingsDialog *ui;
 
