@@ -1,7 +1,11 @@
 #include <QtTest>
 
 #include "payloadformatter.h"
+#include "payloadformatrouter.h"
 #include "tst_payloadformatter.h"
+
+#include <QSettings>
+#include <QTemporaryDir>
 
 void TestPayloadFormatter::formatsIntegerTypes()
 {
@@ -49,6 +53,11 @@ void TestPayloadFormatter::formatsNamedCalculatedFields()
 
     QCOMPARE(formatter.format(QByteArray::fromHex("1C84C87405")),
              QString("rpm=1825 temp=-96 voltage=139.6"));
+    const QVector<PayloadFormatter::FormattedField> fields =
+        formatter.formatFields(QByteArray::fromHex("1C84C87405"));
+    QCOMPARE(fields.size(), 3);
+    QCOMPARE(fields.at(0).name, QString("rpm"));
+    QCOMPARE(fields.at(0).value, QString("1825"));
 }
 
 void TestPayloadFormatter::supportsOffsetsMasksAndFloats()
@@ -59,6 +68,17 @@ void TestPayloadFormatter::supportsOffsetsMasksAndFloats()
     QCOMPARE(formatter.format(QByteArray::fromHex(
                  "AAFFFF0000C03F4004000000000000")),
              QString("flags=2047 single=1.5 precise=2.5"));
+}
+
+void TestPayloadFormatter::supportsShiftsUnitsPrecisionAndWarnings()
+{
+    PayloadFormatter formatter;
+    QVERIFY(formatter.compile("gear:u16be@0&0x0700>>8 temp:i8@2*0.5-40[C]{1}"));
+
+    QCOMPARE(formatter.format(QByteArray::fromHex("050064")),
+             QString("gear=5 temp=10.0 C"));
+    QCOMPARE(formatter.validationWarnings(2),
+             QStringList({QString("temp requires bytes 2-2, but payload has 2 bytes")}));
 }
 
 void TestPayloadFormatter::marksMissingData()
@@ -80,4 +100,57 @@ void TestPayloadFormatter::rejectsInvalidFormats()
     QCOMPARE(error, QString("Invalid payload field: u24le"));
     QVERIFY(!formatter.compile("value:u16le/0", &error));
     QVERIFY(error.contains("zero"));
+}
+
+void TestPayloadFormatter::routesFormatsByBusIdAndFrameType()
+{
+    PayloadFormatRouter router;
+    QVERIFY(router.setFormat(0, 0x123, false, "bus0:u16be"));
+    QVERIFY(router.setFormat(1, 0x123, false, "bus1:u16le"));
+    QVERIFY(router.setFormat(0, 0x123, true, "extended:u8"));
+
+    CANFrame frame;
+    frame.setFrameId(0x123);
+    frame.setPayload(QByteArray::fromHex("0102"));
+    frame.bus = 0;
+    frame.setExtendedFrameFormat(false);
+    QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("bus0=258"));
+    frame.bus = 1;
+    QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("bus1=513"));
+    frame.bus = 0;
+    frame.setExtendedFrameFormat(true);
+    QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("extended=1"));
+
+    frame.setFrameId(0x456);
+    QVERIFY(router.formatterFor(frame) == nullptr);
+    QVERIFY(router.setFormat(-1, 0x456, false, "legacy:u8"));
+    QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("legacy=1"));
+}
+
+void TestPayloadFormatter::restoresAssignmentMapFromSettings()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString key = PayloadFormatRouter::key(2, 0x18DAF110, true);
+    {
+        QSettings settings(directory.filePath("payload.ini"), QSettings::IniFormat);
+        QVariantMap assignments;
+        assignments.insert(key, QStringLiteral("rpm:u16be@0*0.25[rpm]{0}"));
+        settings.setValue("Main/PayloadIdFormats", assignments);
+    }
+
+    QSettings restored(directory.filePath("payload.ini"), QSettings::IniFormat);
+    const QVariantMap assignments = restored.value("Main/PayloadIdFormats").toMap();
+    QCOMPARE(assignments.value(key).toString(), QString("rpm:u16be@0*0.25[rpm]{0}"));
+
+    PayloadFormatRouter router;
+    const QStringList parts = key.split(':');
+    QVERIFY(router.setFormat(parts.at(0).toInt(), parts.at(1).toUInt(),
+                             parts.at(2).toInt() != 0, assignments.value(key).toString()));
+    CANFrame frame;
+    frame.bus = 2;
+    frame.setFrameId(0x18DAF110);
+    frame.setExtendedFrameFormat(true);
+    frame.setPayload(QByteArray::fromHex("1C84"));
+    QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("rpm=1825 rpm"));
 }

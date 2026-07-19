@@ -14,8 +14,11 @@ private slots:
     void formats64BitValues();
     void formatsNamedCalculatedFields();
     void supportsOffsetsMasksAndFloats();
+    void supportsShiftsUnitsPrecisionAndWarnings();
     void marksMissingData();
     void rejectsInvalidFormats();
+    void routesFormatsByBusIdAndFrameType();
+    void restoresAssignmentMapFromSettings();
 };
 
 #endif // TST_PAYLOADFORMATTER_H

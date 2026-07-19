@@ -25,7 +25,9 @@ The main frame list takes up the majority of the main screen. This list consists
   also see extra data at the end of any frames that have DBC data. To see the rest of this data click upon the frame in the list. It will automatically expand to show all signals attached to that frame.
   There is also a setting to limit the number of displayed bytes per line. This is especially useful for CAN-FD traffic.
 
-The Payload Display dock applies these choices without leaving the main window. It can be dragged between the right and bottom dock areas, floated, resized, or shown and hidden from the RE Tools menu. Custom formats are retained in the recent-formats list, and selecting a frame shows a live preview. "Show raw" places the original hexadecimal bytes beside decoded values. The frame-list context menu can copy either the raw or decoded payload for the selected frame.
+The Payload Display dock applies these choices without leaving the main window. It can be dragged between the right and bottom dock areas, floated, resized, or shown and hidden from the RE Tools menu. Custom formats are retained in the recent-formats list and can also be saved as named profiles. Select a frame and a profile to assign that decoder to its bus, CAN ID, and standard or extended frame type; assignments override the global decoder and can be cleared from the same panel. Selecting a frame shows a live preview and warns when a field extends beyond its payload. "Show raw" places the original hexadecimal bytes beside decoded values. The frame-list context menu can copy either the raw or decoded payload for the selected frame.
+
+"Field editor" opens a table for names, types, byte positions, masks, shifts, calculations, units, and precision. "From DBC" creates a custom format from compatible byte-aligned signals in the selected frame's DBC message and reports signals that cannot be represented safely. Decoded CSV exports include `RawPayload` plus a separate numeric column for every custom decoded field. Units are included in column headings.
 
 
 The Bottom Statusbar
@@ -58,7 +60,7 @@ scrolled to the bottom four times per second.
 *The "Interpret Frames" checkbox is used to specify whether the loaded DBC file should be used to interpret all available messages and signals. One might want
 this off for performance reasons (interpreting takes some extra processor power and RAM) or to declutter the main frame list.
 
-*The "Payload View" controls apply a global raw or typed interpretation to the Data column. Select a preset and click "Apply Payload View." Selecting "Custom format" reveals a field for a sequential layout such as `u16le u16le i32le`; invalid layouts are shown before Apply is enabled.
+*The "Payload View" controls apply a global raw or typed interpretation to the Data column. Select a preset and click "Apply Payload View." Selecting "Custom format" reveals the compact field definition; invalid layouts are shown before Apply is enabled.
 
 *The "Overwrite Mode" checkbox is used to ensure that only the newest frame for each message ID is shown. That is, if 100 messages with ID 0x105 come in you
 will see only the newest one. This is generally used alongside "Interpret Frames" to interpret frames and always see the up-to-date information.

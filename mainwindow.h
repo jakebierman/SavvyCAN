@@ -41,6 +41,7 @@ class ISOTP_InterpreterWindow;
 class ScriptingWindow;
 class QSortFilterProxyModel;
 class QDockWidget;
+class QComboBox;
 
 enum SIMP_COL
 {
@@ -136,6 +137,12 @@ private slots:
     void recentPayloadFormatSelected(int index);
     void copyRawPayload();
     void copyDecodedPayload();
+    void savePayloadProfile();
+    void deletePayloadProfile();
+    void assignPayloadProfileToSelectedId();
+    void clearPayloadProfileForSelectedId();
+    void editPayloadFormatVisually();
+    void createPayloadFormatFromDbc();
 
 public slots:
     void gotFrames(int);
@@ -162,6 +169,11 @@ private:
     void setupPayloadDock();
     void syncPayloadDisplayControls(const QString &mode, const QString &format);
     QString formatPayloadForControls(const QByteArray &payload, bool includeRaw) const;
+    void reloadPayloadProfiles();
+    void applyPayloadIdAssignments();
+    int selectedPayloadSourceRow() const;
+    QString formatFromSelectedDbc(QStringList *warnings = nullptr) const;
+    QComboBox *payloadProfileCombo;
     int payloadContextSourceRow = -1;
     QAction *copyAct;
     static MainWindow *selfRef;

@@ -46,6 +46,13 @@ QByteArray CANFrameModel::payloadAtFilteredRow(int row) const
     return filteredFrames.at(row).payload();
 }
 
+CANFrame CANFrameModel::frameAtFilteredRow(int row) const
+{
+    if (row < 0 || row >= filteredFrames.size())
+        return CANFrame();
+    return filteredFrames.at(row);
+}
+
 int CANFrameModel::columnCount(const QModelIndex &index) const
 {
     Q_UNUSED(index);
@@ -142,6 +149,41 @@ void CANFrameModel::setShowRawPayload(bool show)
         showRawPayload = show;
         endResetModel();
     }
+}
+
+QString CANFrameModel::payloadFormatKey(int bus, quint32 id, bool extended)
+{
+    return PayloadFormatRouter::key(bus, id, extended);
+}
+
+bool CANFrameModel::setPayloadFormatForFrame(int bus, quint32 id, bool extended,
+                                             const QString &format, QString *error)
+{
+    if (!payloadFormatRouter.setFormat(bus, id, extended, format, error))
+        return false;
+    beginResetModel();
+    endResetModel();
+    return true;
+}
+
+void CANFrameModel::clearPayloadFormatsById()
+{
+    payloadFormatRouter.clear();
+    beginResetModel();
+    endResetModel();
+}
+
+QString CANFrameModel::decodedPayload(const CANFrame &frame) const
+{
+    const PayloadFormatter *specific = payloadFormatRouter.formatterFor(frame);
+    return specific ? specific->format(frame.payload()) : payloadFormatter.format(frame.payload());
+}
+
+QVector<PayloadFormatter::FormattedField> CANFrameModel::decodedPayloadFields(const CANFrame &frame) const
+{
+    const PayloadFormatter *specific = payloadFormatRouter.formatterFor(frame);
+    return specific ? specific->formatFields(frame.payload())
+                    : payloadFormatter.formatFields(frame.payload());
 }
 
 void CANFrameModel::setUseColorsByCanId(bool mode)
@@ -583,7 +625,7 @@ QVariant CANFrameModel::data(const QModelIndex &index, int role) const
             }
             if (payloadDisplayMode == PayloadDisplayMode::Typed)
             {
-                tempString = payloadFormatter.format(thisFrame.payload());
+                tempString = decodedPayload(thisFrame);
                 if (showRawPayload)
                 {
                     QString rawString;

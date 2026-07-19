@@ -50,17 +50,24 @@ QString formatNumber(double value)
 
 } // namespace
 
-QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw)
+QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw, bool includeUnit)
 {
     const bool masked = field.hasMask;
     if (masked)
         raw &= field.mask;
+    if (field.shift > 0)
+        raw >>= field.shift;
+    else if (field.shift < 0)
+        raw <<= -field.shift;
 
     if (field.type == ValueType::FloatingPoint)
     {
         double value = asFloat(raw, field.byteLength);
         value = value * field.multiplier / field.divisor + field.additiveOffset;
-        return formatNumber(value);
+        QString result = field.precision >= 0
+            ? QString::number(value, 'f', field.precision) : formatNumber(value);
+        if (includeUnit && !field.unit.isEmpty()) result += ' ' + field.unit;
+        return result;
     }
 
     if (field.hasTransform)
@@ -68,12 +75,20 @@ QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw)
         const double numeric = field.type == ValueType::Signed && !masked
             ? static_cast<double>(asSigned(raw, field.byteLength))
             : static_cast<double>(raw);
-        return formatNumber(numeric * field.multiplier / field.divisor + field.additiveOffset);
+    {
+        QString result = field.precision >= 0
+            ? QString::number(numeric * field.multiplier / field.divisor + field.additiveOffset,
+                              'f', field.precision)
+            : formatNumber(numeric * field.multiplier / field.divisor + field.additiveOffset);
+        if (includeUnit && !field.unit.isEmpty()) result += ' ' + field.unit;
+        return result;
+    }
     }
 
-    if (field.type == ValueType::Signed && !masked)
-        return QString::number(asSigned(raw, field.byteLength));
-    return QString::number(raw);
+    QString result = field.type == ValueType::Signed && !masked
+        ? QString::number(asSigned(raw, field.byteLength)) : QString::number(raw);
+    if (includeUnit && !field.unit.isEmpty()) result += ' ' + field.unit;
+    return result;
 }
 
 bool PayloadFormatter::compile(const QString &format, QString *error, bool repeatSingleField)
@@ -86,9 +101,12 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
         "(u8|i8|[uif](?:16|32|64)(?:le|be))"
         "(?:@(\\d+))?"
         "(?:&(0[xX][0-9A-Fa-f]+|\\d+))?"
+        "(?:(>>|<<)(\\d+))?"
         "(?:\\*([-+]?\\d+(?:\\.\\d+)?))?"
         "(?:/([-+]?\\d+(?:\\.\\d+)?))?"
-        "(?:([+-])(\\d+(?:\\.\\d+)?))?$"));
+        "(?:([+-])(\\d+(?:\\.\\d+)?))?"
+        "(?:\\[([^\\]]+)\\])?"
+        "(?:\\{(\\d+)\\})?$"));
 
     if (tokens.isEmpty())
     {
@@ -154,14 +172,26 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
             field.hasMask = true;
         }
 
-        if (!match.captured(5).isEmpty())
-        {
-            field.multiplier = match.captured(5).toDouble();
-            field.hasTransform = true;
-        }
         if (!match.captured(6).isEmpty())
         {
-            field.divisor = match.captured(6).toDouble();
+            const int shiftAmount = match.captured(6).toInt();
+            if (shiftAmount >= field.byteLength * 8)
+            {
+                if (error)
+                    *error = QStringLiteral("Shift exceeds field width: %1").arg(originalToken);
+                return false;
+            }
+            field.shift = match.captured(5) == QStringLiteral(">>") ? shiftAmount : -shiftAmount;
+        }
+
+        if (!match.captured(7).isEmpty())
+        {
+            field.multiplier = match.captured(7).toDouble();
+            field.hasTransform = true;
+        }
+        if (!match.captured(8).isEmpty())
+        {
+            field.divisor = match.captured(8).toDouble();
             if (field.divisor == 0.0)
             {
                 if (error)
@@ -170,11 +200,17 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
             }
             field.hasTransform = true;
         }
-        if (!match.captured(8).isEmpty())
+        if (!match.captured(10).isEmpty())
         {
-            field.additiveOffset = match.captured(8).toDouble();
-            if (match.captured(7) == QStringLiteral("-"))
+            field.additiveOffset = match.captured(10).toDouble();
+            if (match.captured(9) == QStringLiteral("-"))
                 field.additiveOffset = -field.additiveOffset;
+            field.hasTransform = true;
+        }
+        field.unit = match.captured(11);
+        if (!match.captured(12).isEmpty())
+        {
+            field.precision = match.captured(12).toInt();
             field.hasTransform = true;
         }
 
@@ -192,42 +228,76 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
 
 QString PayloadFormatter::format(const QByteArray &payload) const
 {
+    const QVector<FormattedField> formatted = formatFields(payload);
     QStringList values;
+    for (int i = 0; i < formatted.size(); ++i)
+    {
+        QString value = formatted.at(i).value;
+        if (!formatted.at(i).unit.isEmpty()) value += ' ' + formatted.at(i).unit;
+        if (!repeatField && i < fields.size() && !fields.at(i).name.isEmpty())
+            value.prepend(formatted.at(i).name + '=');
+        values.append(value);
+    }
+    return values.join(' ');
+}
+
+QVector<PayloadFormatter::FormattedField> PayloadFormatter::formatFields(const QByteArray &payload) const
+{
+    QVector<FormattedField> values;
     if (repeatField)
     {
         const Field &field = fields.first();
+        int fieldIndex = 0;
         for (int offset = 0; offset < payload.size(); offset += field.byteLength)
         {
             if (offset + field.byteLength > payload.size())
             {
-                values.append(QStringLiteral("--"));
+                values.append({QStringLiteral("field%1").arg(fieldIndex + 1), QStringLiteral("--"), field.unit});
                 break;
             }
 
             const quint64 raw = readUnsigned(payload, offset, field.byteLength, field.littleEndian);
-            values.append(formatFieldValue(field, raw));
+            values.append({QStringLiteral("field%1").arg(fieldIndex + 1),
+                           formatFieldValue(field, raw, false), field.unit});
+            ++fieldIndex;
         }
-        return values.join(' ');
+        return values;
     }
 
     values.reserve(fields.size());
 
-    for (const Field &field : fields)
+    for (int i = 0; i < fields.size(); ++i)
     {
+        const Field &field = fields.at(i);
+        const QString name = field.name.isEmpty() ? QStringLiteral("field%1").arg(i + 1) : field.name;
         if (field.offset + field.byteLength > payload.size())
         {
-            values.append(QStringLiteral("--"));
+            values.append({name, QStringLiteral("--"), field.unit});
             continue;
         }
 
         const quint64 raw = readUnsigned(payload, field.offset, field.byteLength, field.littleEndian);
-        QString value = formatFieldValue(field, raw);
-        if (!field.name.isEmpty())
-            value.prepend(field.name + '=');
-        values.append(value);
+        values.append({name, formatFieldValue(field, raw, false), field.unit});
     }
 
-    return values.join(' ');
+    return values;
+}
+
+QStringList PayloadFormatter::validationWarnings(int payloadLength) const
+{
+    QStringList warnings;
+    for (int i = 0; i < fields.size(); ++i)
+    {
+        const Field &field = fields.at(i);
+        if (field.offset + field.byteLength > payloadLength)
+        {
+            const QString label = field.name.isEmpty()
+                ? QStringLiteral("Field %1").arg(i + 1) : field.name;
+            warnings.append(QStringLiteral("%1 requires bytes %2-%3, but payload has %4 bytes")
+                .arg(label).arg(field.offset).arg(field.offset + field.byteLength - 1).arg(payloadLength));
+        }
+    }
+    return warnings;
 }
 
 QString PayloadFormatter::sourceFormat() const

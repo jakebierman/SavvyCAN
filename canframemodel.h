@@ -6,11 +6,13 @@
 #include <QVector>
 #include <QDebug>
 #include <QMutex>
+#include <QHash>
 #include "can_structs.h"
 #include "dbc/dbchandler.h"
 #include "connections/canconnection.h"
 #include "utility.h"
 #include "payloadformatter.h"
+#include "payloadformatrouter.h"
 
 enum class Column {
     TimeStamp = 0, ///< The timestamp when the frame was transmitted or received
@@ -51,6 +53,12 @@ public:
     void setPayloadDisplayMode(PayloadDisplayMode mode);
     bool setPayloadFormat(const QString &format, QString *error = nullptr, bool repeatSingleField = false);
     void setShowRawPayload(bool show);
+    bool setPayloadFormatForFrame(int bus, quint32 id, bool extended, const QString &format,
+                                  QString *error = nullptr);
+    void clearPayloadFormatsById();
+    QString decodedPayload(const CANFrame &frame) const;
+    QVector<PayloadFormatter::FormattedField> decodedPayloadFields(const CANFrame &frame) const;
+    static QString payloadFormatKey(int bus, quint32 id, bool extended);
     void setUseColorsByCanId(bool);
     void setClearMode(bool mode);
     void setTimeStyle(TimeStyle newStyle);
@@ -71,6 +79,7 @@ public:
     const QVector<CANFrame> *getListReference() const; //thou shalt not modify these frames externally!
     const QVector<CANFrame> *getFilteredListReference() const; //Thus saith the Lord, NO.
     QByteArray payloadAtFilteredRow(int row) const;
+    CANFrame frameAtFilteredRow(int row) const;
     const QMap<int, bool> *getFiltersReference() const; //this neither
     const QMap<int, bool> *getBusFiltersReference() const; //this neither
 
@@ -101,6 +110,7 @@ private:
     TimeStyle timeStyle;
     PayloadDisplayMode payloadDisplayMode;
     PayloadFormatter payloadFormatter;
+    PayloadFormatRouter payloadFormatRouter;
     bool showRawPayload;
     bool useColorsByCanId;
     bool needFilterRefresh;

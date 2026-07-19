@@ -1,4 +1,4 @@
-QT += core testlib
+QT += core testlib serialbus
 
 CONFIG += c++17 console testcase
 CONFIG -= app_bundle
@@ -15,4 +15,5 @@ SOURCES += \
 
 HEADERS += \
     tst_payloadformatter.h \
-    ../payloadformatter.h
+    ../payloadformatter.h \
+    ../payloadformatrouter.h

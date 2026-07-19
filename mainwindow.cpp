@@ -14,6 +14,13 @@
 #include <QSignalBlocker>
 #include <QDockWidget>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QDialogButtonBox>
+#include <QTableWidget>
+#include <QHeaderView>
 /*
 Some notes on things I'd like to put into the program but haven't put on github (yet)
 
@@ -494,6 +501,7 @@ void MainWindow::readUpdateableSettings()
         ui->listFilters->setMaximumWidth(250);
     else
         ui->listFilters->setMaximumWidth(175);
+    applyPayloadIdAssignments();
     updateFilterList();    
     updatePayloadPreview();
 }    
@@ -531,11 +539,44 @@ void MainWindow::setupPayloadDock()
     layout->addWidget(ui->cbShowRawPayload);
     layout->addWidget(ui->linePayloadFormat);
     layout->addWidget(ui->comboRecentPayloadFormats);
+    payloadProfileCombo = new QComboBox(panel);
+    payloadProfileCombo->setPlaceholderText(tr("Saved profiles"));
+    layout->addWidget(payloadProfileCombo);
+    QHBoxLayout *profileButtons = new QHBoxLayout;
+    QPushButton *saveProfile = new QPushButton(tr("Save profile"), panel);
+    QPushButton *deleteProfile = new QPushButton(tr("Delete"), panel);
+    QPushButton *assignProfile = new QPushButton(tr("Assign to ID"), panel);
+    QPushButton *clearAssignment = new QPushButton(tr("Clear ID"), panel);
+    profileButtons->addWidget(saveProfile);
+    profileButtons->addWidget(deleteProfile);
+    profileButtons->addWidget(assignProfile);
+    profileButtons->addWidget(clearAssignment);
+    layout->addLayout(profileButtons);
+    QHBoxLayout *editorButtons = new QHBoxLayout;
+    QPushButton *visualEditor = new QPushButton(tr("Field editor"), panel);
+    QPushButton *fromDbc = new QPushButton(tr("From DBC"), panel);
+    editorButtons->addWidget(visualEditor);
+    editorButtons->addWidget(fromDbc);
+    layout->addLayout(editorButtons);
     layout->addWidget(ui->lblPayloadFormatError);
     layout->addWidget(ui->btnApplyPayloadDisplay);
     layout->addWidget(ui->lblPayloadPreview);
     payloadDock->setWidget(panel);
     ui->labelPayloadView->hide();
+    reloadPayloadProfiles();
+    connect(payloadProfileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (index >= 0)
+        {
+            ui->comboPayloadDisplay->setCurrentIndex(ui->comboPayloadDisplay->findData(QStringLiteral("custom")));
+            ui->linePayloadFormat->setText(payloadProfileCombo->currentData().toString());
+        }
+    });
+    connect(saveProfile, &QPushButton::clicked, this, &MainWindow::savePayloadProfile);
+    connect(deleteProfile, &QPushButton::clicked, this, &MainWindow::deletePayloadProfile);
+    connect(assignProfile, &QPushButton::clicked, this, &MainWindow::assignPayloadProfileToSelectedId);
+    connect(clearAssignment, &QPushButton::clicked, this, &MainWindow::clearPayloadProfileForSelectedId);
+    connect(visualEditor, &QPushButton::clicked, this, &MainWindow::editPayloadFormatVisually);
+    connect(fromDbc, &QPushButton::clicked, this, &MainWindow::createPayloadFormatFromDbc);
 
     QSettings settings;
     const Qt::DockWidgetArea area = static_cast<Qt::DockWidgetArea>(
@@ -622,6 +663,281 @@ void MainWindow::recentPayloadFormatSelected(int index)
         ui->linePayloadFormat->setText(ui->comboRecentPayloadFormats->itemText(index));
 }
 
+void MainWindow::reloadPayloadProfiles()
+{
+    if (!payloadProfileCombo)
+        return;
+    const QSignalBlocker blocker(payloadProfileCombo);
+    payloadProfileCombo->clear();
+    const QVariantMap profiles = QSettings().value("Main/PayloadProfiles").toMap();
+    for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+        payloadProfileCombo->addItem(it.key(), it.value().toString());
+    payloadProfileCombo->setCurrentIndex(-1);
+}
+
+void MainWindow::savePayloadProfile()
+{
+    PayloadFormatter formatter;
+    QString error;
+    const QString format = ui->linePayloadFormat->text().simplified();
+    if (!formatter.compile(format, &error))
+    {
+        QMessageBox::warning(this, tr("Invalid payload format"), error);
+        return;
+    }
+    bool accepted = false;
+    const QString name = QInputDialog::getText(this, tr("Save payload profile"),
+        tr("Profile name"), QLineEdit::Normal, QString(), &accepted).trimmed();
+    if (!accepted || name.isEmpty())
+        return;
+    QSettings settings;
+    QVariantMap profiles = settings.value("Main/PayloadProfiles").toMap();
+    profiles.insert(name, format);
+    settings.setValue("Main/PayloadProfiles", profiles);
+    reloadPayloadProfiles();
+    payloadProfileCombo->setCurrentIndex(payloadProfileCombo->findText(name));
+}
+
+void MainWindow::deletePayloadProfile()
+{
+    if (payloadProfileCombo->currentIndex() < 0)
+        return;
+    QSettings settings;
+    QVariantMap profiles = settings.value("Main/PayloadProfiles").toMap();
+    profiles.remove(payloadProfileCombo->currentText());
+    settings.setValue("Main/PayloadProfiles", profiles);
+    reloadPayloadProfiles();
+}
+
+int MainWindow::selectedPayloadSourceRow() const
+{
+    const QModelIndex index = ui->canFramesView->currentIndex();
+    return index.isValid() ? proxyModel->mapToSource(index).row() : -1;
+}
+
+void MainWindow::assignPayloadProfileToSelectedId()
+{
+    const int row = selectedPayloadSourceRow();
+    if (row < 0 || payloadProfileCombo->currentIndex() < 0)
+    {
+        QMessageBox::information(this, tr("Assign payload profile"),
+            tr("Select a frame and a saved profile first."));
+        return;
+    }
+    const CANFrame frame = model->frameAtFilteredRow(row);
+    applyPayloadDisplay();
+    QSettings settings;
+    QVariantMap assignments = settings.value("Main/PayloadIdFormats").toMap();
+    assignments.insert(CANFrameModel::payloadFormatKey(
+        frame.bus, frame.frameId(), frame.hasExtendedFrameFormat()),
+        payloadProfileCombo->currentData().toString());
+    settings.setValue("Main/PayloadIdFormats", assignments);
+    applyPayloadIdAssignments();
+    updatePayloadPreview();
+}
+
+void MainWindow::clearPayloadProfileForSelectedId()
+{
+    const int row = selectedPayloadSourceRow();
+    if (row < 0)
+        return;
+    QSettings settings;
+    QVariantMap assignments = settings.value("Main/PayloadIdFormats").toMap();
+    const CANFrame frame = model->frameAtFilteredRow(row);
+    assignments.remove(CANFrameModel::payloadFormatKey(
+        frame.bus, frame.frameId(), frame.hasExtendedFrameFormat()));
+    assignments.remove(QString::number(frame.frameId()));
+    settings.setValue("Main/PayloadIdFormats", assignments);
+    applyPayloadIdAssignments();
+    updatePayloadPreview();
+}
+
+void MainWindow::applyPayloadIdAssignments()
+{
+    model->clearPayloadFormatsById();
+    const QVariantMap assignments = QSettings().value("Main/PayloadIdFormats").toMap();
+    for (auto it = assignments.constBegin(); it != assignments.constEnd(); ++it)
+    {
+        const QStringList keyParts = it.key().split(':');
+        if (keyParts.size() == 3)
+            model->setPayloadFormatForFrame(keyParts.at(0).toInt(), keyParts.at(1).toUInt(),
+                                            keyParts.at(2).toInt() != 0, it.value().toString());
+        else
+            model->setPayloadFormatForFrame(-1, it.key().toUInt(), false, it.value().toString());
+    }
+}
+
+QString MainWindow::formatFromSelectedDbc(QStringList *warnings) const
+{
+    const int row = selectedPayloadSourceRow();
+    if (row < 0)
+        return QString();
+    const CANFrame frame = model->frameAtFilteredRow(row);
+    DBC_MESSAGE *message = dbcHandler ? dbcHandler->findMessage(frame) : nullptr;
+    if (!message || !message->sigHandler)
+        return QString();
+
+    QStringList fields;
+    for (int i = 0; i < message->sigHandler->getCount(); ++i)
+    {
+        DBC_SIGNAL *signal = message->sigHandler->findSignalByIdx(i);
+        if (!signal)
+            continue;
+        if (signal->startBit % 8 != 0 ||
+            (signal->signalSize != 8 && signal->signalSize != 16 &&
+             signal->signalSize != 32 && signal->signalSize != 64))
+        {
+            if (warnings)
+                warnings->append(tr("%1 is not byte-aligned or has an unsupported width").arg(signal->name));
+            continue;
+        }
+
+        QString name = signal->name;
+        name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")), QStringLiteral("_"));
+        if (name.isEmpty() || name.at(0).isDigit())
+            name.prepend('_');
+        QString type;
+        if (signal->valType == SP_FLOAT && signal->signalSize == 32)
+            type = QStringLiteral("f32");
+        else if (signal->valType == DP_FLOAT && signal->signalSize == 64)
+            type = QStringLiteral("f64");
+        else
+            type = signal->valType == SIGNED_INT ? QStringLiteral("i") : QStringLiteral("u");
+        if (signal->signalSize == 8 && !type.startsWith('f'))
+            type += QStringLiteral("8");
+        else
+            type += QString::number(signal->signalSize) + (signal->intelByteOrder ? QStringLiteral("le") : QStringLiteral("be"));
+
+        QString field = name + ':' + type + '@' + QString::number(signal->startBit / 8);
+        if (signal->factor != 1.0)
+            field += '*' + QString::number(signal->factor, 'g', 12);
+        if (signal->bias > 0.0)
+            field += '+' + QString::number(signal->bias, 'g', 12);
+        else if (signal->bias < 0.0)
+            field += QString::number(signal->bias, 'g', 12);
+        if (!signal->unitName.isEmpty())
+            field += '[' + signal->unitName + ']';
+        fields.append(field);
+    }
+    return fields.join(' ');
+}
+
+void MainWindow::createPayloadFormatFromDbc()
+{
+    QStringList warnings;
+    const QString format = formatFromSelectedDbc(&warnings);
+    if (format.isEmpty())
+    {
+        QMessageBox::information(this, tr("Create format from DBC"),
+            tr("The selected frame has no byte-aligned DBC signals that can be represented by the payload formatter."));
+        return;
+    }
+    ui->comboPayloadDisplay->setCurrentIndex(ui->comboPayloadDisplay->findData(QStringLiteral("custom")));
+    ui->linePayloadFormat->setText(format);
+    if (!warnings.isEmpty())
+        QMessageBox::information(this, tr("DBC format created"),
+            tr("The compatible signals were added. Skipped signals:\n%1").arg(warnings.join('\n')));
+}
+
+void MainWindow::editPayloadFormatVisually()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Payload field editor"));
+    dialog.resize(1050, 420);
+    QVBoxLayout *dialogLayout = new QVBoxLayout(&dialog);
+    QTableWidget *table = new QTableWidget(&dialog);
+    const QStringList headers = {tr("Name"), tr("Type"), tr("Byte"), tr("Mask"), tr("Shift"),
+        tr("Factor"), tr("Divisor"), tr("Bias"), tr("Unit"), tr("Precision")};
+    table->setColumnCount(headers.size());
+    table->setHorizontalHeaderLabels(headers);
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+    dialogLayout->addWidget(table);
+
+    const QRegularExpression parser(QStringLiteral(
+        "^(?:([A-Za-z_][A-Za-z0-9_]*):)?(u8|i8|[uif](?:16|32|64)(?:le|be))"
+        "(?:@(\\d+))?(?:&(0[xX][0-9A-Fa-f]+|\\d+))?(?:(>>|<<)(\\d+))?"
+        "(?:\\*([-+]?\\d+(?:\\.\\d+)?))?(?:/([-+]?\\d+(?:\\.\\d+)?))?"
+        "(?:([+-])(\\d+(?:\\.\\d+)?))?(?:\\[([^\\]]+)\\])?(?:\\{(\\d+)\\})?$"));
+    const QStringList tokens = ui->linePayloadFormat->text().simplified().split(' ', Qt::SkipEmptyParts);
+    for (const QString &token : tokens)
+    {
+        const QRegularExpressionMatch match = parser.match(token);
+        if (!match.hasMatch())
+            continue;
+        const int row = table->rowCount();
+        table->insertRow(row);
+        QString shift;
+        if (!match.captured(6).isEmpty()) shift = match.captured(5) + match.captured(6);
+        QString bias;
+        if (!match.captured(10).isEmpty()) bias = match.captured(9) + match.captured(10);
+        const QStringList values = {match.captured(1), match.captured(2), match.captured(3),
+            match.captured(4), shift, match.captured(7), match.captured(8), bias,
+            match.captured(11), match.captured(12)};
+        for (int column = 0; column < values.size(); ++column)
+            table->setItem(row, column, new QTableWidgetItem(values.at(column)));
+    }
+
+    QHBoxLayout *tools = new QHBoxLayout;
+    QPushButton *add = new QPushButton(tr("Add field"), &dialog);
+    QPushButton *remove = new QPushButton(tr("Remove field"), &dialog);
+    QPushButton *dbc = new QPushButton(tr("Replace from DBC"), &dialog);
+    tools->addWidget(add);
+    tools->addWidget(remove);
+    tools->addWidget(dbc);
+    tools->addStretch();
+    dialogLayout->addLayout(tools);
+    connect(add, &QPushButton::clicked, table, [table]() {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        table->setItem(row, 1, new QTableWidgetItem(QStringLiteral("u8")));
+    });
+    connect(remove, &QPushButton::clicked, table, [table]() {
+        if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+    });
+    connect(dbc, &QPushButton::clicked, &dialog, [this, &dialog]() {
+        const QString format = formatFromSelectedDbc();
+        if (!format.isEmpty())
+        {
+            ui->linePayloadFormat->setText(format);
+            dialog.reject();
+            editPayloadFormatVisually();
+        }
+    });
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    dialogLayout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QStringList result;
+    auto textAt = [table](int row, int column) {
+        return table->item(row, column) ? table->item(row, column)->text().trimmed() : QString();
+    };
+    for (int row = 0; row < table->rowCount(); ++row)
+    {
+        const QString type = textAt(row, 1);
+        if (type.isEmpty()) continue;
+        QString field = textAt(row, 0).isEmpty() ? type : textAt(row, 0) + ':' + type;
+        if (!textAt(row, 2).isEmpty()) field += '@' + textAt(row, 2);
+        if (!textAt(row, 3).isEmpty()) field += '&' + textAt(row, 3);
+        if (!textAt(row, 4).isEmpty()) field += textAt(row, 4);
+        if (!textAt(row, 5).isEmpty()) field += '*' + textAt(row, 5);
+        if (!textAt(row, 6).isEmpty()) field += '/' + textAt(row, 6);
+        if (!textAt(row, 7).isEmpty())
+            field += textAt(row, 7).startsWith('-') || textAt(row, 7).startsWith('+')
+                ? textAt(row, 7) : '+' + textAt(row, 7);
+        if (!textAt(row, 8).isEmpty()) field += '[' + textAt(row, 8) + ']';
+        if (!textAt(row, 9).isEmpty()) field += '{' + textAt(row, 9) + '}';
+        result.append(field);
+    }
+    ui->comboPayloadDisplay->setCurrentIndex(ui->comboPayloadDisplay->findData(QStringLiteral("custom")));
+    ui->linePayloadFormat->setText(result.join(' '));
+}
+
 QString MainWindow::formatPayloadForControls(const QByteArray &payload, bool includeRaw) const
 {
     const QString mode = ui->comboPayloadDisplay->currentData().toString();
@@ -658,8 +974,29 @@ void MainWindow::updatePayloadPreview()
         return;
     }
     const int sourceRow = proxyModel->mapToSource(proxyIndex).row();
-    ui->lblPayloadPreview->setText(formatPayloadForControls(
-        model->payloadAtFilteredRow(sourceRow), ui->cbShowRawPayload->isChecked()));
+    const QByteArray payload = model->payloadAtFilteredRow(sourceRow);
+    const CANFrame frame = model->frameAtFilteredRow(sourceRow);
+    const QVariantMap assignments = QSettings().value("Main/PayloadIdFormats").toMap();
+    const bool hasIdFormat = assignments.contains(CANFrameModel::payloadFormatKey(
+                                 frame.bus, frame.frameId(), frame.hasExtendedFrameFormat())) ||
+                             assignments.contains(QString::number(frame.frameId()));
+    QString preview = hasIdFormat ? model->decodedPayload(frame)
+                                  : formatPayloadForControls(payload, ui->cbShowRawPayload->isChecked());
+    ui->lblPayloadPreview->setStyleSheet(QString());
+    if (ui->comboPayloadDisplay->currentData().toString() == QStringLiteral("custom"))
+    {
+        PayloadFormatter formatter;
+        if (formatter.compile(ui->linePayloadFormat->text()))
+        {
+            const QStringList warnings = formatter.validationWarnings(payload.size());
+            if (!warnings.isEmpty())
+            {
+                preview += QStringLiteral("\n") + warnings.join(QStringLiteral("\n"));
+                ui->lblPayloadPreview->setStyleSheet(QStringLiteral("color: #b45309;"));
+            }
+        }
+    }
+    ui->lblPayloadPreview->setText(preview);
 }
 
 
@@ -1001,8 +1338,13 @@ void MainWindow::copyRawPayload()
 
 void MainWindow::copyDecodedPayload()
 {
-    const QByteArray payload = model->payloadAtFilteredRow(payloadContextSourceRow);
-    QApplication::clipboard()->setText(formatPayloadForControls(payload, false));
+    const CANFrame frame = model->frameAtFilteredRow(payloadContextSourceRow);
+    const QVariantMap assignments = QSettings().value("Main/PayloadIdFormats").toMap();
+    const bool assigned = assignments.contains(CANFrameModel::payloadFormatKey(
+                              frame.bus, frame.frameId(), frame.hasExtendedFrameFormat())) ||
+                          assignments.contains(QString::number(frame.frameId()));
+    QApplication::clipboard()->setText(assigned
+        ? model->decodedPayload(frame) : formatPayloadForControls(frame.payload(), false));
 }
 
 void MainWindow::copyFromTable()
@@ -1604,6 +1946,17 @@ Data Bytes: 88 10 00 13 BB 00 06 00
     SignalName	Value
 */
     QList<QPair<uint32_t, int>> msgsAndColumns;
+    QStringList payloadColumns;
+    for (const CANFrame &payloadFrame : *frames)
+    {
+        const QVector<PayloadFormatter::FormattedField> decoded = model->decodedPayloadFields(payloadFrame);
+        for (const PayloadFormatter::FormattedField &field : decoded)
+        {
+            const QString column = field.unit.isEmpty()
+                ? field.name : QStringLiteral("%1 [%2]").arg(field.name, field.unit);
+            if (!payloadColumns.contains(column)) payloadColumns.append(column);
+        }
+    }
     int columnsAdded = 0;
     int dataStartCol = 0;
 
@@ -1630,6 +1983,15 @@ Data Bytes: 88 10 00 13 BB 00 06 00
     //len
     builderString += tr("DataLen") + ",";
     dataStartCol++;
+    builderString += tr("RawPayload") + ",";
+    dataStartCol++;
+    for (const QString &column : payloadColumns)
+    {
+        QString escapedColumn = column;
+        escapedColumn.replace('"', QStringLiteral("\"\""));
+        builderString += QStringLiteral("\"Payload.%1\",").arg(escapedColumn);
+        dataStartCol++;
+    }
 
     columnsAdded = dataStartCol;
 
@@ -1722,6 +2084,23 @@ Data Bytes: 88 10 00 13 BB 00 06 00
         //len
         builderString += QString::number(dataLen) + ",";
         dataColumnsAdded++;
+        builderString += '"' + QString::fromLatin1(frame->payload().toHex(' ').toUpper()) + QStringLiteral("\",");
+        dataColumnsAdded++;
+        QHash<QString, QString> payloadValues;
+        const QVector<PayloadFormatter::FormattedField> decodedFields = model->decodedPayloadFields(*frame);
+        for (const PayloadFormatter::FormattedField &field : decodedFields)
+        {
+            const QString column = field.unit.isEmpty()
+                ? field.name : QStringLiteral("%1 [%2]").arg(field.name, field.unit);
+            payloadValues.insert(column, field.value);
+        }
+        for (const QString &column : payloadColumns)
+        {
+            QString value = payloadValues.value(column);
+            value.replace('"', QStringLiteral("\"\""));
+            builderString += '"' + value + QStringLiteral("\",");
+            dataColumnsAdded++;
+        }
 
         if (dbcHandler != nullptr)
         {

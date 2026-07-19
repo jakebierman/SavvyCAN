@@ -113,6 +113,7 @@ HEADERS  += mainwindow.h \
     canbridgewindow.h \
     canframemodel.h \
     payloadformatter.h \
+    payloadformatrouter.h \
     connections/canlogserver.h \
     connections/canserver.h \
     connections/lawicel_serial.h \
