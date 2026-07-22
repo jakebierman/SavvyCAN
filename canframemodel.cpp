@@ -448,13 +448,14 @@ void CANFrameModel::recalcOverwrite()
 
     //Look at the current list of frames and turn it into just a list of unique IDs
     QHash<uint64_t, CANFrame> overWriteFrames;
-    uint64_t idAugmented; //id in lower 29 bits, bus number shifted up 29 bits
+    uint64_t idAugmented; //ID, bus, and frame format form the overwrite identity
     foreach(CANFrame frame, frames)
     {
         if (frame.frameType() != frame.DataFrame) continue;
 
         idAugmented = frame.frameId();
-        idAugmented = idAugmented + (frame.bus << 29ull);
+        idAugmented |= (static_cast<uint64_t>(frame.bus) & 0xFFFFull) << 29ull;
+        idAugmented |= static_cast<uint64_t>(frame.hasExtendedFrameFormat()) << 45ull;
         if (filters[frame.frameId()] && busFilters[frame.bus])
         {
             if (!overWriteFrames.contains(idAugmented))
@@ -843,7 +844,9 @@ void CANFrameModel::addFrame(const CANFrame& frame, bool autoRefresh = false)
 //        }
         for (int i = 0; i < filteredFrames.count(); i++)
         {
-            if ( (filteredFrames[i].frameId() == tempFrame.frameId()) && (filteredFrames[i].bus == tempFrame.bus) )
+            if ( (filteredFrames[i].frameId() == tempFrame.frameId()) &&
+                 (filteredFrames[i].bus == tempFrame.bus) &&
+                 (filteredFrames[i].hasExtendedFrameFormat() == tempFrame.hasExtendedFrameFormat()) )
             {
                 tempFrame.frameCount = filteredFrames[i].frameCount + 1;
                 tempFrame.timedelta = tempFrame.timeStamp().microSeconds() - filteredFrames[i].timeStamp().microSeconds();
@@ -869,7 +872,9 @@ void CANFrameModel::addFrame(const CANFrame& frame, bool autoRefresh = false)
         {
             for (int j = 0; j < filteredFrames.count(); j++)
             {
-                if ( (filteredFrames[j].frameId() == tempFrame.frameId()) && (filteredFrames[j].bus == tempFrame.bus) )
+                if ( (filteredFrames[j].frameId() == tempFrame.frameId()) &&
+                     (filteredFrames[j].bus == tempFrame.bus) &&
+                     (filteredFrames[j].hasExtendedFrameFormat() == tempFrame.hasExtendedFrameFormat()) )
                 {
                     if (autoRefresh) beginResetModel();
                     filteredFrames.replace(j, tempFrame);
@@ -885,6 +890,7 @@ void CANFrameModel::addFrame(const CANFrame& frame, bool autoRefresh = false)
 
 void CANFrameModel::addFrames(const CANConnection*, const QVector<CANFrame>& pFrames)
 {
+    const int previousFilteredCount = filteredFrames.count();
     if(frames.length() > frames.capacity() * 0.99)
     {
         mutex.lock();
@@ -909,8 +915,15 @@ void CANFrameModel::addFrames(const CANConnection*, const QVector<CANFrame>& pFr
     }
     if (overwriteDups) //if in overwrite mode we'll update every time frames come in
     {
-        beginResetModel();
-        endResetModel();
+        if (previousFilteredCount != filteredFrames.count())
+        {
+            beginResetModel();
+            endResetModel();
+        }
+        else if (!filteredFrames.isEmpty())
+        {
+            emit dataChanged(index(0, 0), index(filteredFrames.count() - 1, columnCount(QModelIndex()) - 1));
+        }
     }
 }
 
@@ -964,8 +977,16 @@ int CANFrameModel::sendBulkRefresh()
 
     //qDebug() << "Bulk refresh of " << lastUpdateNumFrames;
 
-    beginResetModel();
-    endResetModel();
+    if (overwriteDups)
+    {
+        if (!filteredFrames.isEmpty())
+            emit dataChanged(index(0, 0), index(filteredFrames.count() - 1, columnCount(QModelIndex()) - 1));
+    }
+    else
+    {
+        beginResetModel();
+        endResetModel();
+    }
 
     int num = lastUpdateNumFrames;
     lastUpdateNumFrames = 0;
