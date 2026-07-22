@@ -60,6 +60,19 @@ void TestPayloadFormatter::formatsNamedCalculatedFields()
     QCOMPARE(fields.at(0).value, QString("1825"));
 }
 
+void TestPayloadFormatter::formatsFixedLengthStrings()
+{
+    PayloadFormatter formatter;
+    QVERIFY(formatter.compile("vin:ascii17 label:utf88 serial:str6@30"));
+    QByteArray payload("WVWZZZ1JZXW000001", 17);
+    payload.append(QString::fromUtf8("Grüße").toUtf8().leftJustified(8, '\0'));
+    payload.append(QByteArray(5, '\0'));
+    payload.append("ABC123", 6);
+    QCOMPARE(formatter.format(payload), QString::fromUtf8("vin=WVWZZZ1JZXW000001 label=Grüße serial=ABC123"));
+    QCOMPARE(formatter.validationWarnings(32),
+             QStringList({QString("serial requires bytes 30-35, but payload has 32 bytes")}));
+}
+
 void TestPayloadFormatter::supportsOffsetsMasksAndFloats()
 {
     PayloadFormatter formatter;
@@ -79,6 +92,27 @@ void TestPayloadFormatter::supportsShiftsUnitsPrecisionAndWarnings()
              QString("gear=5 temp=10.0 C"));
     QCOMPARE(formatter.validationWarnings(2),
              QStringList({QString("temp requires bytes 2-2, but payload has 2 bytes")}));
+}
+
+void TestPayloadFormatter::formatsEnumValues()
+{
+    PayloadFormatter formatter;
+    QVERIFY(formatter.compile(
+        "regen:u8@0&0x01{0:Inactive,1:Active} "
+        "type:u8@0&0x02>>1{0:Passive,1:Active} "
+        "state:u8@1{0:Off,1:On,*:Unknown}"));
+
+    QCOMPARE(formatter.format(QByteArray::fromHex("0307")),
+             QString("regen=Active type=Active state=Unknown"));
+
+    QVERIFY(formatter.compile("state:u8{0:Off,1:On}"));
+    QCOMPARE(formatter.format(QByteArray::fromHex("02")), QString("state=2"));
+
+    QString error;
+    QVERIFY(!formatter.compile("state:u8{1:On,1:AlsoOn}", &error));
+    QVERIFY(error.contains("duplicate"));
+    QVERIFY(!formatter.compile("scaled:u8*2{2:Two}", &error));
+    QVERIFY(error.contains("transforms"));
 }
 
 void TestPayloadFormatter::marksMissingData()

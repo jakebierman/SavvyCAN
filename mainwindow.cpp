@@ -101,6 +101,8 @@ MainWindow::MainWindow(QWidget *parent) :
     dbcFileWindow = nullptr;
     fuzzingWindow = nullptr;
     udsScanWindow = nullptr;
+    udsWorkbenchWindow = nullptr;
+    obd2WorkbenchWindow = nullptr;
     motorctrlConfigWindow = nullptr;
     isoWindow = nullptr;
     snifferWindow = nullptr;
@@ -143,6 +145,12 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->actionDBC_File_Manager, &QAction::triggered, this, &MainWindow::showDBCFileWindow);
     connect(ui->actionFuzzing, &QAction::triggered, this, &MainWindow::showFuzzingWindow);
     connect(ui->actionUDS_Scanner, &QAction::triggered, this, &MainWindow::showUDSScanWindow);
+    QAction *udsWorkbenchAction = new QAction(tr("UDS Workbench"), this);
+    ui->menuSend_Frames->insertAction(ui->actionUDS_Scanner, udsWorkbenchAction);
+    connect(udsWorkbenchAction, &QAction::triggered, this, &MainWindow::showUDSWorkbenchWindow);
+    QAction *obd2WorkbenchAction = new QAction(tr("OBD-II Workbench"), this);
+    ui->menuSend_Frames->insertAction(ui->actionUDS_Scanner, obd2WorkbenchAction);
+    connect(obd2WorkbenchAction, &QAction::triggered, this, &MainWindow::showOBD2WorkbenchWindow);
     connect(ui->actionISO_TP_Decoder, &QAction::triggered, this, &MainWindow::showISOInterpreterWindow);
     connect(ui->actionSniffer, &QAction::triggered, this, &MainWindow::showSnifferWindow);
     connect(ui->actionMotorControlConfig, &QAction::triggered, this, &MainWindow::showMCConfigWindow);
@@ -2462,6 +2470,24 @@ void MainWindow::showUDSScanWindow()
         udsScanWindow = new UDSScanWindow(model->getListReference());
     }
     udsScanWindow->show();
+}
+
+void MainWindow::showUDSWorkbenchWindow()
+{
+    if (!udsWorkbenchWindow)
+        udsWorkbenchWindow = new UDSWorkbenchWindow(this);
+    udsWorkbenchWindow->show();
+    udsWorkbenchWindow->raise();
+    udsWorkbenchWindow->activateWindow();
+}
+
+void MainWindow::showOBD2WorkbenchWindow()
+{
+    if (!obd2WorkbenchWindow)
+        obd2WorkbenchWindow = new OBD2WorkbenchWindow(this);
+    obd2WorkbenchWindow->show();
+    obd2WorkbenchWindow->raise();
+    obd2WorkbenchWindow->activateWindow();
 }
 
 void MainWindow::showScriptingWindow()

@@ -95,6 +95,7 @@ DBCMessageEditor::DBCMessageEditor(QWidget *parent) :
         {
             if (suppressEditCallbacks) return;
             QColor newColor = QColorDialog::getColor(dbcMessage->fgColor);
+            if (!newColor.isValid()) return;
             if (dbcMessage->fgColor != newColor) dbcFile->setDirtyFlag();
             dbcMessage->fgColor = newColor;
             DBC_ATTRIBUTE_VALUE *val = dbcMessage->findAttrValByName("GenMsgForegroundColor");
@@ -117,6 +118,7 @@ DBCMessageEditor::DBCMessageEditor(QWidget *parent) :
         {
             if (suppressEditCallbacks) return;
             QColor newColor = QColorDialog::getColor(dbcMessage->bgColor);
+            if (!newColor.isValid()) return;
             if (dbcMessage->bgColor != newColor) dbcFile->setDirtyFlag();
             dbcMessage->bgColor = newColor;
             DBC_ATTRIBUTE_VALUE *val = dbcMessage->findAttrValByName("GenMsgBackgroundColor");
@@ -131,6 +133,30 @@ DBCMessageEditor::DBCMessageEditor(QWidget *parent) :
                 newVal.value = newColor.name();
                 dbcMessage->attributes.append(newVal);
             }
+            generateSampleText();
+        });
+
+    connect(ui->btnDefaultTextColor, &QAbstractButton::clicked,
+        [=]()
+        {
+            if (suppressEditCallbacks || !dbcMessage) return;
+            for (int idx = dbcMessage->attributes.size() - 1; idx >= 0; --idx)
+                if (dbcMessage->attributes[idx].attrName == "GenMsgForegroundColor")
+                    dbcMessage->attributes.removeAt(idx);
+            dbcMessage->fgColor = QColor(dbcFile->findAttributeByName("GenMsgForegroundColor")->defaultValue.toString());
+            dbcFile->setDirtyFlag();
+            generateSampleText();
+        });
+
+    connect(ui->btnDefaultBackgroundColor, &QAbstractButton::clicked,
+        [=]()
+        {
+            if (suppressEditCallbacks || !dbcMessage) return;
+            for (int idx = dbcMessage->attributes.size() - 1; idx >= 0; --idx)
+                if (dbcMessage->attributes[idx].attrName == "GenMsgBackgroundColor")
+                    dbcMessage->attributes.removeAt(idx);
+            dbcMessage->bgColor = QColor(dbcFile->findAttributeByName("GenMsgBackgroundColor")->defaultValue.toString());
+            dbcFile->setDirtyFlag();
             generateSampleText();
         });
 

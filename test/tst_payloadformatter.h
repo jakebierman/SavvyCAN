@@ -13,8 +13,10 @@ private slots:
     void repeatsPresetAcrossPayload();
     void formats64BitValues();
     void formatsNamedCalculatedFields();
+    void formatsFixedLengthStrings();
     void supportsOffsetsMasksAndFloats();
     void supportsShiftsUnitsPrecisionAndWarnings();
+    void formatsEnumValues();
     void marksMissingData();
     void rejectsInvalidFormats();
     void routesFormatsByBusIdAndFrameType();

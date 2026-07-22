@@ -33,6 +33,8 @@
 #include "re/temporalgraphwindow.h"
 #include "re/dbccomparatorwindow.h"
 #include "re/udsfirmwareuploaderwindow.h"
+#include "re/udsworkbenchwindow.h"
+#include "re/obd2workbenchwindow.h"
 #include "canbridgewindow.h"
 
 class CANConnection;
@@ -99,6 +101,8 @@ private slots:
     void showFuzzingWindow();
     void showMCConfigWindow();
     void showUDSScanWindow();
+    void showUDSWorkbenchWindow();
+    void showOBD2WorkbenchWindow();
     void showISOInterpreterWindow();
     void showSnifferWindow();
     void showBisectWindow();
@@ -221,6 +225,8 @@ private:
     DBCLoadSaveWindow *dbcFileWindow;
     FuzzingWindow *fuzzingWindow;
     UDSScanWindow *udsScanWindow;
+    UDSWorkbenchWindow *udsWorkbenchWindow;
+    OBD2WorkbenchWindow *obd2WorkbenchWindow;
     ISOTP_InterpreterWindow *isoWindow;
     SnifferWindow* snifferWindow;
     MotorControllerConfigWindow *motorctrlConfigWindow;

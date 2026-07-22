@@ -2,6 +2,7 @@
 #define PAYLOADFORMATTER_H
 
 #include <QByteArray>
+#include <QMap>
 #include <QString>
 #include <QVector>
 
@@ -34,7 +35,9 @@ private:
     {
         Unsigned,
         Signed,
-        FloatingPoint
+        FloatingPoint,
+        AsciiText,
+        Utf8Text
     };
 
     struct Field
@@ -53,12 +56,16 @@ private:
         bool hasTransform = false;
         QString unit;
         int precision = -1;
+        QMap<quint64, QString> enumValues;
+        QString enumFallback;
+        bool hasEnumFallback = false;
     };
 
     QVector<Field> fields;
     QString compiledFormat;
     bool repeatField = false;
     static QString formatFieldValue(const Field &field, quint64 raw, bool includeUnit = true);
+    static QString formatTextValue(const Field &field, const QByteArray &payload, int offset);
 };
 
 #endif // PAYLOADFORMATTER_H

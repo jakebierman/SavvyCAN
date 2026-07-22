@@ -29,6 +29,8 @@ The Payload Display dock applies these choices without leaving the main window. 
 
 "Field editor" opens a table for names, types, byte positions, masks, shifts, calculations, units, and precision. "From DBC" creates a custom format from compatible byte-aligned signals in the selected frame's DBC message and reports signals that cannot be represented safely. Decoded CSV exports include `RawPayload` plus a separate numeric column for every custom decoded field. Units are included in column headings.
 
+See [Payload Formatter Reference](./payload_formatter.md) for the complete custom-format grammar and examples.
+
 
 The Bottom Statusbar
 ====================

@@ -60,6 +60,15 @@ QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw, bool
     else if (field.shift < 0)
         raw <<= -field.shift;
 
+    if (!field.enumValues.isEmpty() || field.hasEnumFallback)
+    {
+        const quint64 enumKey = field.type == ValueType::Signed && !masked
+            ? static_cast<quint64>(asSigned(raw, field.byteLength)) : raw;
+        const auto mapped = field.enumValues.constFind(enumKey);
+        if (mapped != field.enumValues.constEnd()) return mapped.value();
+        if (field.hasEnumFallback) return field.enumFallback;
+    }
+
     if (field.type == ValueType::FloatingPoint)
     {
         double value = asFloat(raw, field.byteLength);
@@ -91,6 +100,15 @@ QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw, bool
     return result;
 }
 
+QString PayloadFormatter::formatTextValue(const Field &field, const QByteArray &payload, int offset)
+{
+    QByteArray bytes = payload.mid(offset, field.byteLength);
+    const int terminator = bytes.indexOf('\0');
+    if (terminator >= 0) bytes.truncate(terminator);
+    return field.type == ValueType::AsciiText
+        ? QString::fromLatin1(bytes) : QString::fromUtf8(bytes);
+}
+
 bool PayloadFormatter::compile(const QString &format, QString *error, bool repeatSingleField)
 {
     const QStringList tokens = format.simplified().split(' ', Qt::SkipEmptyParts);
@@ -98,7 +116,7 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
     int offset = 0;
     const QRegularExpression fieldPattern(QStringLiteral(
         "^(?:([A-Za-z_][A-Za-z0-9_]*):)?"
-        "(u8|i8|[uif](?:16|32|64)(?:le|be))"
+        "(u8|i8|[uif](?:16|32|64)(?:le|be)|(?:ascii|utf8|str)\\d+)"
         "(?:@(\\d+))?"
         "(?:&(0[xX][0-9A-Fa-f]+|\\d+))?"
         "(?:(>>|<<)(\\d+))?"
@@ -106,7 +124,8 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
         "(?:/([-+]?\\d+(?:\\.\\d+)?))?"
         "(?:([+-])(\\d+(?:\\.\\d+)?))?"
         "(?:\\[([^\\]]+)\\])?"
-        "(?:\\{(\\d+)\\})?$"));
+        "(?:\\{(\\d+)\\})?"
+        "(?:\\{([^{}]*:[^{}]*)\\})?$"));
 
     if (tokens.isEmpty())
     {
@@ -130,7 +149,23 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
         field.name = match.captured(1);
         field.offset = match.captured(3).isEmpty() ? offset : match.captured(3).toInt();
 
-        if (token == QStringLiteral("u8") || token == QStringLiteral("i8"))
+        if (token.startsWith(QStringLiteral("ascii")) || token.startsWith(QStringLiteral("utf8")) ||
+            token.startsWith(QStringLiteral("str")))
+        {
+            const int prefixLength = token.startsWith(QStringLiteral("ascii")) ? 5
+                : token.startsWith(QStringLiteral("utf8")) ? 4 : 3;
+            bool lengthValid = false;
+            field.byteLength = token.mid(prefixLength).toInt(&lengthValid);
+            if (!lengthValid || field.byteLength < 1)
+            {
+                if (error) *error = QStringLiteral("Invalid string length: %1").arg(originalToken);
+                return false;
+            }
+            field.type = token.startsWith(QStringLiteral("ascii"))
+                ? ValueType::AsciiText : ValueType::Utf8Text;
+            field.littleEndian = false;
+        }
+        else if (token == QStringLiteral("u8") || token == QStringLiteral("i8"))
         {
             field.type = token.startsWith('u') ? ValueType::Unsigned : ValueType::Signed;
             field.byteLength = 1;
@@ -214,6 +249,58 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
             field.hasTransform = true;
         }
 
+        if (!match.captured(13).isEmpty())
+        {
+            const QStringList entries = match.captured(13).split(',', Qt::KeepEmptyParts);
+            for (const QString &entry : entries)
+            {
+                const int separator = entry.indexOf(':');
+                const QString key = entry.left(separator).trimmed();
+                const QString label = entry.mid(separator + 1).trimmed();
+                if (separator < 1 || label.isEmpty())
+                {
+                    if (error) *error = QStringLiteral("Invalid enum entry in field: %1").arg(originalToken);
+                    return false;
+                }
+                if (key == QStringLiteral("*"))
+                {
+                    if (field.hasEnumFallback)
+                    {
+                        if (error) *error = QStringLiteral("Duplicate enum fallback in field: %1").arg(originalToken);
+                        return false;
+                    }
+                    field.enumFallback = label;
+                    field.hasEnumFallback = true;
+                    continue;
+                }
+                bool keyValid = false;
+                quint64 value = key.toULongLong(&keyValid, 0);
+                if (!keyValid && key.startsWith('-'))
+                    value = static_cast<quint64>(key.toLongLong(&keyValid, 0));
+                if (!keyValid || field.enumValues.contains(value))
+                {
+                    if (error) *error = QStringLiteral("Invalid or duplicate enum value in field: %1").arg(originalToken);
+                    return false;
+                }
+                field.enumValues.insert(value, label);
+            }
+        }
+
+        if ((field.type == ValueType::AsciiText || field.type == ValueType::Utf8Text) &&
+            (field.hasMask || field.shift != 0 || field.hasTransform || !field.unit.isEmpty() ||
+             !field.enumValues.isEmpty() || field.hasEnumFallback))
+        {
+            if (error) *error = QStringLiteral("String fields do not support numeric modifiers: %1").arg(originalToken);
+            return false;
+        }
+
+        if ((!field.enumValues.isEmpty() || field.hasEnumFallback) &&
+            (field.type == ValueType::FloatingPoint || field.hasTransform))
+        {
+            if (error) *error = QStringLiteral("Enum fields do not support numeric transforms: %1").arg(originalToken);
+            return false;
+        }
+
         parsedFields.append(field);
         offset = field.offset + field.byteLength;
     }
@@ -256,9 +343,12 @@ QVector<PayloadFormatter::FormattedField> PayloadFormatter::formatFields(const Q
                 break;
             }
 
-            const quint64 raw = readUnsigned(payload, offset, field.byteLength, field.littleEndian);
             values.append({QStringLiteral("field%1").arg(fieldIndex + 1),
-                           formatFieldValue(field, raw, false), field.unit});
+                           field.type == ValueType::AsciiText || field.type == ValueType::Utf8Text
+                               ? formatTextValue(field, payload, offset)
+                               : formatFieldValue(field, readUnsigned(payload, offset, field.byteLength,
+                                                                      field.littleEndian), false),
+                           field.unit});
             ++fieldIndex;
         }
         return values;
@@ -276,8 +366,11 @@ QVector<PayloadFormatter::FormattedField> PayloadFormatter::formatFields(const Q
             continue;
         }
 
-        const quint64 raw = readUnsigned(payload, field.offset, field.byteLength, field.littleEndian);
-        values.append({name, formatFieldValue(field, raw, false), field.unit});
+        const QString value = field.type == ValueType::AsciiText || field.type == ValueType::Utf8Text
+            ? formatTextValue(field, payload, field.offset)
+            : formatFieldValue(field, readUnsigned(payload, field.offset, field.byteLength,
+                                                    field.littleEndian), false);
+        values.append({name, value, field.unit});
     }
 
     return values;
