@@ -27,6 +27,9 @@ class FuzzingWindow : public QDialog
 public:
     explicit FuzzingWindow(const QVector<CANFrame> *frames, QWidget *parent = 0);
     ~FuzzingWindow();
+    bool configureDraft(int bus, quint32 startId, quint32 endId, int intervalMs,
+                        int burst, int bytes, QString *error = nullptr);
+    bool startForDuration(int durationMs, QString *error = nullptr);
 
 signals:
     void sendCANFrame(const CANFrame *);

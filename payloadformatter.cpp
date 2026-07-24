@@ -69,6 +69,15 @@ QString PayloadFormatter::formatFieldValue(const Field &field, quint64 raw, bool
         if (field.hasEnumFallback) return field.enumFallback;
     }
 
+    if (field.type == ValueType::Bit)
+    {
+        if (field.bitDisplay == BitDisplay::Boolean)
+            return raw ? QStringLiteral("True") : QStringLiteral("False");
+        if (field.bitDisplay == BitDisplay::Visual)
+            return raw ? QStringLiteral("[X]") : QStringLiteral("[ ]");
+        return QString::number(raw);
+    }
+
     if (field.type == ValueType::FloatingPoint)
     {
         double value = asFloat(raw, field.byteLength);
@@ -116,7 +125,7 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
     int offset = 0;
     const QRegularExpression fieldPattern(QStringLiteral(
         "^(?:([A-Za-z_][A-Za-z0-9_]*):)?"
-        "(u8|i8|[uif](?:16|32|64)(?:le|be)|(?:ascii|utf8|str)\\d+)"
+        "(u8|i8|(?:bit|bool|flag)[0-7]|[uif](?:16|32|64)(?:le|be)|(?:ascii|utf8|str)\\d+)"
         "(?:@(\\d+))?"
         "(?:&(0[xX][0-9A-Fa-f]+|\\d+))?"
         "(?:(>>|<<)(\\d+))?"
@@ -165,6 +174,20 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
                 ? ValueType::AsciiText : ValueType::Utf8Text;
             field.littleEndian = false;
         }
+        else if (token.startsWith(QStringLiteral("bit")) ||
+                 token.startsWith(QStringLiteral("bool")) ||
+                 token.startsWith(QStringLiteral("flag")))
+        {
+            field.type = ValueType::Bit;
+            field.byteLength = 1;
+            field.littleEndian = true;
+            field.hasMask = true;
+            field.shift = token.right(1).toInt();
+            field.mask = quint64(1) << field.shift;
+            field.bitDisplay = token.startsWith(QStringLiteral("bool")) ? BitDisplay::Boolean
+                : token.startsWith(QStringLiteral("flag")) ? BitDisplay::Visual
+                : BitDisplay::Numeric;
+        }
         else if (token == QStringLiteral("u8") || token == QStringLiteral("i8"))
         {
             field.type = token.startsWith('u') ? ValueType::Unsigned : ValueType::Signed;
@@ -196,6 +219,11 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
 
         if (!match.captured(4).isEmpty())
         {
+            if (field.type == ValueType::Bit)
+            {
+                if (error) *error = QStringLiteral("Bit fields already select a bit: %1").arg(originalToken);
+                return false;
+            }
             bool maskValid = false;
             field.mask = match.captured(4).toULongLong(&maskValid, 0);
             if (!maskValid || field.type == ValueType::FloatingPoint)
@@ -209,6 +237,11 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
 
         if (!match.captured(6).isEmpty())
         {
+            if (field.type == ValueType::Bit)
+            {
+                if (error) *error = QStringLiteral("Bit fields do not support shifts: %1").arg(originalToken);
+                return false;
+            }
             const int shiftAmount = match.captured(6).toInt();
             if (shiftAmount >= field.byteLength * 8)
             {
@@ -298,6 +331,14 @@ bool PayloadFormatter::compile(const QString &format, QString *error, bool repea
             (field.type == ValueType::FloatingPoint || field.hasTransform))
         {
             if (error) *error = QStringLiteral("Enum fields do not support numeric transforms: %1").arg(originalToken);
+            return false;
+        }
+
+        if (field.type == ValueType::Bit &&
+            (field.hasTransform || !field.unit.isEmpty() || field.precision >= 0))
+        {
+            if (error) *error = QStringLiteral("Bit fields do not support calculations, units, or precision: %1")
+                .arg(originalToken);
             return false;
         }
 

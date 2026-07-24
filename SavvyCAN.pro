@@ -89,6 +89,13 @@ SOURCES += main.cpp\
     re/udsscanwindow.cpp \
     re/udsworkbenchwindow.cpp \
     re/obd2workbenchwindow.cpp \
+    re/diagnosticgraphwindow.cpp \
+    re/obddashboardcanvas.cpp \
+    re/canopenworkbenchwindow.cpp \
+    re/busdiagnosticswindow.cpp \
+    re/aiworkbenchwindow.cpp \
+    re/aichattranscript.cpp \
+    re/aiactionregistry.cpp \
     connections/canbus.cpp \
     connections/canconnectionmodel.cpp \
     connections/connectionwindow.cpp \
@@ -187,6 +194,13 @@ HEADERS  += mainwindow.h \
     re/udsscanwindow.h \
     re/udsworkbenchwindow.h \
     re/obd2workbenchwindow.h \
+    re/diagnosticgraphwindow.h \
+    re/obddashboardcanvas.h \
+    re/canopenworkbenchwindow.h \
+    re/busdiagnosticswindow.h \
+    re/aiworkbenchwindow.h \
+    re/aichattranscript.h \
+    re/aiactionregistry.h \
     connections/canbus.h \
     connections/canconnectionmodel.h \
     connections/connectionwindow.h \

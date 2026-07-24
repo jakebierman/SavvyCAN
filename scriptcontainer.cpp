@@ -1,5 +1,8 @@
 #include <QJSValueIterator>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 
 #include "scriptcontainer.h"
 #include "connections/canconmanager.h"
@@ -11,6 +14,7 @@ ScriptContainer::ScriptContainer()
     canHelper = new CANScriptHelper(scriptEngine);
     isoHelper = new ISOTPScriptHelper(scriptEngine);
     udsHelper = new UDSScriptHelper(scriptEngine);
+    formatHelper = new PayloadFormatScriptHelper(scriptEngine);
     connect(&timer, SIGNAL(timeout()), this, SLOT(tick()));
 }
 
@@ -41,18 +45,28 @@ ScriptContainer::~ScriptContainer()
         delete udsHelper;
         udsHelper = nullptr;
     }
+    delete formatHelper;
+    formatHelper = nullptr;
     qDebug() << "end of destruct";
 }
 
 void ScriptContainer::compileScript()
 {
-    QJSValue result = scriptEngine->evaluate(scriptText, fileName);
-
     emit sendLog("Compiling script...");
 
     canHelper->clearFilters();
     isoHelper->clearFilters();
     udsHelper->clearFilters();
+    loadedModules.clear();
+
+    // Install helpers before evaluation so modules and top-level setup code can use them.
+    scriptEngine->globalObject().setProperty("host", scriptEngine->newQObject(this));
+    scriptEngine->globalObject().setProperty("can", scriptEngine->newQObject(canHelper));
+    scriptEngine->globalObject().setProperty("isotp", scriptEngine->newQObject(isoHelper));
+    scriptEngine->globalObject().setProperty("uds", scriptEngine->newQObject(udsHelper));
+    scriptEngine->globalObject().setProperty("format", scriptEngine->newQObject(formatHelper));
+
+    QJSValue result = scriptEngine->evaluate(scriptText, filePath.isEmpty() ? fileName : filePath);
 
     if (result.isError())
     {
@@ -66,17 +80,6 @@ void ScriptContainer::compileScript()
     else
     {
         compiledScript = result;
-
-        //Add a bunch of helper objects into javascript that the scripts
-        //can use to interact with the CAN buses
-        QJSValue hostObj = scriptEngine->newQObject(this);
-        scriptEngine->globalObject().setProperty("host", hostObj);
-        QJSValue canObj = scriptEngine->newQObject(canHelper);
-        scriptEngine->globalObject().setProperty("can", canObj);
-        QJSValue isoObj = scriptEngine->newQObject(isoHelper);
-        scriptEngine->globalObject().setProperty("isotp", isoObj);
-        QJSValue udsObj = scriptEngine->newQObject(udsHelper);
-        scriptEngine->globalObject().setProperty("uds", udsObj);
 
         //Find out which callbacks the script has created.
         setupFunction = scriptEngine->globalObject().property("setup");
@@ -98,6 +101,125 @@ void ScriptContainer::compileScript()
         }
         if (tickFunction.isCallable()) qDebug() << "tick exists";
     }
+}
+
+QJSValue ScriptContainer::require(QJSValue requestedName)
+{
+    QString requested = requestedName.toString().trimmed();
+    if (requested.isEmpty())
+    {
+        scriptEngine->throwError(QStringLiteral("host.require() needs a module filename"));
+        return QJSValue();
+    }
+    if (!requested.endsWith(QStringLiteral(".js"), Qt::CaseInsensitive))
+        requested += QStringLiteral(".js");
+
+    const QDir baseDir = filePath.isEmpty() ? QDir::current() : QFileInfo(filePath).absoluteDir();
+    const QString resolved = QFileInfo(baseDir.filePath(requested)).canonicalFilePath();
+    if (resolved.isEmpty())
+    {
+        scriptEngine->throwError(QStringLiteral("Module not found: %1").arg(requested));
+        return QJSValue();
+    }
+
+    const auto cached = loadedModules.constFind(resolved);
+    if (cached != loadedModules.constEnd())
+        return cached.value();
+
+    QFile moduleFile(resolved);
+    if (!moduleFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        scriptEngine->throwError(QStringLiteral("Cannot read module: %1").arg(resolved));
+        return QJSValue();
+    }
+
+    const QString source = QString::fromUtf8(moduleFile.readAll());
+    const QString wrapper = QStringLiteral(
+        "(function(exports, module, __filename, __dirname) {\n%1\n;return module.exports;\n})")
+        .arg(source);
+    QJSValue factory = scriptEngine->evaluate(wrapper, resolved);
+    if (factory.isError())
+        return factory;
+
+    QJSValue exports = scriptEngine->newObject();
+    QJSValue module = scriptEngine->newObject();
+    module.setProperty(QStringLiteral("exports"), exports);
+    QJSValueList args;
+    args << exports << module << resolved << QFileInfo(resolved).absolutePath();
+    QJSValue result = factory.call(args);
+    if (!result.isError())
+        loadedModules.insert(resolved, result);
+    return result;
+}
+
+PayloadFormatScriptHelper::PayloadFormatScriptHelper(QJSEngine *engine) :
+    scriptEngine(engine)
+{
+}
+
+QByteArray PayloadFormatScriptHelper::byteArray(const QJSValue &data, QString *error) const
+{
+    if (!data.isArray())
+    {
+        *error = QStringLiteral("Payload must be a JavaScript byte array");
+        return QByteArray();
+    }
+
+    const int length = data.property(QStringLiteral("length")).toInt();
+    QByteArray payload(length, 0);
+    for (int i = 0; i < length; ++i)
+    {
+        const int value = data.property(static_cast<quint32>(i)).toInt();
+        if (value < 0 || value > 255)
+        {
+            *error = QStringLiteral("Payload byte %1 is outside 0..255").arg(i);
+            return QByteArray();
+        }
+        payload[i] = static_cast<char>(value);
+    }
+    error->clear();
+    return payload;
+}
+
+QJSValue PayloadFormatScriptHelper::errorValue(const QString &message) const
+{
+    scriptEngine->throwError(message);
+    return QJSValue();
+}
+
+QJSValue PayloadFormatScriptHelper::decode(QJSValue expression, QJSValue data)
+{
+    PayloadFormatter formatter;
+    QString error;
+    if (!formatter.compile(expression.toString(), &error))
+        return errorValue(error);
+    const QByteArray payload = byteArray(data, &error);
+    if (!error.isEmpty())
+        return errorValue(error);
+    return QJSValue(formatter.format(payload));
+}
+
+QJSValue PayloadFormatScriptHelper::fields(QJSValue expression, QJSValue data)
+{
+    PayloadFormatter formatter;
+    QString error;
+    if (!formatter.compile(expression.toString(), &error))
+        return errorValue(error);
+    const QByteArray payload = byteArray(data, &error);
+    if (!error.isEmpty())
+        return errorValue(error);
+
+    const QVector<PayloadFormatter::FormattedField> decoded = formatter.formatFields(payload);
+    QJSValue result = scriptEngine->newArray(static_cast<uint>(decoded.size()));
+    for (int i = 0; i < decoded.size(); ++i)
+    {
+        QJSValue field = scriptEngine->newObject();
+        field.setProperty(QStringLiteral("name"), decoded.at(i).name);
+        field.setProperty(QStringLiteral("value"), decoded.at(i).value);
+        field.setProperty(QStringLiteral("unit"), decoded.at(i).unit);
+        result.setProperty(static_cast<quint32>(i), field);
+    }
+    return result;
 }
 
 void ScriptContainer::setScriptWindow(ScriptingWindow *win)
@@ -427,4 +549,3 @@ void UDSScriptHelper::newUDSMessage(UDS_MESSAGE msg)
     args.append(dataBytes);
     gotFrameFunction.call(args);
 }
-

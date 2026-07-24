@@ -13,6 +13,12 @@ Managing Scripts
 
 In the bottom left is the "Loaded Scripts" list. You can create a new script by clicking the "New" button below the list. The new script will have a random name until you save it. The "Del" button will delete the currently selected script but it will ask you first. The "Load" button will load a new script from a file. The "Save" button is above the main script view which is in the upper right of the window. "Revert" will revert the script to the last version that was compiled. Any changes you've made since compiling well be reverted. "Recompile" is used to compile the script and begin running the new version.
 
+Each loaded script has its own JavaScript engine, callbacks, filters, timer, and
+public variables. All loaded scripts continue running when another script is
+selected. Selecting **Scripting Interface** again opens another independent
+window with its own script list, editor layout, and log. This is useful for
+keeping unrelated jobs separate.
+
 Getting Script Status
 ======================
 
@@ -50,6 +56,59 @@ host.setTickInterval(interval) - If the interval is more than 0 then your tick c
 host.log(text) - Send text to the log window. It will be timestamped, marked according to which script sent it, and placed into the log window.
    
 host.addParameter("variablename") - Add the named variable to the list of public variables. From then on any changes that you make in the GUI will immediately show up in the script and any changes the script makes to a value will reflect in the GUI within 250ms. Remember to use quotes around the variable name. You want to pass the variable name, not its value.
+
+host.require("module.js") - Load a reusable JavaScript module relative to the
+current script and return `module.exports`. Modules are cached once per script
+engine. Qt 5.15 does not provide native ES module imports here, so SavvyCAN uses
+this small CommonJS-style interface:
+
+::
+
+    // helpers.js
+    module.exports = {
+        hex: function (value) { return "0x" + value.toString(16).toUpperCase(); }
+    };
+
+    // monitor.js, in the same directory
+    var helpers = host.require("helpers.js");
+    host.log(helpers.hex(0x7e8));
+
+Modules can use `host.require()` themselves. `exports`, `module`,
+`__filename`, and `__dirname` are available inside a module.
+
+The format Object
+=================
+
+The `format` object exposes the same payload formatter used by the main trace,
+UDS and OBD workbenches, dashboards, and decoded export.
+
+`format.decode(expression, data)` returns the complete formatted text.
+
+`format.fields(expression, data)` returns an array of objects containing
+`name`, `value`, and `unit`.
+
+::
+
+    var text = format.decode(
+        "rpm:u16be@0/4[rpm]{0} running:flag0@2",
+        [0x1C, 0x84, 0x01]);
+    host.log(text); // rpm=1825 rpm running=[X]
+
+    var values = format.fields("ready:bool0@0 temp:u8@1-40[C]", [1, 90]);
+    host.log(values[0].name + ": " + values[0].value);
+
+Invalid expressions and payload bytes outside `0..255` raise a JavaScript
+exception. See `payload_formatter.md` for the complete grammar, including bit
+displays, calculations, strings, and enums.
+
+Starter Templates
+=================
+
+The `examples` directory contains starter scripts named
+`ScriptTemplate_*.js`. They cover payload formatting, raw CAN monitoring, a
+UDS DID request, a CANopen heartbeat monitor, and reusable modules. Load a
+template, use **Save As** for your working copy, and edit its IDs and bus
+settings before transmitting.
 
 The can Object
 ===============
@@ -129,5 +188,4 @@ A full example script
             } 
         }
     }
-
 

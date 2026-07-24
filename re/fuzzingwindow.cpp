@@ -69,6 +69,46 @@ FuzzingWindow::~FuzzingWindow()
     delete ui;
 }
 
+bool FuzzingWindow::configureDraft(int bus, quint32 startId, quint32 endId, int intervalMs,
+                                   int burst, int bytes, QString *error)
+{
+    if (currentlyFuzzing)
+    {
+        if (error) *error = tr("Stop fuzzing before applying a new draft.");
+        return false;
+    }
+    if (startId > endId || endId > 0x1FFFFFFF || bytes < 1 || bytes > 8)
+    {
+        if (error) *error = tr("Invalid ID range or byte count.");
+        return false;
+    }
+    ui->cbBuses->setCurrentIndex(qBound(0, bus, ui->cbBuses->count() - 1));
+    ui->txtStartID->setText(QStringLiteral("0x%1").arg(startId, 0, 16).toUpper());
+    ui->txtEndID->setText(QStringLiteral("0x%1").arg(endId, 0, 16).toUpper());
+    ui->spinTiming->setValue(intervalMs);
+    ui->spinBurst->setValue(burst);
+    ui->spinBytes->setValue(bytes);
+    ui->rbRangeIDSel->setChecked(true);
+    return true;
+}
+
+bool FuzzingWindow::startForDuration(int durationMs, QString *error)
+{
+    if (currentlyFuzzing) {
+        if (error) *error = tr("Fuzzing is already active.");
+        return false;
+    }
+    if (durationMs < 100 || durationMs > 60000) {
+        if (error) *error = tr("AI fuzz duration must be between 100 ms and 60 seconds.");
+        return false;
+    }
+    toggleFuzzing();
+    QTimer::singleShot(durationMs, this, [this]() {
+        if (currentlyFuzzing) toggleFuzzing();
+    });
+    return currentlyFuzzing;
+}
+
 bool FuzzingWindow::eventFilter(QObject *obj, QEvent *event)
 {
     if (event->type() == QEvent::KeyRelease) {

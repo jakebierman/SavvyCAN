@@ -74,6 +74,11 @@ SnifferWindow::~SnifferWindow()
     delete ui;
 }
 
+QJsonObject SnifferWindow::aiState() const
+{
+    return mModel.aiState();
+}
+
 void SnifferWindow::readSettings()
 {
     QSettings settings;

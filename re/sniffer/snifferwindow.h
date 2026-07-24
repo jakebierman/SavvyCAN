@@ -37,6 +37,7 @@ public:
 
     void showEvent(QShowEvent*);
     void closeEvent(QCloseEvent*);
+    QJsonObject aiState() const;
 
 public slots:
     void update();

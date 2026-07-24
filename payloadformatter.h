@@ -36,8 +36,16 @@ private:
         Unsigned,
         Signed,
         FloatingPoint,
+        Bit,
         AsciiText,
         Utf8Text
+    };
+
+    enum class BitDisplay
+    {
+        Numeric,
+        Boolean,
+        Visual
     };
 
     struct Field
@@ -59,6 +67,7 @@ private:
         QMap<quint64, QString> enumValues;
         QString enumFallback;
         bool hasEnumFallback = false;
+        BitDisplay bitDisplay = BitDisplay::Numeric;
     };
 
     QVector<Field> fields;

@@ -5,6 +5,7 @@
 #include <QModelIndex>
 #include <QVariant>
 #include <QTimer>
+#include <QJsonObject>
 
 #include "can_structs.h"
 #include "connections/canconnection.h"
@@ -48,6 +49,7 @@ public:
     void setMuteNotched(bool val);
     void setExpireInterval(int newVal);
     void updateNotchPoint();
+    QJsonObject aiState() const;
 
 
 public slots:

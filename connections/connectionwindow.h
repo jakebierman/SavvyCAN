@@ -29,6 +29,11 @@ class ConnectionWindow : public QDialog
 public:
     explicit ConnectionWindow(QWidget *parent = 0);
     ~ConnectionWindow();
+    bool reconnectConnection(const QString &port, QString *error = nullptr);
+    bool setAllConnectionsSuspended(bool suspended, QString *error = nullptr);
+    bool addConnectionProfile(const QString &type, const QString &port,
+                              const QString &driver, int serialSpeed, int busSpeed,
+                              bool canFd, int dataRate, QString *error = nullptr);
 
 signals:
     void updateBusSettings(CANBus *bus);

@@ -23,6 +23,7 @@ public:
     explicit ScriptingWindow(const QVector<CANFrame> *frames, QWidget *parent = 0);
     void showEvent(QShowEvent*);
     ~ScriptingWindow();
+    void createDraft(const QString &name, const QString &source);
 
 public slots:
     void log(QString text);

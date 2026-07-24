@@ -4,6 +4,7 @@
 #include "sniffermodel.h"
 #include "snifferwindow.h"
 #include "SnifferDelegate.h"
+#include <QJsonArray>
 
 SnifferModel::SnifferModel(QObject *parent)
     : QAbstractItemModel(parent),
@@ -241,6 +242,30 @@ void SnifferModel::updateNotchPoint()
     }
 }
 
+QJsonObject SnifferModel::aiState() const
+{
+    QJsonArray items;
+    const QMap<quint32, SnifferItem*> &map = mFilter ? mFilters : mMap;
+    for (auto it = map.cbegin(); it != map.cend(); ++it)
+    {
+        QByteArray payload;
+        QByteArray notch;
+        for (int byte = 0; byte < 8; ++byte)
+        {
+            payload.append(char(it.value()->getData(byte)));
+            notch.append(char(it.value()->getNotchPattern(byte)));
+        }
+        items.append(QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("0x%1").arg(it.key(), 0, 16).toUpper()},
+            {QStringLiteral("payload"), QString::fromLatin1(payload.toHex())},
+            {QStringLiteral("notch_mask"), QString::fromLatin1(notch.toHex())}
+        });
+    }
+    return QJsonObject{{QStringLiteral("filtered"), mFilter},
+                       {QStringLiteral("mute_notched"), mMuteNotched},
+                       {QStringLiteral("items"), items}};
+}
+
 //Called from window with a timer (currently 200ms)
 void SnifferModel::refresh()
 {
@@ -350,5 +375,3 @@ void SnifferModel::unNotch()
     foreach(SnifferItem* item, map)
         item->notch(false);
 }
-
-

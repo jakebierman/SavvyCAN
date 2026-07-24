@@ -37,6 +37,12 @@ class FrameSenderWindow : public QDialog
 public:
     explicit FrameSenderWindow(const QVector<CANFrame> *frames, QWidget *parent = 0);
     ~FrameSenderWindow();
+    bool addFrameDraft(int bus, quint32 canId, bool extended, const QByteArray &payload,
+                       QString *error = nullptr);
+    bool addFrameLoopDraft(int bus, quint32 canId, bool extended, const QByteArray &payload,
+                           int count, int intervalMs, QString *error = nullptr);
+    bool enableDraftRow(int row, QString *error = nullptr);
+    void disableAllRows();
 
 private slots:
     void onCellChanged(int, int);

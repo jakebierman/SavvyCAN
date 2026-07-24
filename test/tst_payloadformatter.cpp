@@ -188,3 +188,14 @@ void TestPayloadFormatter::restoresAssignmentMapFromSettings()
     frame.setPayload(QByteArray::fromHex("1C84"));
     QCOMPARE(router.formatterFor(frame)->format(frame.payload()), QString("rpm=1825 rpm"));
 }
+void TestPayloadFormatter::formatsBitFields()
+{
+    PayloadFormatter formatter;
+    QString error;
+    QVERIFY2(formatter.compile(QStringLiteral(
+        "raw:bit0@0 enabled:bool1@0 warning:flag7@0 named:bit2@0{0:Idle,1:Active}"), &error),
+        qPrintable(error));
+
+    QCOMPARE(formatter.format(QByteArray(1, static_cast<char>(0x86))),
+             QStringLiteral("raw=0 enabled=True warning=[X] named=Active"));
+}

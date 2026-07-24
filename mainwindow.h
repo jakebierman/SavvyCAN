@@ -35,11 +35,15 @@
 #include "re/udsfirmwareuploaderwindow.h"
 #include "re/udsworkbenchwindow.h"
 #include "re/obd2workbenchwindow.h"
+#include "re/canopenworkbenchwindow.h"
+#include "re/busdiagnosticswindow.h"
+#include "re/aiworkbenchwindow.h"
 #include "canbridgewindow.h"
 
 class CANConnection;
 class ConnectionWindow;
 class ISOTP_InterpreterWindow;
+class QTabWidget;
 class ScriptingWindow;
 class QSortFilterProxyModel;
 class QDockWidget;
@@ -103,6 +107,10 @@ private slots:
     void showUDSScanWindow();
     void showUDSWorkbenchWindow();
     void showOBD2WorkbenchWindow();
+    void showCANopenWorkbenchWindow();
+    void showBusDiagnosticsWindow();
+    void showAIWorkbenchWindow();
+    void syncTripPlayback(qint64 elapsedMs);
     void showISOInterpreterWindow();
     void showSnifferWindow();
     void showBisectWindow();
@@ -169,8 +177,16 @@ private:
     Ui::MainWindow *ui;
     QSortFilterProxyModel *proxyModel;
     QDockWidget *payloadDock;
+    QDockWidget *aiAssistantDock;
+    bool payloadDockTraceVisible = true;
+    bool payloadDockTraceContext = true;
+    QTabWidget *workspaceTabs;
+    QWidget *traceWorkspace;
+    void setupWorkspaceTabs();
+    void activateWorkspace(QWidget *page, const QString &title);
     void populatePayloadDisplayCombo();
     void setupPayloadDock();
+    QString currentHelpPage() const;
     void syncPayloadDisplayControls(const QString &mode, const QString &format);
     QString formatPayloadForControls(const QByteArray &payload, bool includeRaw) const;
     void reloadPayloadProfiles();
@@ -220,13 +236,16 @@ private:
     DiscreteStateWindow *discreteStateWindow;
     UDSFirmwareUploaderWindow *udsFirmwareUploaderWindow;
     ConnectionWindow *connectionWindow;
-    ScriptingWindow *scriptingWindow;
+    QList<ScriptingWindow *> scriptingWindows;
     RangeStateWindow *rangeWindow;
     DBCLoadSaveWindow *dbcFileWindow;
     FuzzingWindow *fuzzingWindow;
     UDSScanWindow *udsScanWindow;
     UDSWorkbenchWindow *udsWorkbenchWindow;
     OBD2WorkbenchWindow *obd2WorkbenchWindow;
+    CANopenWorkbenchWindow *canopenWorkbenchWindow;
+    BusDiagnosticsWindow *busDiagnosticsWindow;
+    AIWorkbenchWindow *aiWorkbenchWindow;
     ISOTP_InterpreterWindow *isoWindow;
     SnifferWindow* snifferWindow;
     MotorControllerConfigWindow *motorctrlConfigWindow;
@@ -239,6 +258,7 @@ private:
     //various private storage
     QLabel lbStatusConnected;
     QLabel lbStatusFilename;
+    QLabel lbAIStatus;
     QLabel lbStatusDatabase;
     QLabel lbHelp;
     int normalRowHeight;
@@ -264,6 +284,12 @@ private:
     void manageRowExpansion();
     void disableAutoRowExpansion();
     void createSenderRow();
+    bool addTraceSenderLoop(int bus, quint32 canId, bool extended,
+                            const QByteArray &payload, int count,
+                            int intervalMs, QString *error);
+    void handleAIAction(const QJsonObject &action);
+    void handleAIActions(const QJsonArray &actions);
+    QJsonObject aiApplicationContext() const;
     void processSenderCellChange(int line, int col);
 };
 

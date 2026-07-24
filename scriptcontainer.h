@@ -6,6 +6,7 @@
 #include "bus_protocols/isotp_handler.h"
 #include "bus_protocols/isotp_message.h"
 #include "bus_protocols/uds_handler.h"
+#include "payloadformatter.h"
 
 #include <QElapsedTimer>
 #include <QJSEngine>
@@ -13,6 +14,22 @@
 #include <qlistwidget.h>
 
 class ScriptingWindow;
+
+class PayloadFormatScriptHelper: public QObject
+{
+    Q_OBJECT
+public:
+    explicit PayloadFormatScriptHelper(QJSEngine *engine);
+
+public slots:
+    QJSValue decode(QJSValue format, QJSValue data);
+    QJSValue fields(QJSValue format, QJSValue data);
+
+private:
+    QByteArray byteArray(const QJSValue &data, QString *error) const;
+    QJSValue errorValue(const QString &message) const;
+    QJSEngine *scriptEngine;
+};
 
 class CANScriptHelper: public QObject
 {
@@ -93,6 +110,7 @@ public slots:
     void setTickInterval(QJSValue interval);
     void log(QJSValue logString);
     void addParameter(QJSValue name);
+    QJSValue require(QJSValue fileName);
     void updateValuesTable(QTableWidget *widget);
     void updateParameter(QString name, QString value);
 
@@ -112,7 +130,9 @@ private:
     CANScriptHelper *canHelper;
     ISOTPScriptHelper *isoHelper;
     UDSScriptHelper *udsHelper;
+    PayloadFormatScriptHelper *formatHelper;
     QVector<QString> scriptParams;
+    QMap<QString, QJSValue> loadedModules;
 };
 
 #endif // SCRIPTCONTAINER_H

@@ -68,6 +68,21 @@ ScriptingWindow::~ScriptingWindow()
     delete ui;
 }
 
+void ScriptingWindow::createDraft(const QString &name, const QString &source)
+{
+    createNewScript();
+    if (!currentScript) return;
+    const QString cleanName = name.trimmed();
+    if (!cleanName.isEmpty())
+    {
+        currentScript->fileName = cleanName.endsWith(QStringLiteral(".js"))
+            ? cleanName : cleanName + QStringLiteral(".js");
+        ui->listLoadedScripts->currentItem()->setText(currentScript->fileName);
+    }
+    currentScript->scriptText = source;
+    editor->setPlainText(source);
+}
+
 
 void ScriptingWindow::newFrames(const CANConnection* pConn, const QVector<CANFrame>& pFrames)
 {

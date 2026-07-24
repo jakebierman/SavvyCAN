@@ -49,6 +49,32 @@ serial:str6@20
 
 Text fields support names and offsets but do not support masks, shifts, calculations, units, precision, or enums.
 
+## Bit types
+
+Bit types read one selected bit from a byte. The number at the end is the bit
+position from `0` (least significant) through `7` (most significant):
+
+| Type | False display | True display |
+| --- | --- | --- |
+| `bitN` | `0` | `1` |
+| `boolN` | `False` | `True` |
+| `flagN` | `[ ]` | `[X]` |
+
+```text
+enabled:bit0@0
+ignition:bool3@1
+warning:flag7@2
+```
+
+Enums can replace any of these built-in displays:
+
+```text
+door:bit2@0{0:Closed,1:Open}
+```
+
+Use the same explicit byte offset for several bits in one byte. Bit fields do
+not accept a second mask or shift, calculations, units, or precision.
+
 ## Byte positions
 
 Offsets are zero-based. `@0` reads from the first payload byte and `@3` reads from the fourth. A field without an explicit offset begins immediately after the preceding field:
@@ -158,6 +184,12 @@ Several values extracted from the same flags byte:
 
 ```text
 ready:u8@0&1{0:No,1:Yes} fault:u8@0&2>>1{0:Clear,1:Set} mode:u8@0&0x0C>>2{0:Off,1:Idle,2:Run,*:Reserved}
+```
+
+The same one-bit fields with the shorter bit syntax:
+
+```text
+ready:bool0@0 fault:flag1@0
 ```
 
 A mixed fixed-layout identification response:

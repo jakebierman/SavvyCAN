@@ -187,7 +187,11 @@ void FrameSenderObject::timerTriggered()
             for (int j = 0; j < sendData->triggers.count(); j++)
             {
                 trigger = &sendData->triggers[j];
-                //if ( (trigger->currCount >= trigger->maxCount) || (trigger->maxCount == -1) ) continue; //don't process if we've sent max frames we were supposed to
+                if (trigger->maxCount >= 0 && trigger->currCount >= trigger->maxCount)
+                {
+                    sendData->enabled = false;
+                    continue;
+                }
                 if (!trigger->readyCount) continue; //don't tick if not ready to tick
                 //is it time to fire?
                 trigger->msCounter += elapsed; //gives proper tracking even if timer doesn't fire as fast as it should
@@ -454,4 +458,3 @@ CANFrame* FrameSenderObject::lookupFrame(int ID, int bus)
 
     return nullptr;
 }
-

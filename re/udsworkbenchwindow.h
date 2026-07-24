@@ -12,11 +12,15 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QJsonArray;
+class QJsonObject;
 class QFile;
+class QListWidget;
+class QProgressBar;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
 class QTextEdit;
+class DiagnosticGraphWindow;
 
 class UDSWorkbenchWindow : public QDialog
 {
@@ -25,6 +29,10 @@ class UDSWorkbenchWindow : public QDialog
 public:
     explicit UDSWorkbenchWindow(QWidget *parent = nullptr);
     ~UDSWorkbenchWindow();
+    bool addDidRequest(const QString &name, const QString &did, const QString &format,
+                       int pollMs, QString *error = nullptr);
+    bool executeAIRequest(const QString &operation, const QJsonObject &arguments,
+                          QString *error = nullptr);
 
 private slots:
     void connectEndpoint();
@@ -38,15 +46,29 @@ private slots:
     void requestDtcs();
     void clearDtcs();
     void sendRoutineControl();
+    void sendDetailedDtcRequest();
+    void sendGuardedControl();
+    void requestSecuritySeed();
+    void sendSecurityKey();
     void toggleCsvLogging();
     void sendManualRequest();
+    void startDidScan();
+    void resumeDidScan();
+    void stopDidScan();
+    void addSelectedScannedDids();
+    void saveDidScan();
+    void loadDidScan();
+    void startServiceScan();
+    void stopServiceScan();
     void gotUDSReply(UDS_MESSAGE message);
     void requestTimedOut();
     void sendTesterPresent();
+    void showDiagnosticGraph();
 
 private:
     enum DidColumn { DidEnabled, DidName, DidIdentifier, DidFormat, DidPollMs, DidRaw, DidDecoded, DidStatus, DidUpdated, DidColumnCount };
-    enum RequestContext { ContextNone, ContextSession, ContextManual, ContextDtcRead, ContextDtcClear, ContextRoutine };
+    enum RequestContext { ContextNone, ContextSession, ContextManual, ContextDtcRead, ContextDtcClear,
+                          ContextRoutine, ContextDidScan, ContextServiceScan, ContextControl, ContextSecurity };
 
     void buildUi();
     void sendNextDid();
@@ -58,6 +80,11 @@ private:
     QJsonArray didRowsToJson() const;
     void loadDidRows(const QJsonArray &rows);
     void sendServiceRequest(int service, const QByteArray &data, RequestContext context);
+    void sendNextDidScan();
+    void finishDidScan(const QString &status);
+    void sendNextServiceScan();
+    void finishServiceScan(const QString &status);
+    QString serviceName(int service) const;
     QString decodeDtcResponse(const QByteArray &payload) const;
     void appendCsvRow(int row);
     uint32_t parseNumber(const QString &text, bool *ok = nullptr) const;
@@ -76,11 +103,30 @@ private:
     QLineEdit *manualPayloadEdit;
     QTextEdit *manualResponse;
     QLineEdit *dtcStatusMaskEdit;
+    QComboBox *dtcDetailTypeCombo;
+    QLineEdit *dtcDetailDataEdit;
     QTextEdit *dtcResponse;
     QComboBox *routineTypeCombo;
     QLineEdit *routineIdEdit;
     QLineEdit *routineDataEdit;
     QTextEdit *routineResponse;
+    QComboBox *controlServiceCombo;
+    QLineEdit *controlDataEdit;
+    QTextEdit *controlResponse;
+    QSpinBox *securityLevelSpin;
+    QLineEdit *securityKeyEdit;
+    QTextEdit *securityResponse;
+    QLineEdit *scanStartEdit;
+    QLineEdit *scanEndEdit;
+    QSpinBox *scanTimeoutSpin;
+    QProgressBar *scanProgress;
+    QListWidget *scanResults;
+    QPushButton *scanStartButton;
+    QPushButton *scanResumeButton;
+    QPushButton *scanStopButton;
+    QListWidget *serviceScanResults;
+    QPushButton *serviceScanStartButton;
+    QPushButton *serviceScanStopButton;
     QPushButton *csvLogButton;
     QTextEdit *eventLog;
     QFile *csvLogFile = nullptr;
@@ -92,6 +138,13 @@ private:
     int activeService = -1;
     RequestContext requestContext = ContextNone;
     bool endpointConnected = false;
+    DiagnosticGraphWindow *diagnosticGraph = nullptr;
+    bool didScanActive = false;
+    bool serviceScanActive = false;
+    int scanCurrentDid = 0;
+    int scanEndDid = 0;
+    QQueue<int> serviceScanQueue;
+    int normalResponseTimeout = 1500;
 };
 
 #endif // UDSWORKBENCHWINDOW_H

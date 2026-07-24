@@ -2,16 +2,21 @@
 
 #include "connections/canconmanager.h"
 #include "payloadformatter.h"
+#include "diagnosticgraphwindow.h"
+#include "obddashboardcanvas.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,13 +26,17 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSettings>
 #include <QSaveFile>
+#include <QScrollArea>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextEdit>
+#include <QTextStream>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -131,6 +140,197 @@ const KnownPid knownPids[] = {
     {0xA4, "Transmission actual gear", ""}, {0xA5, "Commanded diesel exhaust fluid dosing", ""},
     {0xA6, "Odometer", "u32be/10[km]{1}"}
 };
+
+QString dashboardPidName(int pid)
+{
+    for (const KnownPid &known : knownPids)
+        if (known.pid == pid) return QObject::tr(known.name);
+    return QStringLiteral("PID 0x%1").arg(pid, 2, 16, QLatin1Char('0')).toUpper();
+}
+
+QSet<QString> pidDescriptionWords(QString text)
+{
+    text = text.toLower();
+    text.replace(QStringLiteral("revolutions per minute"), QStringLiteral(" rpm "));
+    text.replace(QStringLiteral("engine speed"), QStringLiteral(" rpm "));
+    text.replace(QStringLiteral("vehicle velocity"), QStringLiteral(" vehicle speed "));
+    text.replace(QStringLiteral("coolant temp"), QStringLiteral(" coolant temperature "));
+    text.replace(QStringLiteral("water temperature"), QStringLiteral(" coolant temperature "));
+    text.replace(QStringLiteral("mass airflow"), QStringLiteral(" maf air flow "));
+    text.replace(QStringLiteral("mass air flow"), QStringLiteral(" maf air flow "));
+    text.replace(QStringLiteral("manifold absolute pressure"), QStringLiteral(" map manifold pressure "));
+    text.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral(" "));
+    const QSet<QString> ignored = {
+        QStringLiteral("the"), QStringLiteral("a"), QStringLiteral("an"),
+        QStringLiteral("pid"), QStringLiteral("request"), QStringLiteral("reading"),
+        QStringLiteral("value"), QStringLiteral("live"), QStringLiteral("show"),
+        QStringLiteral("add"), QStringLiteral("sensor"), QStringLiteral("data")
+    };
+    QSet<QString> result;
+    for (QString word : text.split(QLatin1Char(' '), Qt::SkipEmptyParts))
+    {
+        if (word == QStringLiteral("temp")) word = QStringLiteral("temperature");
+        if (!ignored.contains(word)) result.insert(word);
+    }
+    return result;
+}
+
+QStringList parseCsvRow(const QString &line)
+{
+    QStringList fields;
+    QString field;
+    bool quoted = false;
+    for (int i = 0; i < line.size(); ++i)
+    {
+        const QChar ch = line.at(i);
+        if (ch == QLatin1Char('"'))
+        {
+            if (quoted && i + 1 < line.size() && line.at(i + 1) == QLatin1Char('"'))
+            {
+                field += QLatin1Char('"');
+                ++i;
+            }
+            else quoted = !quoted;
+        }
+        else if (ch == QLatin1Char(',') && !quoted)
+        {
+            fields << field;
+            field.clear();
+        }
+        else field += ch;
+    }
+    fields << field;
+    return fields;
+}
+
+bool resolveKnownPidDescription(const QString &description, int *pid,
+                                QString *name, QString *format, double *confidence)
+{
+    const QSet<QString> query = pidDescriptionWords(description);
+    if (query.isEmpty()) return false;
+    double bestScore = 0.0;
+    const KnownPid *best = nullptr;
+    for (const KnownPid &known : knownPids)
+    {
+        const QSet<QString> candidate = pidDescriptionWords(QString::fromLatin1(known.name));
+        int intersection = 0;
+        for (const QString &word : query)
+            if (candidate.contains(word)) ++intersection;
+        const int unionSize = query.size() + candidate.size() - intersection;
+        double score = unionSize ? double(intersection) / double(unionSize) : 0.0;
+        if (candidate == query) score = 1.0;
+        else if (query.size() >= 2 && intersection == query.size())
+            score = qMax(score, 0.9);
+        else if (query.size() == 1 && intersection == 1)
+        {
+            int matchingNames = 0;
+            const QString word = *query.constBegin();
+            for (const KnownPid &other : knownPids)
+                if (pidDescriptionWords(QString::fromLatin1(other.name)).contains(word))
+                    ++matchingNames;
+            if (matchingNames == 1) score = qMax(score, 0.85);
+        }
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = &known;
+        }
+    }
+    if (!best || bestScore < 0.55) return false;
+    if (pid) *pid = best->pid;
+    if (name) *name = QObject::tr(best->name);
+    if (format) *format = QString::fromLatin1(best->format);
+    if (confidence) *confidence = bestScore;
+    return true;
+}
+
+bool configureDashboardWidget(QWidget *parent, OBDDashboardCanvas::WidgetConfig *config)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Dashboard widget"));
+    QFormLayout *form = new QFormLayout(&dialog);
+    QComboBox *pid = new QComboBox(&dialog);
+    pid->setEditable(true);
+    for (const KnownPid &known : knownPids)
+        pid->addItem(QStringLiteral("0x%1 - %2").arg(known.pid, 2, 16, QLatin1Char('0'))
+                     .arg(QObject::tr(known.name)).toUpper(), known.pid);
+    const int pidIndex = pid->findData(config->pid);
+    if (pidIndex >= 0) pid->setCurrentIndex(pidIndex);
+    else pid->setEditText(QStringLiteral("0x%1").arg(config->pid, 2, 16, QLatin1Char('0')).toUpper());
+
+    QComboBox *type = new QComboBox(&dialog);
+    type->addItem(QObject::tr("Digital readout"), QStringLiteral("digital"));
+    type->addItem(QObject::tr("Level"), QStringLiteral("level"));
+    type->addItem(QObject::tr("Gauge"), QStringLiteral("gauge"));
+    type->addItem(QObject::tr("Text / string"), QStringLiteral("text"));
+    type->setCurrentIndex(qMax(0, type->findData(config->type)));
+    QString suggestedName = dashboardPidName(config->pid);
+    QLineEdit *title = new QLineEdit(config->title.isEmpty() ? suggestedName : config->title, &dialog);
+    QLineEdit *format = new QLineEdit(config->format, &dialog);
+    format->setPlaceholderText(QObject::tr("Empty uses automatic PID decoding"));
+    QDoubleSpinBox *minimum = new QDoubleSpinBox(&dialog);
+    QDoubleSpinBox *maximum = new QDoubleSpinBox(&dialog);
+    for (QDoubleSpinBox *field : {minimum, maximum})
+    {
+        field->setRange(-1000000000.0, 1000000000.0);
+        field->setDecimals(3);
+    }
+    minimum->setValue(config->minimum);
+    maximum->setValue(config->maximum);
+    form->addRow(QObject::tr("PID"), pid);
+    form->addRow(QObject::tr("Display"), type);
+    form->addRow(QObject::tr("Widget name"), title);
+    form->addRow(QObject::tr("Payload format"), format);
+    form->addRow(QObject::tr("Minimum"), minimum);
+    form->addRow(QObject::tr("Maximum"), maximum);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                                     Qt::Horizontal, &dialog);
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(pid, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [&](int index) {
+        if (index < 0) return;
+        const QString nextSuggestion = dashboardPidName(pid->itemData(index).toInt());
+        if (title->text().trimmed().isEmpty() || title->text() == suggestedName)
+            title->setText(nextSuggestion);
+        suggestedName = nextSuggestion;
+    });
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        QString pidText = pid->currentText().section(QStringLiteral(" - "), 0, 0).trimmed();
+        const bool hex = pidText.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive);
+        if (hex) pidText = pidText.mid(2);
+        bool ok = false;
+        const int parsedPid = pidText.toInt(&ok, hex ? 16 : 10);
+        if (!ok || parsedPid < 0 || parsedPid > 0xFF)
+        {
+            QMessageBox::warning(&dialog, QObject::tr("Invalid PID"),
+                                 QObject::tr("Enter a PID between 0x00 and 0xFF."));
+            return;
+        }
+        if (maximum->value() <= minimum->value())
+        {
+            QMessageBox::warning(&dialog, QObject::tr("Invalid range"),
+                                 QObject::tr("Maximum must be greater than minimum."));
+            return;
+        }
+        if (title->text().trimmed().isEmpty() || title->text() == suggestedName)
+            title->setText(dashboardPidName(parsedPid));
+        config->pid = parsedPid;
+        config->type = type->currentData().toString();
+        config->title = title->text();
+        config->format = format->text();
+        config->minimum = minimum->value();
+        config->maximum = maximum->value();
+        dialog.accept();
+    });
+    return dialog.exec() == QDialog::Accepted;
+}
+}
+
+bool OBD2WorkbenchWindow::resolvePidDescription(const QString &description, int *pid,
+                                                QString *name, QString *format,
+                                                double *confidence)
+{
+    return resolveKnownPidDescription(description, pid, name, format, confidence);
 }
 
 OBD2WorkbenchWindow::OBD2WorkbenchWindow(QWidget *parent) : QDialog(parent), handler(new UDS_HANDLER)
@@ -143,11 +343,14 @@ OBD2WorkbenchWindow::OBD2WorkbenchWindow(QWidget *parent) : QDialog(parent), han
     connect(handler, &UDS_HANDLER::newUDSMessage, this, &OBD2WorkbenchWindow::gotReply);
     connect(&responseTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::requestFinished);
     connect(&pollTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::pollPids);
+    tripPlaybackTimer.setSingleShot(true);
+    connect(&tripPlaybackTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::advanceTripPlayback);
 }
 
 OBD2WorkbenchWindow::~OBD2WorkbenchWindow()
 {
     saveSettings();
+    if (tripLogFile) { tripLogFile->close(); delete tripLogFile; }
     handler->setReception(false);
     delete handler;
 }
@@ -192,6 +395,8 @@ void OBD2WorkbenchWindow::buildUi()
     QPushButton *saveButton = new QPushButton(tr("Save PID list"), livePage);
     QPushButton *selectedButton = new QPushButton(tr("Request selected"), livePage);
     QPushButton *enabledButton = new QPushButton(tr("Request enabled"), livePage);
+    QPushButton *graphButton = new QPushButton(tr("Live graph"), livePage);
+    tripRecordButton = new QPushButton(tr("Start trip log"), livePage);
     pollCheck = new QCheckBox(tr("Poll"), livePage);
     pollIntervalSpin = new QSpinBox(livePage);
     pollIntervalSpin->setRange(200, 60000);
@@ -204,6 +409,8 @@ void OBD2WorkbenchWindow::buildUi()
     liveButtons->addStretch();
     liveButtons->addWidget(pollCheck);
     liveButtons->addWidget(pollIntervalSpin);
+    liveButtons->addWidget(graphButton);
+    liveButtons->addWidget(tripRecordButton);
     liveButtons->addWidget(selectedButton);
     liveButtons->addWidget(enabledButton);
     liveLayout->addLayout(liveButtons);
@@ -213,6 +420,8 @@ void OBD2WorkbenchWindow::buildUi()
     connect(saveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::savePidList);
     connect(selectedButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestSelectedPid);
     connect(enabledButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestEnabledPids);
+    connect(graphButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::showDiagnosticGraph);
+    connect(tripRecordButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::toggleTripRecording);
     connect(pollCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled) pollTimer.start(pollIntervalSpin->value()); else pollTimer.stop();
     });
@@ -220,6 +429,75 @@ void OBD2WorkbenchWindow::buildUi()
         if (pollTimer.isActive()) pollTimer.start(value);
     });
     tabs->addTab(livePage, tr("Live data"));
+
+    QWidget *dashboardPage = new QWidget(tabs);
+    QVBoxLayout *dashboardLayout = new QVBoxLayout(dashboardPage);
+    QHBoxLayout *dashboardControls = new QHBoxLayout;
+    dashboardPidCombo = new QComboBox(dashboardPage);
+    dashboardPidCombo->setEditable(true);
+    for (const KnownPid &known : knownPids)
+        dashboardPidCombo->addItem(QStringLiteral("0x%1 - %2").arg(known.pid, 2, 16, QLatin1Char('0'))
+            .arg(tr(known.name)).toUpper(), known.pid);
+    QPushButton *dashboardAddButton = new QPushButton(tr("Add widget"), dashboardPage);
+    QPushButton *dashboardRemoveButton = new QPushButton(tr("Remove selected"), dashboardPage);
+    QCheckBox *dashboardEditMode = new QCheckBox(tr("Edit layout"), dashboardPage);
+    dashboardColumnsSpin = new QSpinBox(dashboardPage);
+    dashboardColumnsSpin->setRange(4, 16);
+    dashboardColumnsSpin->setValue(12);
+    QPushButton *dashboardLoadButton = new QPushButton(tr("Load layout"), dashboardPage);
+    QPushButton *dashboardSaveButton = new QPushButton(tr("Save layout"), dashboardPage);
+    dashboardControls->addWidget(new QLabel(tr("PID"), dashboardPage));
+    dashboardControls->addWidget(dashboardPidCombo, 1);
+    dashboardControls->addWidget(dashboardAddButton);
+    dashboardControls->addWidget(dashboardRemoveButton);
+    dashboardControls->addWidget(dashboardEditMode);
+    dashboardControls->addWidget(new QLabel(tr("Columns"), dashboardPage));
+    dashboardControls->addWidget(dashboardColumnsSpin);
+    dashboardControls->addWidget(dashboardLoadButton);
+    dashboardControls->addWidget(dashboardSaveButton);
+    dashboardLayout->addLayout(dashboardControls);
+    QScrollArea *dashboardScroll = new QScrollArea(dashboardPage);
+    dashboardScroll->setWidgetResizable(true);
+    widgetDashboardCanvas = new OBDDashboardCanvas(dashboardScroll);
+    dashboardScroll->setWidget(widgetDashboardCanvas);
+    dashboardLayout->addWidget(dashboardScroll, 1);
+    connect(dashboardAddButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::addDashboardPid);
+    connect(dashboardRemoveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::removeDashboardPid);
+    connect(dashboardLoadButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDashboardLayout);
+    connect(dashboardSaveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::saveDashboardLayout);
+    connect(dashboardColumnsSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int value) { widgetDashboardCanvas->setColumns(value); });
+    connect(dashboardEditMode, &QCheckBox::toggled, widgetDashboardCanvas, &OBDDashboardCanvas::setEditMode);
+    widgetDashboardCanvas->setEditHandler([this](OBDDashboardCanvas::WidgetConfig *) {
+        editDashboardWidget();
+    });
+    tabs->addTab(dashboardPage, tr("Dashboard"));
+
+    QWidget *playbackPage = new QWidget(tabs);
+    QVBoxLayout *playbackLayout = new QVBoxLayout(playbackPage);
+    QHBoxLayout *playbackControls = new QHBoxLayout;
+    QPushButton *tripLoadButton = new QPushButton(tr("Load trip log"), playbackPage);
+    tripPlaybackButton = new QPushButton(tr("Play"), playbackPage);
+    tripPlaybackButton->setEnabled(false);
+    playbackControls->addWidget(tripLoadButton);
+    playbackControls->addWidget(tripPlaybackButton);
+    playbackControls->addStretch();
+    playbackLayout->addLayout(playbackControls);
+    tripPlaybackSlider = new QSlider(Qt::Horizontal, playbackPage);
+    tripPlaybackSlider->setRange(0, 0);
+    playbackLayout->addWidget(tripPlaybackSlider);
+    tripPlaybackTable = new QTableWidget(0, 7, playbackPage);
+    tripPlaybackTable->setHorizontalHeaderLabels(
+        {tr("Timestamp"), tr("Bus"), tr("ECU"), tr("PID"), tr("Name"), tr("Raw"), tr("Decoded")});
+    tripPlaybackTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tripPlaybackTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    tripPlaybackTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tripPlaybackTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    playbackLayout->addWidget(tripPlaybackTable, 1);
+    connect(tripLoadButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadTripPlayback);
+    connect(tripPlaybackButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::toggleTripPlayback);
+    connect(tripPlaybackSlider, &QSlider::valueChanged, this, &OBD2WorkbenchWindow::setTripPlaybackRow);
+    tabs->addTab(playbackPage, tr("Trip playback"));
 
     QWidget *discoveryPage = new QWidget(tabs);
     QVBoxLayout *discoveryLayout = new QVBoxLayout(discoveryPage);
@@ -251,12 +529,18 @@ void OBD2WorkbenchWindow::buildUi()
     QPushButton *pendingButton = new QPushButton(tr("Pending (07)"), dtcPage);
     QPushButton *permanentButton = new QPushButton(tr("Permanent (0A)"), dtcPage);
     QPushButton *clearButton = new QPushButton(tr("Clear DTCs (04)"), dtcPage);
+    QPushButton *loadDtcButton = new QPushButton(tr("Load DTC database"), dtcPage);
+    QPushButton *reportButton = new QPushButton(tr("Export report"), dtcPage);
     dtcButtons->addWidget(storedButton);
     dtcButtons->addWidget(pendingButton);
     dtcButtons->addWidget(permanentButton);
+    dtcButtons->addWidget(loadDtcButton);
+    dtcButtons->addWidget(reportButton);
     dtcButtons->addStretch();
     dtcButtons->addWidget(clearButton);
     dtcLayout->addLayout(dtcButtons);
+    dtcDatabaseStatus = new QLabel(tr("No DTC description database loaded"), dtcPage);
+    dtcLayout->addWidget(dtcDatabaseStatus);
     dtcOutput = new QTextEdit(dtcPage);
     dtcOutput->setReadOnly(true);
     dtcLayout->addWidget(dtcOutput);
@@ -264,7 +548,53 @@ void OBD2WorkbenchWindow::buildUi()
     connect(pendingButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::readPendingDtcs);
     connect(permanentButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::readPermanentDtcs);
     connect(clearButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::clearDtcs);
+    connect(loadDtcButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDtcDatabase);
+    connect(reportButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::exportDiagnosticReport);
     tabs->addTab(dtcPage, tr("DTCs"));
+
+    QWidget *freezePage = new QWidget(tabs);
+    QVBoxLayout *freezeLayout = new QVBoxLayout(freezePage);
+    QHBoxLayout *freezeControls = new QHBoxLayout;
+    freezePidEdit = new QLineEdit(QStringLiteral("0x02"), freezePage);
+    freezeFrameSpin = new QSpinBox(freezePage);
+    freezeFrameSpin->setRange(0, 255);
+    QPushButton *freezeButton = new QPushButton(tr("Request freeze frame"), freezePage);
+    QPushButton *freezeScanButton = new QPushButton(tr("Scan frame PIDs"), freezePage);
+    freezeControls->addWidget(new QLabel(tr("PID"), freezePage));
+    freezeControls->addWidget(freezePidEdit);
+    freezeControls->addWidget(new QLabel(tr("Frame"), freezePage));
+    freezeControls->addWidget(freezeFrameSpin);
+    freezeControls->addWidget(freezeButton);
+    freezeControls->addWidget(freezeScanButton);
+    freezeControls->addStretch();
+    freezeLayout->addLayout(freezeControls);
+    freezeOutput = new QTextEdit(freezePage);
+    freezeOutput->setReadOnly(true);
+    freezeLayout->addWidget(freezeOutput);
+    connect(freezeButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestFreezeFrame);
+    connect(freezeScanButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::scanFreezeFramePids);
+    tabs->addTab(freezePage, tr("Freeze frames"));
+
+    QWidget *monitorPage = new QWidget(tabs);
+    QVBoxLayout *monitorLayout = new QVBoxLayout(monitorPage);
+    QHBoxLayout *monitorControls = new QHBoxLayout;
+    monitorMidEdit = new QLineEdit(QStringLiteral("0x00"), monitorPage);
+    QPushButton *monitorButton = new QPushButton(tr("Request monitor results"), monitorPage);
+    QPushButton *monitorScalingButton = new QPushButton(tr("Load UAS table"), monitorPage);
+    monitorControls->addWidget(new QLabel(tr("Monitor ID"), monitorPage));
+    monitorControls->addWidget(monitorMidEdit);
+    monitorControls->addWidget(monitorButton);
+    monitorControls->addWidget(monitorScalingButton);
+    monitorControls->addStretch();
+    monitorLayout->addLayout(monitorControls);
+    monitorScalingStatus = new QLabel(tr("Raw Mode 06 values (no UAS conversion table loaded)"), monitorPage);
+    monitorLayout->addWidget(monitorScalingStatus);
+    monitorOutput = new QTextEdit(monitorPage);
+    monitorOutput->setReadOnly(true);
+    monitorLayout->addWidget(monitorOutput);
+    connect(monitorButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestMonitorResults);
+    connect(monitorScalingButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadMode06Scalings);
+    tabs->addTab(monitorPage, tr("Monitor tests"));
 
     QWidget *infoPage = new QWidget(tabs);
     QVBoxLayout *infoLayout = new QVBoxLayout(infoPage);
@@ -287,6 +617,176 @@ void OBD2WorkbenchWindow::buildUi()
     eventLog->setReadOnly(true);
     eventLog->setMaximumHeight(120);
     root->addWidget(eventLog);
+}
+
+void OBD2WorkbenchWindow::addDashboardPid()
+{
+    bool ok = false;
+    const int pid = parseNumber(dashboardPidCombo->currentText().section(QStringLiteral(" - "), 0, 0), &ok);
+    if (!ok || pid > 0xFF) { eventLog->append(tr("Invalid dashboard PID")); return; }
+    OBDDashboardCanvas::WidgetConfig config;
+    config.pid = pid;
+    config.title = dashboardPidName(pid);
+    config.format = knownPidFormat(pid);
+    if (!configureDashboardWidget(this, &config)) return;
+    int bottom = 0;
+    for (const OBDDashboardCanvas::WidgetConfig &existing : widgetDashboardCanvas->configs())
+        bottom = qMax(bottom, existing.y + existing.height);
+    config.y = bottom;
+    widgetDashboardCanvas->addWidgetConfig(config);
+}
+
+void OBD2WorkbenchWindow::removeDashboardPid()
+{
+    widgetDashboardCanvas->removeSelected();
+}
+
+void OBD2WorkbenchWindow::editDashboardWidget()
+{
+    OBDDashboardCanvas::WidgetConfig *config = widgetDashboardCanvas->selectedConfig();
+    if (!config) { eventLog->append(tr("Right-click a dashboard widget to edit it")); return; }
+    if (!configureDashboardWidget(this, config)) return;
+    const QVector<OBDDashboardCanvas::WidgetConfig> configs = widgetDashboardCanvas->configs();
+    widgetDashboardCanvas->setConfigs(configs);
+}
+
+void OBD2WorkbenchWindow::rebuildDashboard()
+{
+    if (widgetDashboardCanvas) widgetDashboardCanvas->setColumns(dashboardColumnsSpin->value());
+}
+
+QPair<QString, double> OBD2WorkbenchWindow::dashboardDisplayValue(const QString &name, double value) const
+{
+    return qMakePair(name, value);
+}
+
+void OBD2WorkbenchWindow::updateDashboard(int pid, const QString &ecu, const QString &decoded,
+                                           const QVector<QPair<QString, double>> &numericValues)
+{
+    if (!dashboardValueLabels.contains(pid)) return;
+    QStringList displayValues;
+    for (const auto &sample : numericValues)
+    {
+        const auto converted = dashboardDisplayValue(sample.first, sample.second);
+        displayValues << QStringLiteral("%1: %2").arg(converted.first).arg(converted.second, 0, 'g', 8);
+    }
+    dashboardValueLabels.value(pid)->setText(ecu + QStringLiteral("\n") +
+        (displayValues.isEmpty() ? decoded : displayValues.join(QStringLiteral("\n"))));
+    if (numericValues.isEmpty()) return;
+    QStringList lines;
+    for (const auto &sample : numericValues)
+    {
+        const auto converted = dashboardDisplayValue(sample.first, sample.second);
+        const QString key = QStringLiteral("%1/%2/%3").arg(pid).arg(ecu, converted.first);
+        DashboardStats &stats = dashboardStats[key];
+        if (stats.count == 0) stats.minimum = stats.maximum = converted.second;
+        else
+        {
+            stats.minimum = qMin(stats.minimum, converted.second);
+            stats.maximum = qMax(stats.maximum, converted.second);
+        }
+        ++stats.count;
+        stats.sum += converted.second;
+        lines << tr("%1  min %2  avg %3  max %4").arg(converted.first)
+            .arg(stats.minimum, 0, 'g', 7).arg(stats.sum / stats.count, 0, 'g', 7)
+            .arg(stats.maximum, 0, 'g', 7);
+        if (dashboardBars.contains(pid))
+        {
+            const double span = stats.maximum - stats.minimum;
+            dashboardBars.value(pid)->setValue(span > 0.0
+                ? int((converted.second - stats.minimum) * 1000.0 / span) : 500);
+        }
+    }
+    dashboardStatsLabels.value(pid)->setText(lines.join('\n'));
+}
+
+QJsonArray OBD2WorkbenchWindow::dashboardToJson() const
+{
+    QJsonArray items;
+    for (const OBDDashboardCanvas::WidgetConfig &config : widgetDashboardCanvas->configs())
+    {
+        QJsonObject item;
+        item["type"] = config.type;
+        item["pid"] = config.pid;
+        item["title"] = config.title;
+        item["format"] = config.format;
+        item["minimum"] = config.minimum;
+        item["maximum"] = config.maximum;
+        item["x"] = config.x;
+        item["y"] = config.y;
+        item["width"] = config.width;
+        item["height"] = config.height;
+        items.append(item);
+    }
+    return items;
+}
+
+void OBD2WorkbenchWindow::loadDashboardJson(const QJsonArray &items)
+{
+    QVector<OBDDashboardCanvas::WidgetConfig> configs;
+    int migrationY = 0;
+    for (const QJsonValue &value : items)
+    {
+        OBDDashboardCanvas::WidgetConfig config;
+        if (value.isDouble())
+        {
+            config.pid = value.toInt(-1);
+            config.title = dashboardPidName(config.pid);
+            config.format = knownPidFormat(config.pid);
+            config.y = migrationY;
+            migrationY += config.height;
+        }
+        else
+        {
+            const QJsonObject item = value.toObject();
+            config.type = item["type"].toString("digital");
+            config.pid = item["pid"].toInt(-1);
+            config.title = item["title"].toString();
+            config.format = item["format"].toString();
+            config.minimum = item["minimum"].toDouble(0.0);
+            config.maximum = item["maximum"].toDouble(100.0);
+            config.x = item["x"].toInt(0);
+            config.y = item["y"].toInt(0);
+            config.width = item["width"].toInt(3);
+            config.height = item["height"].toInt(2);
+        }
+        if (config.pid >= 0 && config.pid <= 0xFF) configs.append(config);
+    }
+    widgetDashboardCanvas->setConfigs(configs);
+}
+
+void OBD2WorkbenchWindow::saveDashboardLayout()
+{
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Save dashboard layout"), QString(),
+                                                     tr("Dashboard layouts (*.json)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) fileName += QStringLiteral(".json");
+    QJsonObject root;
+    root["version"] = 2;
+    root["columns"] = dashboardColumnsSpin->value();
+    root["widgets"] = dashboardToJson();
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(root).toJson()) < 0 || !file.commit())
+        eventLog->append(tr("Could not save dashboard layout"));
+}
+
+void OBD2WorkbenchWindow::loadDashboardLayout()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load dashboard layout"), QString(),
+                                                           tr("Dashboard layouts (*.json)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { eventLog->append(tr("Could not open dashboard layout")); return; }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject() ||
+        (!document.object()["widgets"].isArray() && !document.object()["pids"].isArray()))
+    {
+        eventLog->append(tr("Invalid dashboard layout"));
+        return;
+    }
+    dashboardColumnsSpin->setValue(document.object()["columns"].toInt(12));
+    loadDashboardJson(document.object().contains("widgets")
+        ? document.object()["widgets"].toArray() : document.object()["pids"].toArray());
 }
 
 uint32_t OBD2WorkbenchWindow::parseNumber(const QString &text, bool *ok) const
@@ -333,6 +833,9 @@ QString OBD2WorkbenchWindow::decodeCompoundPid(int pid, const QByteArray &data) 
 {
     const auto byte = [&data](int index) { return quint8(data.at(index)); };
     const auto word = [&byte](int index) { return (byte(index) << 8) | byte(index + 1); };
+
+    if ((pid == 0x01 || pid == 0x41) && data.size() >= 4)
+        return decodeReadiness(pid, data);
 
     if (pid == 0x02 && data.size() >= 2)
     {
@@ -411,6 +914,39 @@ QString OBD2WorkbenchWindow::decodeCompoundPid(int pid, const QByteArray &data) 
     return QString();
 }
 
+QString OBD2WorkbenchWindow::decodeReadiness(int pid, const QByteArray &data) const
+{
+    const quint8 a = quint8(data[0]);
+    const quint8 b = quint8(data[1]);
+    const quint8 supported = quint8(data[pid == 0x01 ? 2 : 1]);
+    const quint8 incomplete = quint8(data[pid == 0x01 ? 3 : 2]);
+    QStringList lines;
+    if (pid == 0x01)
+        lines << tr("MIL: %1; stored DTC count: %2").arg(a & 0x80 ? tr("ON") : tr("off")).arg(a & 0x7F);
+    const quint8 continuous = pid == 0x01 ? b : a;
+    static const char *continuousNames[] = {"Misfire", "Fuel system", "Comprehensive components"};
+    for (int bit = 0; bit < 3; ++bit)
+        if (continuous & (1 << bit))
+            lines << tr("%1: %2").arg(tr(continuousNames[bit]))
+                .arg(continuous & (1 << (bit + 4)) ? tr("incomplete") : tr("complete"));
+
+    const bool compressionIgnition = (pid == 0x01 ? b : a) & 0x08;
+    static const char *sparkNames[] = {
+        "Catalyst", "Heated catalyst", "Evaporative system", "Secondary air",
+        "A/C refrigerant", "Oxygen sensor", "Oxygen sensor heater", "EGR/VVT"
+    };
+    static const char *compressionNames[] = {
+        "NMHC catalyst", "NOx/SCR monitor", "Reserved", "Boost pressure",
+        "Exhaust gas sensor", "PM filter", "EGR/VVT", "Reserved"
+    };
+    const char *const *names = compressionIgnition ? compressionNames : sparkNames;
+    for (int bit = 0; bit < 8; ++bit)
+        if (supported & (1 << bit))
+            lines << tr("%1: %2").arg(tr(names[bit]))
+                .arg(incomplete & (1 << bit) ? tr("incomplete") : tr("complete"));
+    return lines.isEmpty() ? tr("No readiness monitors reported") : lines.join(QStringLiteral("; "));
+}
+
 void OBD2WorkbenchWindow::connectEndpoint()
 {
     bool ok = false;
@@ -453,6 +989,80 @@ void OBD2WorkbenchWindow::addPid()
                 break;
             }
     });
+}
+
+bool OBD2WorkbenchWindow::addPidRequest(const QString &name, const QString &pid,
+                                        const QString &format, QString *error)
+{
+    bool ok = false;
+    const uint32_t identifier = parseNumber(pid, &ok);
+    if (!ok || identifier > 0xFF)
+    {
+        if (error) *error = tr("PID must be between 0x00 and 0xFF.");
+        return false;
+    }
+    addPid();
+    const int row = pidTable->rowCount() - 1;
+    setPidText(row, QStringLiteral("0x%1").arg(identifier, 2, 16, QLatin1Char('0')).toUpper());
+    pidTable->item(row, PidName)->setText(name.trimmed().isEmpty()
+        ? knownPidName(identifier) : name.trimmed());
+    pidTable->item(row, PidFormat)->setText(format.trimmed().isEmpty()
+        ? knownPidFormat(identifier) : format.trimmed());
+    pidTable->selectRow(row);
+    return true;
+}
+
+bool OBD2WorkbenchWindow::executeAIRequest(const QString &operation,
+                                           const QJsonObject &arguments, QString *error)
+{
+    if (!connected || responseTimer.isActive()) {
+        if (error) *error = tr("Connect the OBD-II endpoint and wait for any active request.");
+        return false;
+    }
+    if (operation == QStringLiteral("query_pid")) {
+        bool requestedOk = false;
+        const uint32_t requested = parseNumber(arguments.value("pid").toString(), &requestedOk);
+        for (int row = 0; requestedOk && row < pidTable->rowCount(); ++row) {
+            bool rowOk = false;
+            if (parseNumber(pidTable->item(row, PidNumber)->text(), &rowOk) == requested && rowOk) {
+                pidTable->setCurrentCell(row, PidNumber);
+                requestSelectedPid();
+                return responseTimer.isActive();
+            }
+        }
+        if (error) *error = tr("The requested PID is not in the OBD-II list.");
+        return false;
+    }
+    if (operation == QStringLiteral("scan_modules")) { scanModules(); return responseTimer.isActive(); }
+    if (operation == QStringLiteral("scan_pids")) { scanSupportedPids(); return responseTimer.isActive(); }
+    if (operation == QStringLiteral("request_enabled")) {
+        requestEnabledPids();
+        return responseTimer.isActive();
+    }
+    if (error) *error = tr("Unsupported OBD-II AI operation: %1").arg(operation);
+    return false;
+}
+
+bool OBD2WorkbenchWindow::addDashboardPidByNumber(int pid, QString *error)
+{
+    for (int index = 0; index < dashboardPidCombo->count(); ++index)
+    {
+        if (dashboardPidCombo->itemData(index).toInt() != pid) continue;
+        dashboardPidCombo->setCurrentIndex(index);
+        addDashboardPid();
+        return true;
+    }
+    if (error) *error = tr("PID 0x%1 is not available in the dashboard PID list.")
+        .arg(pid, 2, 16, QLatin1Char('0')).toUpper();
+    return false;
+}
+
+int OBD2WorkbenchWindow::clearPidRequests()
+{
+    const int removed = pidTable->rowCount();
+    pidQueue.clear();
+    pidTable->setRowCount(0);
+    return removed;
 }
 
 void OBD2WorkbenchWindow::removePid() { if (pidTable->currentRow() >= 0) pidTable->removeRow(pidTable->currentRow()); }
@@ -650,10 +1260,152 @@ QString OBD2WorkbenchWindow::decodeObdDtcs(const QByteArray &data) const
     {
         const int a = quint8(data[i]), b = quint8(data[i + 1]);
         if (a == 0 && b == 0) continue;
-        codes << QStringLiteral("%1%2%3%4%5").arg(systems[(a >> 6) & 3]).arg((a >> 4) & 3)
-                 .arg(a & 0xF, 1, 16).arg((b >> 4) & 0xF, 1, 16).arg(b & 0xF, 1, 16).toUpper();
+        const QString code = QStringLiteral("%1%2%3%4%5").arg(systems[(a >> 6) & 3]).arg((a >> 4) & 3)
+            .arg(a & 0xF, 1, 16).arg((b >> 4) & 0xF, 1, 16).arg(b & 0xF, 1, 16).toUpper();
+        const QString description = dtcDescriptions.value(code);
+        codes << (description.isEmpty() ? code : code + QStringLiteral(" - ") + description);
     }
     return codes.isEmpty() ? tr("No DTCs reported") : codes.join(", ");
+}
+
+void OBD2WorkbenchWindow::loadDtcDatabase()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load DTC description database"), QString(),
+                                                           tr("DTC databases (*.json)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { dtcDatabaseStatus->setText(tr("Could not open database")); return; }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject() || !document.object()["codes"].isObject())
+    {
+        dtcDatabaseStatus->setText(tr("Invalid database: expected a codes object"));
+        return;
+    }
+    const QJsonObject root = document.object();
+    dtcDescriptions.clear();
+    const QJsonObject codes = root["codes"].toObject();
+    for (auto it = codes.constBegin(); it != codes.constEnd(); ++it)
+        dtcDescriptions.insert(it.key().trimmed().toUpper(), it.value().toString());
+    dtcDatabaseSource = root["source"].toString(tr("Unspecified source"));
+    dtcDatabaseVersion = root["version"].toVariant().toString();
+    dtcDatabaseStatus->setText(tr("%1 codes; %2; version %3")
+        .arg(dtcDescriptions.size()).arg(dtcDatabaseSource, dtcDatabaseVersion));
+}
+
+void OBD2WorkbenchWindow::exportDiagnosticReport()
+{
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Export diagnostic report"), QString(),
+                                                     tr("Text reports (*.txt)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(QStringLiteral(".txt"), Qt::CaseInsensitive)) fileName += QStringLiteral(".txt");
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&file);
+    out << "SavvyCAN OBD-II diagnostic report\n"
+        << "Generated: " << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << '\n'
+        << "Bus: " << busSpin->value() << "  Request ID: " << requestIdEdit->text() << '\n'
+        << "DTC database: " << dtcDatabaseSource << " " << dtcDatabaseVersion << "\n\nLive data\n";
+    for (int row = 0; row < pidTable->rowCount(); ++row)
+        out << pidTable->item(row, PidName)->text() << " (" << pidText(row) << "): "
+            << pidTable->item(row, PidResponses)->text() << '\n';
+    out << "\nDTCs\n" << dtcOutput->toPlainText()
+        << "\n\nFreeze frames\n" << freezeOutput->toPlainText()
+        << "\n\nMonitor tests\n" << monitorOutput->toPlainText()
+        << "\n\nVehicle information\n" << vehicleOutput->toPlainText() << '\n';
+    if (!file.commit()) eventLog->append(tr("Could not save diagnostic report"));
+}
+
+void OBD2WorkbenchWindow::toggleTripRecording()
+{
+    if (tripLogFile)
+    {
+        tripLogFile->close();
+        delete tripLogFile;
+        tripLogFile = nullptr;
+        tripRecordButton->setText(tr("Start trip log"));
+        return;
+    }
+    const QString fileName = QFileDialog::getSaveFileName(this, tr("Record diagnostic trip"), QString(),
+                                                           tr("CSV files (*.csv)"));
+    if (fileName.isEmpty()) return;
+    tripLogFile = new QFile(fileName, this);
+    if (!tripLogFile->open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+        delete tripLogFile;
+        tripLogFile = nullptr;
+        return;
+    }
+    QTextStream(tripLogFile) << "timestamp,bus,ecu,pid,name,raw,decoded\n";
+    tripRecordButton->setText(tr("Stop trip log"));
+}
+
+void OBD2WorkbenchWindow::loadTripPlayback()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load diagnostic trip"), QString(),
+                                                           tr("CSV files (*.csv)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    tripPlaybackTimer.stop();
+    tripPlaybackButton->setText(tr("Play"));
+    tripPlaybackTable->setRowCount(0);
+    tripPlaybackTimes.clear();
+    QTextStream stream(&file);
+    if (!stream.atEnd()) stream.readLine();
+    qint64 firstTimestamp = -1;
+    while (!stream.atEnd())
+    {
+        const QStringList fields = parseCsvRow(stream.readLine());
+        if (fields.size() < 7) continue;
+        const qint64 timestamp = QDateTime::fromString(fields.at(0), Qt::ISODateWithMs).toMSecsSinceEpoch();
+        if (timestamp < 0) continue;
+        if (firstTimestamp < 0) firstTimestamp = timestamp;
+        const int row = tripPlaybackTable->rowCount();
+        tripPlaybackTable->insertRow(row);
+        for (int column = 0; column < 7; ++column)
+            tripPlaybackTable->setItem(row, column, new QTableWidgetItem(fields.at(column)));
+        tripPlaybackTimes.append(timestamp - firstTimestamp);
+    }
+    tripPlaybackSlider->setRange(0, qMax(0, tripPlaybackTimes.size() - 1));
+    tripPlaybackSlider->setValue(0);
+    tripPlaybackButton->setEnabled(!tripPlaybackTimes.isEmpty());
+    if (!tripPlaybackTimes.isEmpty()) setTripPlaybackRow(0);
+}
+
+void OBD2WorkbenchWindow::toggleTripPlayback()
+{
+    if (tripPlaybackTimer.isActive())
+    {
+        tripPlaybackTimer.stop();
+        tripPlaybackButton->setText(tr("Play"));
+        return;
+    }
+    if (tripPlaybackSlider->value() >= tripPlaybackSlider->maximum())
+        tripPlaybackSlider->setValue(0);
+    tripPlaybackButton->setText(tr("Pause"));
+    advanceTripPlayback();
+}
+
+void OBD2WorkbenchWindow::advanceTripPlayback()
+{
+    const int current = tripPlaybackSlider->value();
+    if (current >= tripPlaybackSlider->maximum())
+    {
+        tripPlaybackButton->setText(tr("Play"));
+        return;
+    }
+    const int next = current + 1;
+    const qint64 delay = qBound<qint64>(10, tripPlaybackTimes.at(next) - tripPlaybackTimes.at(current), 2000);
+    tripPlaybackSlider->setValue(next);
+    tripPlaybackTimer.start(int(delay));
+}
+
+void OBD2WorkbenchWindow::setTripPlaybackRow(int row)
+{
+    if (row < 0 || row >= tripPlaybackTable->rowCount() || row >= tripPlaybackTimes.size()) return;
+    tripPlaybackTable->selectRow(row);
+    tripPlaybackTable->scrollToItem(tripPlaybackTable->item(row, 0), QAbstractItemView::PositionAtCenter);
+    emit tripPlaybackPositionChanged(tripPlaybackTimes.at(row));
 }
 
 QString OBD2WorkbenchWindow::decodeVehicleInfo(int pid, const QByteArray &data) const
@@ -663,6 +1415,112 @@ QString OBD2WorkbenchWindow::decodeVehicleInfo(int pid, const QByteArray &data) 
     if (pid == 0x02 || pid == 0x04 || pid == 0x0A)
         return QString::fromLatin1(value).remove(QChar('\0')).trimmed();
     return QString::fromLatin1(data.toHex(' ').toUpper());
+}
+
+void OBD2WorkbenchWindow::requestFreezeFrame()
+{
+    bool ok = false;
+    const uint32_t pid = parseNumber(freezePidEdit->text(), &ok);
+    if (!ok || pid > 0xFF) { freezeOutput->setText(tr("Invalid PID")); return; }
+    activePid = int(pid);
+    freezeOutput->clear();
+    QByteArray request;
+    request.append(char(pid));
+    request.append(char(freezeFrameSpin->value()));
+    sendRequest(2, request, FreezeFrame);
+}
+
+void OBD2WorkbenchWindow::scanFreezeFramePids()
+{
+    QByteArray request;
+    request.append(char(0x00));
+    request.append(char(freezeFrameSpin->value()));
+    freezeOutput->clear();
+    activePid = 0x00;
+    sendRequest(2, request, FreezeSupportScan);
+}
+
+void OBD2WorkbenchWindow::requestMonitorResults()
+{
+    bool ok = false;
+    const uint32_t mid = parseNumber(monitorMidEdit->text(), &ok);
+    if (!ok || mid > 0xFF) { monitorOutput->setText(tr("Invalid monitor ID")); return; }
+    activePid = int(mid);
+    monitorOutput->clear();
+    sendRequest(6, QByteArray(1, char(mid)), MonitorResults);
+}
+
+void OBD2WorkbenchWindow::loadMode06Scalings()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load Mode 06 UAS table"), QString(),
+                                                           tr("Mode 06 UAS tables (*.json)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { monitorScalingStatus->setText(tr("Could not open UAS table")); return; }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject() || !document.object()["units"].isObject())
+    {
+        monitorScalingStatus->setText(tr("Invalid UAS table: expected a units object"));
+        return;
+    }
+    monitorScalings.clear();
+    const QJsonObject root = document.object();
+    const QJsonObject units = root["units"].toObject();
+    for (auto it = units.constBegin(); it != units.constEnd(); ++it)
+    {
+        bool ok = false;
+        QString key = it.key();
+        if (key.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) key.remove(0, 2);
+        const int uas = key.toInt(&ok, 16);
+        if (!ok || uas < 0 || uas > 0xFF || !it.value().isObject()) continue;
+        const QJsonObject item = it.value().toObject();
+        MonitorScaling scaling;
+        scaling.factor = item["factor"].toDouble(1.0);
+        scaling.offset = item["offset"].toDouble(0.0);
+        scaling.unit = item["unit"].toString();
+        scaling.signedValue = item["signed"].toBool(false);
+        monitorScalings.insert(uas, scaling);
+    }
+    monitorScalingStatus->setText(tr("%1 UAS definitions; %2; version %3")
+        .arg(monitorScalings.size()).arg(root["source"].toString(tr("Unspecified source")),
+                                        root["version"].toVariant().toString()));
+}
+
+QString OBD2WorkbenchWindow::decodeMonitorResults(const QByteArray &data) const
+{
+    if (data.size() < 8) return tr("Short or unsupported monitor response: %1")
+        .arg(QString::fromLatin1(data.toHex(' ').toUpper()));
+    QStringList lines;
+    for (int offset = 0; offset + 7 < data.size(); offset += 8)
+    {
+        const int tid = quint8(data[offset]);
+        const int uas = quint8(data[offset + 1]);
+        int value = (quint8(data[offset + 2]) << 8) | quint8(data[offset + 3]);
+        int minimum = (quint8(data[offset + 4]) << 8) | quint8(data[offset + 5]);
+        int maximum = (quint8(data[offset + 6]) << 8) | quint8(data[offset + 7]);
+        QString valueText = QString::number(value);
+        QString minimumText = QString::number(minimum);
+        QString maximumText = QString::number(maximum);
+        if (monitorScalings.contains(uas))
+        {
+            const MonitorScaling scaling = monitorScalings.value(uas);
+            if (scaling.signedValue)
+            {
+                value = qint16(value);
+                minimum = qint16(minimum);
+                maximum = qint16(maximum);
+            }
+            const auto scaled = [&scaling](int raw) { return raw * scaling.factor + scaling.offset; };
+            valueText = QStringLiteral("%1 %2").arg(scaled(value), 0, 'g', 8).arg(scaling.unit);
+            minimumText = QStringLiteral("%1 %2").arg(scaled(minimum), 0, 'g', 8).arg(scaling.unit);
+            maximumText = QStringLiteral("%1 %2").arg(scaled(maximum), 0, 'g', 8).arg(scaling.unit);
+        }
+        lines << tr("TID 0x%1  UAS 0x%2  value %3  limits %4..%5  %6")
+            .arg(tid, 2, 16, QLatin1Char('0')).arg(uas, 2, 16, QLatin1Char('0'))
+            .arg(valueText, minimumText, maximumText)
+            .arg(value >= minimum && value <= maximum ? tr("PASS") : tr("FAIL")).toUpper();
+    }
+    return lines.join('\n');
 }
 
 void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
@@ -680,6 +1538,7 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
         if (!current.isEmpty()) current += QStringLiteral(" | ");
         const QString rowFormat = pidTable->item(activePidRow, PidFormat)->text().trimmed();
         QString decoded;
+        QVector<QPair<QString, double>> numericValues;
         const bool automatic = rowFormat.isEmpty() || rowFormat.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0;
         QString effectiveFormat = rowFormat;
         if (automatic)
@@ -692,10 +1551,38 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
         {
             PayloadFormatter formatter;
             QString error;
-            decoded = formatter.compile(effectiveFormat, &error) ? formatter.format(payload) : error;
+            if (formatter.compile(effectiveFormat, &error))
+            {
+                decoded = formatter.format(payload);
+                const QString prefix = pidTable->item(activePidRow, PidName)->text() + QStringLiteral("/") + ecu;
+                for (const PayloadFormatter::FormattedField &field : formatter.formatFields(payload))
+                {
+                    bool numeric = false;
+                    const double value = field.value.toDouble(&numeric);
+                    if (!numeric) continue;
+                    const QString sampleName = field.unit.isEmpty() ? field.name
+                        : field.name + QStringLiteral(" [") + field.unit + QLatin1Char(']');
+                    numericValues.append(qMakePair(sampleName, value));
+                    if (diagnosticGraph) diagnosticGraph->addSample(prefix + QStringLiteral("/") + field.name, value);
+                }
+            }
+            else decoded = error;
         }
         pidTable->item(activePidRow, PidResponses)->setText(current + ecu + QStringLiteral(": ") + decoded);
         pidTable->item(activePidRow, PidUpdated)->setText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz"));
+        updateDashboard(activePid, ecu, decoded, numericValues);
+        widgetDashboardCanvas->updatePid(activePid, payload, ecu + QStringLiteral(": ") + decoded);
+        if (tripLogFile)
+        {
+            auto quote = [](QString value) { value.replace('"', QStringLiteral("\"\"")); return '"' + value + '"'; };
+            QTextStream out(tripLogFile);
+            out << quote(QDateTime::currentDateTime().toString(Qt::ISODateWithMs)) << ','
+                << busSpin->value() << ',' << quote(ecu) << ','
+                << QStringLiteral("0x%1").arg(activePid, 2, 16, QLatin1Char('0')).toUpper() << ','
+                << quote(pidTable->item(activePidRow, PidName)->text()) << ','
+                << quote(QString::fromLatin1(payload.toHex(' ').toUpper())) << ',' << quote(decoded) << '\n';
+            tripLogFile->flush();
+        }
     }
     else if (context == StoredDtc || context == PendingDtc || context == PermanentDtc)
         dtcOutput->append(ecu + QStringLiteral(": ") + decodeObdDtcs(payload));
@@ -704,6 +1591,33 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
     {
         payload.remove(0, 1);
         vehicleOutput->append(ecu + QStringLiteral(": ") + decodeVehicleInfo(activePid, payload));
+    }
+    else if (context == FreezeFrame && payload.size() >= 2 && quint8(payload[0]) == activePid)
+    {
+        const int frame = quint8(payload[1]);
+        payload.remove(0, 2);
+        QString decoded = decodeCompoundPid(activePid, payload);
+        const QString format = knownPidFormat(activePid);
+        if (decoded.isEmpty() && !format.isEmpty())
+        {
+            PayloadFormatter formatter;
+            QString error;
+            decoded = formatter.compile(format, &error) ? formatter.format(payload) : error;
+        }
+        if (decoded.isEmpty()) decoded = QString::fromLatin1(payload.toHex(' ').toUpper());
+        freezeOutput->append(tr("%1 frame %2: %3").arg(ecu).arg(frame).arg(decoded));
+    }
+    else if (context == FreezeSupportScan && payload.size() >= 6 && quint8(payload[0]) == 0x00)
+    {
+        const int frame = quint8(payload[1]);
+        QSet<int> supported;
+        const QString pids = supportedPidText(payload.mid(2), 0x00, &supported);
+        freezeOutput->append(tr("%1 frame %2 supports: %3").arg(ecu).arg(frame).arg(pids));
+    }
+    else if (context == MonitorResults && !payload.isEmpty() && quint8(payload[0]) == activePid)
+    {
+        payload.remove(0, 1);
+        monitorOutput->append(ecu + QStringLiteral(":\n") + decodeMonitorResults(payload));
     }
     else if ((context == ModuleScan || context == SupportedPidScan) && !payload.isEmpty() && quint8(payload[0]) == activePid)
     {
@@ -714,6 +1628,13 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
         discoveryOutput->append(tr("%1 page 0x%2: %3").arg(ecu)
             .arg(activePid, 2, 16, QLatin1Char('0')).arg(supported).toUpper());
     }
+}
+
+void OBD2WorkbenchWindow::showDiagnosticGraph()
+{
+    if (!diagnosticGraph) diagnosticGraph = new DiagnosticGraphWindow(this);
+    diagnosticGraph->show();
+    diagnosticGraph->raise();
 }
 
 void OBD2WorkbenchWindow::requestFinished()
@@ -746,6 +1667,11 @@ void OBD2WorkbenchWindow::loadSettings()
     pollIntervalSpin->setValue(settings.value("OBD2Workbench/PollInterval", 1000).toInt());
     const QJsonArray rows = QJsonDocument::fromJson(settings.value("OBD2Workbench/Pids").toByteArray()).array();
     loadPidRows(rows);
+    dashboardColumnsSpin->setValue(settings.value("OBD2Workbench/DashboardColumns", 12).toInt());
+    QByteArray dashboardData = settings.value("OBD2Workbench/DashboardWidgets").toByteArray();
+    if (dashboardData.isEmpty()) dashboardData = settings.value("OBD2Workbench/DashboardPids").toByteArray();
+    const QJsonArray dashboard = QJsonDocument::fromJson(dashboardData).array();
+    loadDashboardJson(dashboard);
     if (pidTable->rowCount() == 0)
     {
         const QList<QPair<QString, QString>> defaults = {{tr("Engine RPM"), "0x0C"}, {tr("Vehicle speed"), "0x0D"},
@@ -779,6 +1705,11 @@ void OBD2WorkbenchWindow::saveSettings() const
     settings.setValue("OBD2Workbench/RequestId", requestIdEdit->text());
     settings.setValue("OBD2Workbench/PollInterval", pollIntervalSpin->value());
     settings.setValue("OBD2Workbench/Pids", QJsonDocument(pidRowsToJson()).toJson(QJsonDocument::Compact));
+    settings.setValue("OBD2Workbench/DashboardColumns", dashboardColumnsSpin->value());
+    settings.setValue("OBD2Workbench/DashboardPids",
+                      QJsonDocument(dashboardToJson()).toJson(QJsonDocument::Compact));
+    settings.setValue("OBD2Workbench/DashboardWidgets",
+                      QJsonDocument(dashboardToJson()).toJson(QJsonDocument::Compact));
 }
 
 QJsonArray OBD2WorkbenchWindow::pidRowsToJson() const

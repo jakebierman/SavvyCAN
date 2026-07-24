@@ -8,6 +8,7 @@ class TestPayloadFormatter : public QObject
     Q_OBJECT
 
 private slots:
+    void formatsBitFields();
     void formatsIntegerTypes();
     void supportsSequentialFields();
     void repeatsPresetAcrossPayload();

@@ -4,6 +4,7 @@
 
 #include <QFileDialog>
 #include <QDebug>
+#include <QSignalBlocker>
 #include "mainwindow.h"
 #include "helpwindow.h"
 #include "connections/canconmanager.h"
@@ -80,6 +81,72 @@ FrameSenderWindow::~FrameSenderWindow()
 
     intervalTimer->stop();
     delete intervalTimer;
+}
+
+bool FrameSenderWindow::addFrameDraft(int bus, quint32 canId, bool extended,
+                                      const QByteArray &payload, QString *error)
+{
+    if (canId > 0x1FFFFFFF || (!extended && canId > 0x7FF))
+    {
+        if (error) *error = tr("CAN ID is outside the selected frame format.");
+        return false;
+    }
+    if (payload.size() > 8)
+    {
+        if (error) *error = tr("Classic CAN frame payloads are limited to 8 bytes.");
+        return false;
+    }
+
+    const int row = ui->tableSender->rowCount() - 1;
+    if (row < 0) return false;
+    const QSignalBlocker blocker(ui->tableSender);
+    ui->tableSender->item(row, SENDTAB_COL_EN)->setCheckState(Qt::Unchecked);
+    ui->tableSender->item(row, SENDTAB_COL_BUS)->setText(QString::number(bus));
+    ui->tableSender->item(row, SENDTAB_COL_ID)->setText(QStringLiteral("0x%1").arg(canId, 0, 16).toUpper());
+    ui->tableSender->item(row, SENDTAB_COL_LEN)->setText(QString::number(payload.size()));
+    ui->tableSender->item(row, SENDTAB_COL_EXT)->setCheckState(extended ? Qt::Checked : Qt::Unchecked);
+    QStringList bytes;
+    for (unsigned char byte : payload)
+        bytes << QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper();
+    ui->tableSender->item(row, SENDTAB_COL_DATA)->setText(bytes.join(QLatin1Char(' ')));
+    for (int col : {SENDTAB_COL_BUS, SENDTAB_COL_ID, SENDTAB_COL_LEN,
+                    SENDTAB_COL_EXT, SENDTAB_COL_DATA, SENDTAB_COL_EN})
+        processCellChange(row, col);
+    createBlankRow();
+    return true;
+}
+
+bool FrameSenderWindow::addFrameLoopDraft(int bus, quint32 canId, bool extended,
+                                          const QByteArray &payload, int count,
+                                          int intervalMs, QString *error)
+{
+    if (count < 1 || count > 1000 || intervalMs < 1 || intervalMs > 60000)
+    {
+        if (error) *error = tr("Count must be 1-1000 and interval must be 1-60000 ms.");
+        return false;
+    }
+    const int row = ui->tableSender->rowCount() - 1;
+    if (!addFrameDraft(bus, canId, extended, payload, error)) return false;
+    ui->tableSender->item(row, SENDTAB_COL_TRIGGER)->setText(
+        QStringLiteral("%1MS %2X").arg(intervalMs).arg(count));
+    processCellChange(row, SENDTAB_COL_TRIGGER);
+    ui->tableSender->item(row, SENDTAB_COL_EN)->setCheckState(Qt::Checked);
+    return sendingData.value(row).enabled;
+}
+
+bool FrameSenderWindow::enableDraftRow(int row, QString *error)
+{
+    if (row < 0 || row >= sendingData.size()) {
+        if (error) *error = tr("Frame Sender row is outside the configured draft list.");
+        return false;
+    }
+    ui->tableSender->item(row, SENDTAB_COL_EN)->setCheckState(Qt::Checked);
+    return sendingData.value(row).enabled;
+}
+
+void FrameSenderWindow::disableAllRows()
+{
+    disableAll();
 }
 
 bool FrameSenderWindow::eventFilter(QObject *obj, QEvent *event)
@@ -1144,4 +1211,3 @@ void FrameSenderWindow::processCellChange(int line, int col)
             break;
     }
 }
-

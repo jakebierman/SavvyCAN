@@ -1,6 +1,7 @@
 #include <QCanBus>
 #include <QNetworkDatagram>
 #include <QThread>
+#include <QMap>
 
 #include "connectionwindow.h"
 #include "mainwindow.h"
@@ -349,6 +350,82 @@ void ConnectionWindow::setSuspendAll(bool pSuspend)
         conn_p->suspend(pSuspend);
 
     connModel->refresh();
+}
+
+bool ConnectionWindow::reconnectConnection(const QString &port, QString *error)
+{
+    QList<CANConnection *> targets;
+    if (port.trimmed().isEmpty() || port.compare(QStringLiteral("all"), Qt::CaseInsensitive) == 0)
+        targets = CANConManager::getInstance()->getConnections();
+    else if (CANConnection *connection = CANConManager::getInstance()->getByName(port))
+        targets.append(connection);
+    if (targets.isEmpty())
+    {
+        if (error) *error = tr("No matching connection profile was found.");
+        return false;
+    }
+    for (CANConnection *connection : targets)
+    {
+        connection->stop();
+        connection->start();
+    }
+    connModel->refresh();
+    return true;
+}
+
+bool ConnectionWindow::setAllConnectionsSuspended(bool suspended, QString *error)
+{
+    if (CANConManager::getInstance()->getConnections().isEmpty())
+    {
+        if (error) *error = tr("No connection profiles are configured.");
+        return false;
+    }
+    setSuspendAll(suspended);
+    return true;
+}
+
+bool ConnectionWindow::addConnectionProfile(const QString &type, const QString &port,
+                                             const QString &driver, int serialSpeed,
+                                             int busSpeed, bool canFd, int dataRate,
+                                             QString *error)
+{
+    static const QMap<QString, CANCon::type> types = {
+        {QStringLiteral("gvret_serial"), CANCon::GVRET_SERIAL},
+        {QStringLiteral("kvaser"), CANCon::KVASER},
+        {QStringLiteral("serialbus"), CANCon::SERIALBUS},
+        {QStringLiteral("remote"), CANCon::REMOTE},
+        {QStringLiteral("kayak"), CANCon::KAYAK},
+        {QStringLiteral("mqtt"), CANCon::MQTT},
+        {QStringLiteral("lawicel"), CANCon::LAWICEL},
+        {QStringLiteral("canserver"), CANCon::CANSERVER},
+        {QStringLiteral("canlogserver"), CANCon::CANLOGSERVER}
+    };
+    const QString normalized = type.trimmed().toLower();
+    if (!types.contains(normalized))
+    {
+        if (error) *error = tr("Unsupported connection type: %1").arg(type);
+        return false;
+    }
+    if (port.trimmed().isEmpty())
+    {
+        if (error) *error = tr("A port, interface, host, or endpoint is required.");
+        return false;
+    }
+    if (CANConManager::getInstance()->getByName(port))
+    {
+        if (error) *error = tr("A connection using %1 already exists.").arg(port);
+        return false;
+    }
+    CANConnection *connection = create(types.value(normalized), port, driver,
+                                       serialSpeed, busSpeed, canFd, dataRate);
+    if (!connection)
+    {
+        if (error) *error = tr("The connection factory could not create this profile.");
+        return false;
+    }
+    connModel->add(connection);
+    saveConnections();
+    return true;
 }
 
 void ConnectionWindow::saveBusSettings()

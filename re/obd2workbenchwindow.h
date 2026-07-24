@@ -5,17 +5,28 @@
 #include <QMap>
 #include <QSet>
 #include <QTimer>
+#include <QVector>
 
 #include "bus_protocols/uds_handler.h"
 
 class QCheckBox;
+class QComboBox;
+class QGridLayout;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QJsonArray;
+class QJsonObject;
+class QFile;
 class QListWidget;
+class QPushButton;
+class QProgressBar;
+class QSlider;
 class QSpinBox;
 class QTableWidget;
 class QTextEdit;
+class DiagnosticGraphWindow;
+class OBDDashboardCanvas;
 
 class OBD2WorkbenchWindow : public QDialog
 {
@@ -24,6 +35,18 @@ class OBD2WorkbenchWindow : public QDialog
 public:
     explicit OBD2WorkbenchWindow(QWidget *parent = nullptr);
     ~OBD2WorkbenchWindow();
+    bool addPidRequest(const QString &name, const QString &pid, const QString &format,
+                       QString *error = nullptr);
+    bool executeAIRequest(const QString &operation, const QJsonObject &arguments,
+                          QString *error = nullptr);
+    bool addDashboardPidByNumber(int pid, QString *error = nullptr);
+    int clearPidRequests();
+    static bool resolvePidDescription(const QString &description, int *pid,
+                                      QString *name = nullptr, QString *format = nullptr,
+                                      double *confidence = nullptr);
+
+signals:
+    void tripPlaybackPositionChanged(qint64 elapsedMs);
 
 private slots:
     void connectEndpoint();
@@ -39,15 +62,33 @@ private slots:
     void readPermanentDtcs();
     void clearDtcs();
     void requestVehicleInfo();
+    void requestFreezeFrame();
+    void scanFreezeFramePids();
+    void requestMonitorResults();
     void scanModules();
     void scanSupportedPids();
     void addSelectedScannedPids();
     void gotReply(UDS_MESSAGE message);
     void requestFinished();
+    void showDiagnosticGraph();
+    void addDashboardPid();
+    void editDashboardWidget();
+    void removeDashboardPid();
+    void saveDashboardLayout();
+    void loadDashboardLayout();
+    void loadDtcDatabase();
+    void exportDiagnosticReport();
+    void toggleTripRecording();
+    void loadMode06Scalings();
+    void loadTripPlayback();
+    void toggleTripPlayback();
+    void advanceTripPlayback();
+    void setTripPlaybackRow(int row);
 
 private:
     enum PidColumn { PidEnabled, PidName, PidNumber, PidFormat, PidResponses, PidUpdated, PidColumnCount };
-    enum Context { None, LivePid, StoredDtc, PendingDtc, PermanentDtc, ClearDtc, VehicleInfo, ModuleScan, SupportedPidScan };
+    enum Context { None, LivePid, StoredDtc, PendingDtc, PermanentDtc, ClearDtc, VehicleInfo,
+                   ModuleScan, SupportedPidScan, FreezeFrame, FreezeSupportScan, MonitorResults };
 
     void buildUi();
     void sendRequest(int mode, const QByteArray &data, Context context);
@@ -60,6 +101,14 @@ private:
     void finishSupportedPidScan();
     QString decodeObdDtcs(const QByteArray &data) const;
     QString decodeVehicleInfo(int pid, const QByteArray &data) const;
+    QString decodeMonitorResults(const QByteArray &data) const;
+    QString decodeReadiness(int pid, const QByteArray &data) const;
+    void rebuildDashboard();
+    QPair<QString, double> dashboardDisplayValue(const QString &name, double value) const;
+    void updateDashboard(int pid, const QString &ecu, const QString &decoded,
+                         const QVector<QPair<QString, double>> &numericValues);
+    QJsonArray dashboardToJson() const;
+    void loadDashboardJson(const QJsonArray &items);
     void loadSettings();
     void saveSettings() const;
     QJsonArray pidRowsToJson() const;
@@ -74,10 +123,41 @@ private:
     QCheckBox *pollCheck;
     QSpinBox *pollIntervalSpin;
     QTextEdit *dtcOutput;
+    QLabel *dtcDatabaseStatus;
     QLineEdit *vehiclePidEdit;
     QTextEdit *vehicleOutput;
+    QLineEdit *freezePidEdit;
+    QSpinBox *freezeFrameSpin;
+    QTextEdit *freezeOutput;
+    QLineEdit *monitorMidEdit;
+    QTextEdit *monitorOutput;
     QTextEdit *discoveryOutput;
     QListWidget *discoveryPidList;
+    QComboBox *dashboardPidCombo;
+    QComboBox *dashboardRemoveCombo;
+    QSpinBox *dashboardColumnsSpin;
+    QGridLayout *dashboardGrid;
+    OBDDashboardCanvas *widgetDashboardCanvas;
+    QList<int> dashboardPids;
+    QMap<int, QGroupBox *> dashboardTiles;
+    QMap<int, QLabel *> dashboardValueLabels;
+    QMap<int, QLabel *> dashboardStatsLabels;
+    QMap<int, QProgressBar *> dashboardBars;
+    struct DashboardStats { qint64 count = 0; double sum = 0; double minimum = 0; double maximum = 0; };
+    QMap<QString, DashboardStats> dashboardStats;
+    QMap<QString, QString> dtcDescriptions;
+    QString dtcDatabaseSource;
+    QString dtcDatabaseVersion;
+    QPushButton *tripRecordButton;
+    QFile *tripLogFile = nullptr;
+    struct MonitorScaling { double factor = 1.0; double offset = 0.0; QString unit; bool signedValue = false; };
+    QMap<int, MonitorScaling> monitorScalings;
+    QLabel *monitorScalingStatus;
+    QTableWidget *tripPlaybackTable;
+    QSlider *tripPlaybackSlider;
+    QPushButton *tripPlaybackButton;
+    QTimer tripPlaybackTimer;
+    QVector<qint64> tripPlaybackTimes;
     QTextEdit *eventLog;
     QTimer responseTimer;
     QTimer pollTimer;
@@ -89,6 +169,7 @@ private:
     int activePid = -1;
     int activePidRow = -1;
     bool connected = false;
+    DiagnosticGraphWindow *diagnosticGraph = nullptr;
 };
 
 #endif

@@ -1,4 +1,8 @@
 #include <QtDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTextCursor>
 #include "utility.h"
 #include "helpwindow.h"
 #include "ui_helpwindow.h"
@@ -60,13 +64,40 @@ HelpWindow* HelpWindow::getRef()
 
 void HelpWindow::showHelp(QString help)
 {
-    QString helpfile = QCoreApplication::applicationDirPath() + "/help/" + help;
-    QUrl url = QUrl::fromLocalFile(helpfile);
-    qDebug() << "Searching for " << url;
-    ui->textHelp->setSource(url);
+    const QString applicationDir = QCoreApplication::applicationDirPath();
+    const QStringList roots = {
+        applicationDir + QStringLiteral("/help"),
+        QDir(applicationDir).absoluteFilePath(QStringLiteral("../help")),
+        QDir(applicationDir).absoluteFilePath(QStringLiteral("../../help")),
+        QDir::current().absoluteFilePath(QStringLiteral("help"))
+    };
+    QString helpfile;
+    for (const QString &root : roots)
+    {
+        const QString candidate = QDir(root).absoluteFilePath(help);
+        if (QFileInfo::exists(candidate)) { helpfile = candidate; break; }
+    }
+    if (helpfile.isEmpty())
+    {
+        ui->textHelp->setHtml(tr("<h1>Help page unavailable</h1>"
+            "<p>Could not find <code>%1</code> in the installed or source-tree help directories.</p>")
+            .arg(help.toHtmlEscaped()));
+    }
+    else
+    {
+        QFile file(helpfile);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+        {
+            ui->textHelp->document()->setBaseUrl(
+                QUrl::fromLocalFile(QFileInfo(helpfile).absolutePath() + QLatin1Char('/')));
+            ui->textHelp->setMarkdown(QString::fromUtf8(file.readAll()));
+            ui->textHelp->moveCursor(QTextCursor::Start);
+        }
+        else ui->textHelp->setPlainText(tr("Could not open help file: %1").arg(helpfile));
+    }
 
     readSettings();
     self->show();
+    self->raise();
+    self->activateWindow();
 }
-
-
