@@ -33,6 +33,9 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <functional>
+
 UDSWorkbenchWindow::UDSWorkbenchWindow(QWidget *parent) : QDialog(parent)
 {
     udsHandler = new UDS_HANDLER;
@@ -68,7 +71,18 @@ void UDSWorkbenchWindow::buildUi()
     busSpin = new QSpinBox(endpoint);
     busSpin->setRange(0, qMax(0, CANConManager::getInstance()->getNumBuses() - 1));
     requestIdEdit = new QLineEdit(QStringLiteral("0x7E0"), endpoint);
+    responseAddressModeCombo = new QComboBox(endpoint);
+    responseAddressModeCombo->addItem(tr("Response ID"), QStringLiteral("id"));
+    responseAddressModeCombo->addItem(tr("Request + 0x8"), QStringLiteral("offset8"));
+    responseAddressModeCombo->addItem(tr("Request + 0x80"), QStringLiteral("offset80"));
+    responseAddressModeCombo->addItem(tr("Custom offset"), QStringLiteral("custom"));
+    responseAddressModeCombo->setCurrentIndex(1);
+    responseOffsetEdit = new QLineEdit(QStringLiteral("0x8"), endpoint);
+    responseOffsetEdit->setPlaceholderText(tr("Offset"));
+    responseOffsetEdit->setMaximumWidth(90);
+    responseOffsetEdit->setVisible(false);
     responseIdEdit = new QLineEdit(QStringLiteral("0x7E8"), endpoint);
+    responseIdEdit->setReadOnly(true);
     sessionCombo = new QComboBox(endpoint);
     sessionCombo->addItem(tr("Default (0x01)"), 1);
     sessionCombo->addItem(tr("Programming (0x02)"), 2);
@@ -81,7 +95,9 @@ void UDSWorkbenchWindow::buildUi()
     endpointLayout->addWidget(busSpin);
     endpointLayout->addWidget(new QLabel(tr("Request ID"), endpoint));
     endpointLayout->addWidget(requestIdEdit);
-    endpointLayout->addWidget(new QLabel(tr("Response ID"), endpoint));
+    endpointLayout->addWidget(new QLabel(tr("Response"), endpoint));
+    endpointLayout->addWidget(responseAddressModeCombo);
+    endpointLayout->addWidget(responseOffsetEdit);
     endpointLayout->addWidget(responseIdEdit);
     endpointLayout->addWidget(sessionCombo);
     endpointLayout->addWidget(testerPresentCheck);
@@ -94,8 +110,54 @@ void UDSWorkbenchWindow::buildUi()
     connect(testerPresentCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled && endpointConnected) testerTimer.start(); else testerTimer.stop();
     });
+    connect(responseAddressModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this]() { updateResponseIdFromMode(); });
+    connect(requestIdEdit, &QLineEdit::editingFinished,
+            this, &UDSWorkbenchWindow::updateResponseIdFromMode);
+    connect(responseOffsetEdit, &QLineEdit::editingFinished,
+            this, &UDSWorkbenchWindow::updateResponseIdFromMode);
 
     QTabWidget *tabs = new QTabWidget(this);
+    QWidget *ecuDiscoveryPage = new QWidget(tabs);
+    QVBoxLayout *ecuDiscoveryLayout = new QVBoxLayout(ecuDiscoveryPage);
+    QHBoxLayout *ecuScanControls = new QHBoxLayout;
+    ecuRequestSpecEdit = new QLineEdit(QStringLiteral("0x7E0-0x7E7"), ecuDiscoveryPage);
+    ecuResponseSpecEdit = new QLineEdit(QStringLiteral("0x7E8-0x7EF"), ecuDiscoveryPage);
+    ecuScanTimeoutSpin = new QSpinBox(ecuDiscoveryPage);
+    ecuScanTimeoutSpin->setRange(20, 5000);
+    ecuScanTimeoutSpin->setValue(150);
+    ecuScanTimeoutSpin->setSuffix(tr(" ms"));
+    ecuScanStartButton = new QPushButton(tr("Scan ECUs"), ecuDiscoveryPage);
+    ecuScanStopButton = new QPushButton(tr("Stop"), ecuDiscoveryPage);
+    ecuScanStopButton->setEnabled(false);
+    ecuScanControls->addWidget(new QLabel(tr("Request IDs"), ecuDiscoveryPage));
+    ecuScanControls->addWidget(ecuRequestSpecEdit);
+    ecuScanControls->addWidget(new QLabel(tr("Response IDs"), ecuDiscoveryPage));
+    ecuScanControls->addWidget(ecuResponseSpecEdit);
+    ecuScanControls->addWidget(new QLabel(tr("Timeout"), ecuDiscoveryPage));
+    ecuScanControls->addWidget(ecuScanTimeoutSpin);
+    ecuScanControls->addWidget(ecuScanStartButton);
+    ecuScanControls->addWidget(ecuScanStopButton);
+    ecuDiscoveryLayout->addLayout(ecuScanControls);
+    ecuScanResults = new QListWidget(ecuDiscoveryPage);
+    ecuScanResults->setSelectionMode(QAbstractItemView::SingleSelection);
+    ecuDiscoveryLayout->addWidget(ecuScanResults, 1);
+    QHBoxLayout *ecuResultControls = new QHBoxLayout;
+    QPushButton *loadEcuScanButton = new QPushButton(tr("Load results"), ecuDiscoveryPage);
+    QPushButton *saveEcuScanButton = new QPushButton(tr("Save results"), ecuDiscoveryPage);
+    QPushButton *useEcuButton = new QPushButton(tr("Use selected ECU"), ecuDiscoveryPage);
+    ecuResultControls->addWidget(loadEcuScanButton);
+    ecuResultControls->addWidget(saveEcuScanButton);
+    ecuResultControls->addStretch();
+    ecuResultControls->addWidget(useEcuButton);
+    ecuDiscoveryLayout->addLayout(ecuResultControls);
+    connect(ecuScanStartButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::startEcuScan);
+    connect(ecuScanStopButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::stopEcuScan);
+    connect(loadEcuScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::loadEcuScan);
+    connect(saveEcuScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveEcuScan);
+    connect(useEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::useSelectedEcu);
+    tabs->addTab(ecuDiscoveryPage, tr("ECU discovery"));
+
     QWidget *didPage = new QWidget(tabs);
     QVBoxLayout *didLayout = new QVBoxLayout(didPage);
     didTable = new QTableWidget(0, DidColumnCount, didPage);
@@ -104,6 +166,7 @@ void UDSWorkbenchWindow::buildUi()
     didTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     didTable->horizontalHeader()->setSectionResizeMode(DidDecoded, QHeaderView::Stretch);
     didTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    didTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     didLayout->addWidget(didTable);
     QHBoxLayout *didButtons = new QHBoxLayout;
     QPushButton *addButton = new QPushButton(tr("Add DID"), didPage);
@@ -205,13 +268,19 @@ void UDSWorkbenchWindow::buildUi()
     QHBoxLayout *serviceScanButtons = new QHBoxLayout;
     serviceScanStartButton = new QPushButton(tr("Scan services"), serviceDiscoveryPage);
     serviceScanStopButton = new QPushButton(tr("Stop"), serviceDiscoveryPage);
+    QPushButton *loadServiceScanButton = new QPushButton(tr("Load results"), serviceDiscoveryPage);
+    QPushButton *saveServiceScanButton = new QPushButton(tr("Save results"), serviceDiscoveryPage);
     serviceScanStopButton->setEnabled(false);
+    serviceScanButtons->addWidget(loadServiceScanButton);
+    serviceScanButtons->addWidget(saveServiceScanButton);
     serviceScanButtons->addStretch();
     serviceScanButtons->addWidget(serviceScanStartButton);
     serviceScanButtons->addWidget(serviceScanStopButton);
     serviceDiscoveryLayout->addLayout(serviceScanButtons);
     connect(serviceScanStartButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::startServiceScan);
     connect(serviceScanStopButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::stopServiceScan);
+    connect(loadServiceScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::loadServiceScan);
+    connect(saveServiceScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveServiceScan);
     tabs->addTab(serviceDiscoveryPage, tr("Service discovery"));
 
     QWidget *dtcPage = new QWidget(tabs);
@@ -332,6 +401,10 @@ void UDSWorkbenchWindow::buildUi()
     manualLayout->addWidget(manualResponse);
     connect(sendManual, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendManualRequest);
     tabs->addTab(manualPage, tr("Manual service"));
+    requestControls = {selectedButton, allButton, pollingCheck, scanStartButton,
+        serviceScanStartButton, readDtcsButton, clearDtcsButton, dtcDetailButton,
+        routineButton, controlButton, seedButton, keyButton, sendManual};
+    for (QWidget *control : requestControls) control->setEnabled(false);
     root->addWidget(tabs, 1);
 
     eventLog = new QTextEdit(this);
@@ -346,6 +419,56 @@ uint32_t UDSWorkbenchWindow::parseNumber(const QString &text, bool *ok) const
     int base = 10;
     if (value.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) { value.remove(0, 2); base = 16; }
     return value.toUInt(ok, base);
+}
+
+void UDSWorkbenchWindow::updateResponseIdFromMode()
+{
+    const QString mode = responseAddressModeCombo->currentData().toString();
+    const bool customOffset = mode == QStringLiteral("custom");
+    const bool explicitId = mode == QStringLiteral("id");
+    responseOffsetEdit->setVisible(customOffset);
+    responseIdEdit->setReadOnly(!explicitId);
+    if (explicitId) return;
+
+    bool requestOk = false, offsetOk = false;
+    const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
+    uint32_t offset = 0;
+    if (mode == QStringLiteral("offset8")) { offset = 0x8; offsetOk = true; }
+    else if (mode == QStringLiteral("offset80")) { offset = 0x80; offsetOk = true; }
+    else offset = parseNumber(responseOffsetEdit->text(), &offsetOk);
+    if (!requestOk || !offsetOk || quint64(requestId) + offset > 0x1FFFFFFF)
+    {
+        responseIdEdit->clear();
+        responseIdEdit->setPlaceholderText(tr("Invalid request/offset"));
+        return;
+    }
+    responseIdEdit->setPlaceholderText(QString());
+    responseIdEdit->setText(QStringLiteral("0x%1").arg(requestId + offset, 0, 16).toUpper());
+}
+
+QVector<uint32_t> UDSWorkbenchWindow::parseIdSpec(const QString &text, bool *ok) const
+{
+    QVector<uint32_t> ids;
+    bool valid = true;
+    for (const QString &entryText : text.split(',', Qt::SkipEmptyParts))
+    {
+        const QStringList bounds = entryText.trimmed().split('-', Qt::KeepEmptyParts);
+        bool firstOk = false, lastOk = false;
+        const uint32_t first = parseNumber(bounds.value(0), &firstOk);
+        const uint32_t last = bounds.size() == 1 ? first : parseNumber(bounds.value(1), &lastOk);
+        if (bounds.size() == 1) lastOk = firstOk;
+        if (bounds.size() > 2 || !firstOk || !lastOk || first > last ||
+            last > 0x1FFFFFFF || quint64(last) - first > 4095)
+        {
+            valid = false;
+            break;
+        }
+        for (quint64 id = first; id <= last; ++id)
+            if (!ids.contains(uint32_t(id))) ids.append(uint32_t(id));
+    }
+    valid = valid && !ids.isEmpty();
+    if (ok) *ok = valid;
+    return valid ? ids : QVector<uint32_t>();
 }
 
 void UDSWorkbenchWindow::connectEndpoint()
@@ -387,6 +510,11 @@ void UDSWorkbenchWindow::connectEndpoint()
 
 void UDSWorkbenchWindow::disconnectEndpoint()
 {
+    if (ecuScanActive)
+    {
+        finishEcuScan(tr("ECU scan stopped"));
+        return;
+    }
     responseTimer.stop();
     testerTimer.stop();
     pollingTimer.stop();
@@ -399,6 +527,7 @@ void UDSWorkbenchWindow::disconnectEndpoint()
     udsHandler->setReception(false);
     endpointConnected = false;
     connectButton->setText(tr("Connect session"));
+    for (QWidget *control : requestControls) control->setEnabled(false);
     connectionStatus->setText(tr("Disconnected"));
     log(tr("Stopped UDS session activity and response listening"));
 }
@@ -486,7 +615,12 @@ bool UDSWorkbenchWindow::executeAIRequest(const QString &operation,
 
 void UDSWorkbenchWindow::removeDid()
 {
-    if (didTable->currentRow() >= 0) didTable->removeRow(didTable->currentRow());
+    QSet<int> selectedRows;
+    for (const QModelIndex &index : didTable->selectionModel()->selectedRows())
+        selectedRows.insert(index.row());
+    QList<int> rows = selectedRows.values();
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    for (int row : rows) didTable->removeRow(row);
 }
 
 void UDSWorkbenchWindow::importProfile()
@@ -508,6 +642,11 @@ void UDSWorkbenchWindow::importProfile()
     busSpin->setValue(profile.value("bus").toInt(busSpin->value()));
     requestIdEdit->setText(profile.value("requestId").toString(requestIdEdit->text()));
     responseIdEdit->setText(profile.value("responseId").toString(responseIdEdit->text()));
+    responseOffsetEdit->setText(profile.value("responseOffset").toString(QStringLiteral("0x8")));
+    const int addressMode = responseAddressModeCombo->findData(
+        profile.value("responseMode").toString(QStringLiteral("id")));
+    responseAddressModeCombo->setCurrentIndex(qMax(0, addressMode));
+    updateResponseIdFromMode();
     const int session = profile.value("session").toInt(sessionCombo->currentData().toInt());
     const int sessionIndex = sessionCombo->findData(session);
     if (sessionIndex >= 0) sessionCombo->setCurrentIndex(sessionIndex);
@@ -529,6 +668,8 @@ void UDSWorkbenchWindow::exportProfile()
     profile["bus"] = busSpin->value();
     profile["requestId"] = requestIdEdit->text();
     profile["responseId"] = responseIdEdit->text();
+    profile["responseMode"] = responseAddressModeCombo->currentData().toString();
+    profile["responseOffset"] = responseOffsetEdit->text();
     profile["session"] = sessionCombo->currentData().toInt();
     profile["dids"] = didRowsToJson();
     QSaveFile file(fileName);
@@ -807,6 +948,168 @@ void UDSWorkbenchWindow::sendManualRequest()
     manualResponse->setText(tr("Waiting for response..."));
 }
 
+void UDSWorkbenchWindow::startEcuScan()
+{
+    if (endpointConnected || responseTimer.isActive() || didScanActive || serviceScanActive)
+    {
+        log(tr("Disconnect the active session or wait for the current request"));
+        return;
+    }
+    if (!CANConManager::getInstance()->isBusConnected(busSpin->value()))
+    {
+        connectionStatus->setText(tr("Bus %1 is not connected").arg(busSpin->value()));
+        return;
+    }
+    bool requestsOk = false, responsesOk = false;
+    const QVector<uint32_t> requests = parseIdSpec(ecuRequestSpecEdit->text(), &requestsOk);
+    ecuResponseIds = parseIdSpec(ecuResponseSpecEdit->text(), &responsesOk);
+    if (!requestsOk || !responsesOk)
+    {
+        log(tr("Invalid ECU request/response ID list or range"));
+        return;
+    }
+    if (requests.size() > 256 && QMessageBox::warning(this, tr("Large ECU scan"),
+            tr("Probe %1 request IDs? This creates active diagnostic traffic.").arg(requests.size()),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+
+    udsHandler->clearAllFilters();
+    for (uint32_t responseId : ecuResponseIds)
+        udsHandler->addFilter(busSpin->value(), responseId, responseId > 0x7FF ? 0x1FFFFFFF : 0x7FF);
+    udsHandler->setReception(true);
+    ecuRequestQueue.clear();
+    for (uint32_t requestId : requests) ecuRequestQueue.enqueue(requestId);
+    ecuScanResults->clear();
+    ecuScanActive = true;
+    ecuScanStartButton->setEnabled(false);
+    ecuScanStopButton->setEnabled(true);
+    responseTimer.setInterval(ecuScanTimeoutSpin->value());
+    connectionStatus->setText(tr("Scanning ECU IDs"));
+    log(tr("Scanning %1 request ID(s) against %2 response ID(s)")
+        .arg(requests.size()).arg(ecuResponseIds.size()));
+    sendNextEcuProbe();
+}
+
+void UDSWorkbenchWindow::sendNextEcuProbe()
+{
+    if (!ecuScanActive) return;
+    if (ecuRequestQueue.isEmpty())
+    {
+        finishEcuScan(tr("ECU scan complete"));
+        return;
+    }
+    activeEcuRequestId = ecuRequestQueue.dequeue();
+    UDS_MESSAGE message;
+    message.bus = busSpin->value();
+    message.setFrameId(activeEcuRequestId);
+    message.setExtendedFrameFormat(activeEcuRequestId > 0x7FF);
+    message.service = UDS_SERVICES::TESTER_PRESENT;
+    message.subFuncLen = 1;
+    message.subFunc = 0;
+    activeService = message.service;
+    requestContext = ContextEcuScan;
+    if (!udsHandler->sendUDSFrame(message))
+    {
+        finishEcuScan(tr("ECU scan transmit failed"));
+        return;
+    }
+    responseTimer.start();
+}
+
+void UDSWorkbenchWindow::stopEcuScan()
+{
+    if (ecuScanActive) finishEcuScan(tr("ECU scan stopped"));
+}
+
+void UDSWorkbenchWindow::finishEcuScan(const QString &status)
+{
+    responseTimer.stop();
+    ecuScanActive = false;
+    ecuRequestQueue.clear();
+    ecuResponseIds.clear();
+    activeEcuRequestId = 0;
+    activeService = -1;
+    requestContext = ContextNone;
+    responseTimer.setInterval(normalResponseTimeout);
+    udsHandler->clearAllFilters();
+    udsHandler->setReception(false);
+    ecuScanStartButton->setEnabled(true);
+    ecuScanStopButton->setEnabled(false);
+    connectionStatus->setText(tr("Disconnected"));
+    log(tr("%1; %2 ECU endpoint pair(s)").arg(status).arg(ecuScanResults->count()));
+}
+
+void UDSWorkbenchWindow::useSelectedEcu()
+{
+    QListWidgetItem *item = ecuScanResults->currentItem();
+    if (!item) { log(tr("Select a discovered ECU first")); return; }
+    requestIdEdit->setText(QStringLiteral("0x%1").arg(item->data(Qt::UserRole).toUInt(), 0, 16).toUpper());
+    responseAddressModeCombo->setCurrentIndex(
+        responseAddressModeCombo->findData(QStringLiteral("id")));
+    responseIdEdit->setText(QStringLiteral("0x%1").arg(item->data(Qt::UserRole + 1).toUInt(), 0, 16).toUpper());
+    connectionStatus->setText(tr("Endpoint selected - connect session"));
+    log(tr("Selected request %1 and response %2")
+        .arg(requestIdEdit->text(), responseIdEdit->text()));
+}
+
+void UDSWorkbenchWindow::saveEcuScan()
+{
+    if (ecuScanResults->count() == 0) { log(tr("There are no ECU scan results to save")); return; }
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Save ECU discovery results"), QString(),
+                                                     tr("UDS ECU discovery (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(".json", Qt::CaseInsensitive)) fileName += ".json";
+    QJsonArray results;
+    for (int index = 0; index < ecuScanResults->count(); ++index)
+    {
+        QListWidgetItem *item = ecuScanResults->item(index);
+        QJsonObject result;
+        result["requestId"] = QStringLiteral("0x%1").arg(item->data(Qt::UserRole).toUInt(), 0, 16).toUpper();
+        result["responseId"] = QStringLiteral("0x%1").arg(item->data(Qt::UserRole + 1).toUInt(), 0, 16).toUpper();
+        result["status"] = item->text();
+        results.append(result);
+    }
+    QJsonObject root;
+    root["version"] = 1;
+    root["results"] = results;
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(root).toJson()) < 0 || !file.commit())
+        log(tr("Could not save ECU discovery: %1").arg(file.errorString()));
+    else
+        log(tr("Saved %1 ECU discovery result(s)").arg(results.size()));
+}
+
+void UDSWorkbenchWindow::loadEcuScan()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load ECU discovery results"), QString(),
+                                                          tr("UDS ECU discovery (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { log(tr("Could not open ECU discovery file")); return; }
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject() ||
+        !document.object()["results"].isArray())
+    {
+        log(tr("Invalid ECU discovery file"));
+        return;
+    }
+    ecuScanResults->clear();
+    for (const QJsonValue &value : document.object()["results"].toArray())
+    {
+        const QJsonObject result = value.toObject();
+        bool requestOk = false, responseOk = false;
+        const uint32_t requestId = parseNumber(result["requestId"].toString(), &requestOk);
+        const uint32_t responseId = parseNumber(result["responseId"].toString(), &responseOk);
+        if (!requestOk || !responseOk) continue;
+        QListWidgetItem *item = new QListWidgetItem(result["status"].toString(), ecuScanResults);
+        item->setData(Qt::UserRole, requestId);
+        item->setData(Qt::UserRole + 1, responseId);
+    }
+    log(tr("Loaded %1 ECU discovery result(s)").arg(ecuScanResults->count()));
+}
+
 void UDSWorkbenchWindow::startDidScan()
 {
     if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
@@ -861,7 +1164,11 @@ void UDSWorkbenchWindow::sendNextDidScan()
     message.subFunc = scanCurrentDid;
     activeService = message.service;
     requestContext = ContextDidScan;
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message))
+    {
+        finishDidScan(tr("DID scan transmit failed"));
+        return;
+    }
     responseTimer.start();
 }
 
@@ -1062,7 +1369,11 @@ void UDSWorkbenchWindow::sendNextServiceScan()
     message.subFuncLen = 0;
     activeService = message.service;
     requestContext = ContextServiceScan;
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message))
+    {
+        finishServiceScan(tr("Service scan transmit failed"));
+        return;
+    }
     responseTimer.start();
 }
 
@@ -1085,8 +1396,88 @@ void UDSWorkbenchWindow::finishServiceScan(const QString &status)
     log(tr("%1; %2 recognized services").arg(status).arg(serviceScanResults->count()));
 }
 
+void UDSWorkbenchWindow::saveServiceScan()
+{
+    if (serviceScanResults->count() == 0) { log(tr("There are no service scan results to save")); return; }
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Save service discovery results"), QString(),
+                                                     tr("UDS service discovery (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(".json", Qt::CaseInsensitive)) fileName += ".json";
+    QJsonArray results;
+    for (int index = 0; index < serviceScanResults->count(); ++index)
+    {
+        QListWidgetItem *item = serviceScanResults->item(index);
+        QJsonObject result;
+        result["service"] = item->data(Qt::UserRole).toInt();
+        result["nrc"] = item->data(Qt::UserRole + 1).toInt();
+        result["status"] = item->text();
+        results.append(result);
+    }
+    QJsonObject root;
+    root["version"] = 1;
+    root["results"] = results;
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(root).toJson()) < 0 || !file.commit())
+        log(tr("Could not save service discovery: %1").arg(file.errorString()));
+    else
+        log(tr("Saved %1 service discovery result(s)").arg(results.size()));
+}
+
+void UDSWorkbenchWindow::loadServiceScan()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load service discovery results"), QString(),
+                                                          tr("UDS service discovery (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { log(tr("Could not open service discovery file")); return; }
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject() ||
+        !document.object()["results"].isArray())
+    {
+        log(tr("Invalid service discovery file"));
+        return;
+    }
+    serviceScanResults->clear();
+    for (const QJsonValue &value : document.object()["results"].toArray())
+    {
+        const QJsonObject result = value.toObject();
+        if (!result["service"].isDouble() || !result["status"].isString()) continue;
+        QListWidgetItem *item = new QListWidgetItem(result["status"].toString(), serviceScanResults);
+        item->setData(Qt::UserRole, result["service"].toInt());
+        item->setData(Qt::UserRole + 1, result["nrc"].toInt(-1));
+    }
+    log(tr("Loaded %1 service discovery result(s)").arg(serviceScanResults->count()));
+}
+
 void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
 {
+    if (ecuScanActive && requestContext == ContextEcuScan)
+    {
+        if (message.bus != busSpin->value() || !ecuResponseIds.contains(message.frameId()) ||
+            (message.service != activeService && message.service != activeService + 0x40))
+            return;
+        for (int index = 0; index < ecuScanResults->count(); ++index)
+        {
+            QListWidgetItem *existing = ecuScanResults->item(index);
+            if (existing->data(Qt::UserRole).toUInt() == activeEcuRequestId &&
+                existing->data(Qt::UserRole + 1).toUInt() == message.frameId())
+                return;
+        }
+        QString result = tr("REQ 0x%1 -> RESP 0x%2  ")
+            .arg(activeEcuRequestId, 0, 16).arg(message.frameId(), 0, 16);
+        if (message.isErrorReply)
+            result += tr("NRC 0x%1: %2").arg(message.subFunc, 2, 16, QLatin1Char('0'))
+                .arg(udsHandler->getNegativeResponseShort(message.subFunc));
+        else
+            result += tr("TesterPresent positive");
+        QListWidgetItem *item = new QListWidgetItem(result.toUpper(), ecuScanResults);
+        item->setData(Qt::UserRole, activeEcuRequestId);
+        item->setData(Qt::UserRole + 1, message.frameId());
+        return;
+    }
+
     bool responseOk = false;
     const uint32_t responseId = parseNumber(responseIdEdit->text(), &responseOk);
     if (!responseOk || message.bus != busSpin->value() || message.frameId() != responseId ||
@@ -1102,6 +1493,7 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         {
             endpointConnected = false;
             connectButton->setText(tr("Connect session"));
+            for (QWidget *control : requestControls) control->setEnabled(false);
             connectionStatus->setText(status);
         }
         if (requestContext == ContextDidScan)
@@ -1115,10 +1507,15 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         {
             responseTimer.stop();
             if (nrc != 0x11)
-                serviceScanResults->addItem(tr("0x%1  %2  NRC 0x%3: %4")
-                    .arg(activeService, 2, 16, QLatin1Char('0')).arg(serviceName(activeService))
-                    .arg(nrc, 2, 16, QLatin1Char('0')).arg(udsHandler->getNegativeResponseShort(nrc))
-                    .toUpper());
+            {
+                QListWidgetItem *item = new QListWidgetItem(
+                    tr("0x%1  %2  NRC 0x%3: %4")
+                        .arg(activeService, 2, 16, QLatin1Char('0')).arg(serviceName(activeService))
+                        .arg(nrc, 2, 16, QLatin1Char('0')).arg(udsHandler->getNegativeResponseShort(nrc))
+                        .toUpper(), serviceScanResults);
+                item->setData(Qt::UserRole, activeService);
+                item->setData(Qt::UserRole + 1, nrc);
+            }
             sendNextServiceScan();
         }
         else if (activeDidRow >= 0) finishCurrentRequest(status);
@@ -1138,8 +1535,12 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
     responseTimer.stop();
     if (requestContext == ContextServiceScan)
     {
-        serviceScanResults->addItem(tr("0x%1  %2  positive response")
-            .arg(activeService, 2, 16, QLatin1Char('0')).arg(serviceName(activeService)).toUpper());
+        QListWidgetItem *item = new QListWidgetItem(
+            tr("0x%1  %2  positive response")
+                .arg(activeService, 2, 16, QLatin1Char('0')).arg(serviceName(activeService)).toUpper(),
+            serviceScanResults);
+        item->setData(Qt::UserRole, activeService);
+        item->setData(Qt::UserRole + 1, -1);
         sendNextServiceScan();
     }
     else if (requestContext == ContextDidScan && message.service == UDS_SERVICES::READ_BY_ID + 0x40)
@@ -1243,6 +1644,7 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
     {
         endpointConnected = true;
         connectButton->setText(tr("Disconnect"));
+        for (QWidget *control : requestControls) control->setEnabled(true);
         connectionStatus->setText(tr("Session active"));
         if (testerPresentCheck->isChecked()) testerTimer.start();
         if (pollingCheck->isChecked()) pollingTimer.start(100);
@@ -1267,7 +1669,11 @@ void UDSWorkbenchWindow::finishCurrentRequest(const QString &status)
 
 void UDSWorkbenchWindow::requestTimedOut()
 {
-    if (requestContext == ContextDidScan)
+    if (requestContext == ContextEcuScan)
+    {
+        sendNextEcuProbe();
+    }
+    else if (requestContext == ContextDidScan)
     {
         ++scanCurrentDid;
         scanProgress->setValue(scanCurrentDid);
@@ -1290,6 +1696,7 @@ void UDSWorkbenchWindow::requestTimedOut()
         {
             endpointConnected = false;
             connectButton->setText(tr("Connect session"));
+            for (QWidget *control : requestControls) control->setEnabled(false);
             testerTimer.stop();
         }
         activeService = -1;
@@ -1326,6 +1733,19 @@ void UDSWorkbenchWindow::loadSettings()
     busSpin->setValue(settings.value("UDSWorkbench/Bus", 0).toInt());
     requestIdEdit->setText(settings.value("UDSWorkbench/RequestId", "0x7E0").toString());
     responseIdEdit->setText(settings.value("UDSWorkbench/ResponseId", "0x7E8").toString());
+    responseOffsetEdit->setText(settings.value("UDSWorkbench/ResponseOffset", "0x8").toString());
+    QString responseMode = settings.value("UDSWorkbench/ResponseMode").toString();
+    if (responseMode.isEmpty())
+    {
+        bool requestOk = false, responseOk = false;
+        const uint32_t request = parseNumber(requestIdEdit->text(), &requestOk);
+        const uint32_t response = parseNumber(responseIdEdit->text(), &responseOk);
+        responseMode = requestOk && responseOk && quint64(request) + 8 == response
+            ? QStringLiteral("offset8") : QStringLiteral("id");
+    }
+    responseAddressModeCombo->setCurrentIndex(
+        qMax(0, responseAddressModeCombo->findData(responseMode)));
+    updateResponseIdFromMode();
     sessionCombo->setCurrentIndex(settings.value("UDSWorkbench/Session", 2).toInt());
     pollIntervalSpin->setValue(settings.value("UDSWorkbench/PollInterval", 1000).toInt());
     pollingCheck->setChecked(settings.value("UDSWorkbench/PollEnabled", false).toBool());
@@ -1340,6 +1760,8 @@ void UDSWorkbenchWindow::saveSettings() const
     settings.setValue("UDSWorkbench/Bus", busSpin->value());
     settings.setValue("UDSWorkbench/RequestId", requestIdEdit->text());
     settings.setValue("UDSWorkbench/ResponseId", responseIdEdit->text());
+    settings.setValue("UDSWorkbench/ResponseMode", responseAddressModeCombo->currentData().toString());
+    settings.setValue("UDSWorkbench/ResponseOffset", responseOffsetEdit->text());
     settings.setValue("UDSWorkbench/Session", sessionCombo->currentIndex());
     settings.setValue("UDSWorkbench/PollInterval", pollIntervalSpin->value());
     settings.setValue("UDSWorkbench/PollEnabled", pollingCheck->isChecked());

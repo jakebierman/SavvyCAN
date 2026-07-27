@@ -69,6 +69,8 @@ private slots:
     void scanModules();
     void scanSupportedPids();
     void addSelectedScannedPids();
+    void loadDiscoveryResults();
+    void saveDiscoveryResults();
     void gotReply(UDS_MESSAGE message);
     void requestFinished();
     void showDiagnosticGraph();
@@ -115,18 +117,25 @@ private:
     QJsonArray pidRowsToJson() const;
     void loadPidRows(const QJsonArray &rows);
     uint32_t parseNumber(const QString &text, bool *ok = nullptr) const;
+    QVector<QPair<uint32_t, uint32_t>> responseRules(bool *ok = nullptr, QString *error = nullptr) const;
+    bool responseMatches(uint32_t id) const;
 
     UDS_HANDLER *handler;
     QSpinBox *busSpin;
-    QLineEdit *requestIdEdit;
+    QComboBox *requestIdEdit;
+    QComboBox *responseModeCombo;
+    QLineEdit *responseIdEdit;
+    QLineEdit *responseMaskEdit;
+    QLabel *responseMaskLabel;
     QLabel *connectionStatus;
     QPushButton *connectButton;
+    QList<QWidget *> requestControls;
     QTableWidget *pidTable;
     QCheckBox *pollCheck;
     QSpinBox *pollIntervalSpin;
     QTextEdit *dtcOutput;
     QLabel *dtcDatabaseStatus;
-    QLineEdit *vehiclePidEdit;
+    QComboBox *vehiclePidEdit;
     QTextEdit *vehicleOutput;
     QLineEdit *freezePidEdit;
     QSpinBox *freezeFrameSpin;

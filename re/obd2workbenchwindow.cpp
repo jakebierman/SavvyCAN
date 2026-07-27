@@ -40,6 +40,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
 
 namespace {
 struct KnownPid { int pid; const char *name; const char *format; };
@@ -364,21 +365,57 @@ void OBD2WorkbenchWindow::buildUi()
     QHBoxLayout *endpointLayout = new QHBoxLayout(endpoint);
     busSpin = new QSpinBox(endpoint);
     busSpin->setRange(0, qMax(0, CANConManager::getInstance()->getNumBuses() - 1));
-    requestIdEdit = new QLineEdit(QStringLiteral("0x7DF"), endpoint);
-    connectButton = new QPushButton(tr("Connect"), endpoint);
+    requestIdEdit = new QComboBox(endpoint);
+    requestIdEdit->setEditable(true);
+    requestIdEdit->setInsertPolicy(QComboBox::NoInsert);
+    requestIdEdit->addItem(QStringLiteral("0x7DF"));
+    for (int id = 0x7E0; id <= 0x7E7; ++id)
+        requestIdEdit->addItem(QStringLiteral("0x%1").arg(id, 0, 16).toUpper());
+    requestIdEdit->setCurrentText(QStringLiteral("0x7DF"));
+    requestIdEdit->setToolTip(tr("Functional 0x7DF or a physical/custom 11-bit or 29-bit request ID"));
+    responseModeCombo = new QComboBox(endpoint);
+    responseModeCombo->addItem(tr("Range / List"), QStringLiteral("list"));
+    responseModeCombo->addItem(tr("ID + Mask"), QStringLiteral("mask"));
+    responseIdEdit = new QLineEdit(QStringLiteral("0x7E8-0x7EF"), endpoint);
+    responseMaskEdit = new QLineEdit(QStringLiteral("0x7F8"), endpoint);
+    responseMaskLabel = new QLabel(tr("Mask"), endpoint);
+    connectButton = new QPushButton(tr("Enable OBD"), endpoint);
     connectionStatus = new QLabel(tr("Disconnected"), endpoint);
     endpointLayout->addWidget(new QLabel(tr("Bus"), endpoint));
     endpointLayout->addWidget(busSpin);
     endpointLayout->addWidget(new QLabel(tr("Request ID"), endpoint));
     endpointLayout->addWidget(requestIdEdit);
+    endpointLayout->addWidget(new QLabel(tr("Responses"), endpoint));
+    endpointLayout->addWidget(responseModeCombo);
+    endpointLayout->addWidget(responseIdEdit);
+    endpointLayout->addWidget(responseMaskLabel);
+    endpointLayout->addWidget(responseMaskEdit);
     endpointLayout->addWidget(connectButton);
-    endpointLayout->addWidget(new QLabel(tr("Responses 0x7E8-0x7EF"), endpoint));
     endpointLayout->addStretch();
     endpointLayout->addWidget(connectionStatus);
     root->addWidget(endpoint);
     connect(connectButton, &QPushButton::clicked, this, [this]() {
         if (connected) disconnectEndpoint(); else connectEndpoint();
     });
+    connect(responseModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() {
+        const bool maskMode = responseModeCombo->currentData().toString() == QStringLiteral("mask");
+        responseMaskLabel->setVisible(maskMode);
+        responseMaskEdit->setVisible(maskMode);
+        responseIdEdit->setPlaceholderText(maskMode ? tr("Response ID")
+            : tr("e.g. 0x7E8-0x7EF, 0x18DAF110"));
+    });
+    connect(requestIdEdit, qOverload<int>(&QComboBox::activated), this, [this](int) {
+        bool ok = false;
+        const uint32_t requestId = parseNumber(requestIdEdit->currentText(), &ok);
+        if (!ok) return;
+        responseModeCombo->setCurrentIndex(responseModeCombo->findData(QStringLiteral("list")));
+        if (requestId == 0x7DF)
+            responseIdEdit->setText(QStringLiteral("0x7E8-0x7EF"));
+        else if (requestId >= 0x7E0 && requestId <= 0x7E7)
+            responseIdEdit->setText(QStringLiteral("0x%1").arg(requestId + 8, 0, 16).toUpper());
+    });
+    responseMaskLabel->setVisible(false);
+    responseMaskEdit->setVisible(false);
 
     QTabWidget *tabs = new QTabWidget(this);
     QWidget *livePage = new QWidget(tabs);
@@ -389,6 +426,7 @@ void OBD2WorkbenchWindow::buildUi()
     pidTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     pidTable->horizontalHeader()->setSectionResizeMode(PidResponses, QHeaderView::Stretch);
     pidTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    pidTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     liveLayout->addWidget(pidTable);
     QHBoxLayout *liveButtons = new QHBoxLayout;
     QPushButton *addButton = new QPushButton(tr("Add PID"), livePage);
@@ -510,9 +548,13 @@ void OBD2WorkbenchWindow::buildUi()
     QHBoxLayout *discoveryButtons = new QHBoxLayout;
     QPushButton *moduleScanButton = new QPushButton(tr("Scan modules"), discoveryPage);
     QPushButton *pidScanButton = new QPushButton(tr("Scan available PIDs"), discoveryPage);
+    QPushButton *loadDiscoveryButton = new QPushButton(tr("Load results"), discoveryPage);
+    QPushButton *saveDiscoveryButton = new QPushButton(tr("Save results"), discoveryPage);
     QPushButton *addScannedButton = new QPushButton(tr("Add selected to Live data"), discoveryPage);
     discoveryButtons->addWidget(moduleScanButton);
     discoveryButtons->addWidget(pidScanButton);
+    discoveryButtons->addWidget(loadDiscoveryButton);
+    discoveryButtons->addWidget(saveDiscoveryButton);
     discoveryButtons->addStretch();
     discoveryButtons->addWidget(addScannedButton);
     discoveryLayout->addLayout(discoveryButtons);
@@ -525,6 +567,8 @@ void OBD2WorkbenchWindow::buildUi()
     discoveryLayout->addWidget(discoveryPidList, 1);
     connect(moduleScanButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::scanModules);
     connect(pidScanButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::scanSupportedPids);
+    connect(loadDiscoveryButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDiscoveryResults);
+    connect(saveDiscoveryButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::saveDiscoveryResults);
     connect(addScannedButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::addSelectedScannedPids);
     tabs->addTab(discoveryPage, tr("Discovery"));
 
@@ -605,7 +649,20 @@ void OBD2WorkbenchWindow::buildUi()
     QWidget *infoPage = new QWidget(tabs);
     QVBoxLayout *infoLayout = new QVBoxLayout(infoPage);
     QHBoxLayout *infoControls = new QHBoxLayout;
-    vehiclePidEdit = new QLineEdit(QStringLiteral("0x02"), infoPage);
+    vehiclePidEdit = new QComboBox(infoPage);
+    vehiclePidEdit->setEditable(true);
+    vehiclePidEdit->addItem(tr("0x00 - Supported vehicle-information PIDs"), 0x00);
+    vehiclePidEdit->addItem(tr("0x01 - VIN message count"), 0x01);
+    vehiclePidEdit->addItem(tr("0x02 - Vehicle identification number"), 0x02);
+    vehiclePidEdit->addItem(tr("0x03 - Calibration ID message count"), 0x03);
+    vehiclePidEdit->addItem(tr("0x04 - Calibration IDs"), 0x04);
+    vehiclePidEdit->addItem(tr("0x05 - CVN message count"), 0x05);
+    vehiclePidEdit->addItem(tr("0x06 - Calibration verification numbers"), 0x06);
+    vehiclePidEdit->addItem(tr("0x07 - Performance tracking message count"), 0x07);
+    vehiclePidEdit->addItem(tr("0x08 - In-use performance tracking"), 0x08);
+    vehiclePidEdit->addItem(tr("0x09 - ECU name message count"), 0x09);
+    vehiclePidEdit->addItem(tr("0x0A - ECU name"), 0x0A);
+    vehiclePidEdit->setCurrentIndex(2);
     QPushButton *infoButton = new QPushButton(tr("Request Mode 09"), infoPage);
     infoControls->addWidget(new QLabel(tr("Information PID"), infoPage));
     infoControls->addWidget(vehiclePidEdit);
@@ -617,6 +674,10 @@ void OBD2WorkbenchWindow::buildUi()
     infoLayout->addWidget(vehicleOutput);
     connect(infoButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestVehicleInfo);
     tabs->addTab(infoPage, tr("Vehicle information"));
+    requestControls = {selectedButton, enabledButton, pollCheck, moduleScanButton, pidScanButton,
+        storedButton, pendingButton, permanentButton, clearButton, freezeButton, freezeScanButton,
+        monitorButton, infoButton};
+    for (QWidget *control : requestControls) control->setEnabled(false);
     root->addWidget(tabs, 1);
 
     eventLog = new QTextEdit(this);
@@ -803,6 +864,56 @@ uint32_t OBD2WorkbenchWindow::parseNumber(const QString &text, bool *ok) const
     return value.toUInt(ok, base);
 }
 
+QVector<QPair<uint32_t, uint32_t>> OBD2WorkbenchWindow::responseRules(bool *ok, QString *error) const
+{
+    QVector<QPair<uint32_t, uint32_t>> rules;
+    bool valid = true;
+    if (responseModeCombo->currentData().toString() == QStringLiteral("mask"))
+    {
+        bool idOk = false, maskOk = false;
+        const uint32_t id = parseNumber(responseIdEdit->text(), &idOk);
+        const uint32_t mask = parseNumber(responseMaskEdit->text(), &maskOk);
+        valid = idOk && maskOk && id <= 0x1FFFFFFF && mask > 0 && mask <= 0x1FFFFFFF;
+        if (valid) rules.append(qMakePair(id & mask, mask));
+    }
+    else
+    {
+        const QStringList entries = responseIdEdit->text().split(',', Qt::SkipEmptyParts);
+        for (const QString &entryText : entries)
+        {
+            const QString entry = entryText.trimmed();
+            const QStringList bounds = entry.split('-', Qt::KeepEmptyParts);
+            bool firstOk = false, lastOk = false;
+            const uint32_t first = parseNumber(bounds.value(0), &firstOk);
+            const uint32_t last = bounds.size() == 1 ? first : parseNumber(bounds.value(1), &lastOk);
+            if (bounds.size() == 1) lastOk = firstOk;
+            if (bounds.size() > 2 || !firstOk || !lastOk || first > last ||
+                last > 0x1FFFFFFF || quint64(last) - first > 4095)
+            {
+                valid = false;
+                break;
+            }
+            for (quint64 id = first; id <= last; ++id)
+                rules.append(qMakePair(uint32_t(id), id > 0x7FF ? 0x1FFFFFFFU : 0x7FFU));
+        }
+        valid = valid && !rules.isEmpty();
+    }
+    if (ok) *ok = valid;
+    if (!valid && error)
+        *error = tr("Use comma-separated IDs/ranges (maximum 4096 IDs per range), or a valid ID and mask");
+    return valid ? rules : QVector<QPair<uint32_t, uint32_t>>();
+}
+
+bool OBD2WorkbenchWindow::responseMatches(uint32_t id) const
+{
+    bool ok = false;
+    const auto rules = responseRules(&ok);
+    if (!ok) return false;
+    for (const auto &rule : rules)
+        if ((id & rule.second) == rule.first) return true;
+    return false;
+}
+
 QString OBD2WorkbenchWindow::pidText(int row) const
 {
     QComboBox *combo = qobject_cast<QComboBox *>(pidTable->cellWidget(row, PidNumber));
@@ -956,8 +1067,13 @@ QString OBD2WorkbenchWindow::decodeReadiness(int pid, const QByteArray &data) co
 void OBD2WorkbenchWindow::connectEndpoint()
 {
     bool ok = false;
-    const uint32_t requestId = parseNumber(requestIdEdit->text(), &ok);
-    if (!ok) { connectionStatus->setText(tr("Invalid request ID")); return; }
+    const uint32_t requestId = parseNumber(requestIdEdit->currentText(), &ok);
+    bool rulesOk = false;
+    QString rulesError;
+    const auto rules = responseRules(&rulesOk, &rulesError);
+    if (!ok || !rulesOk) {
+        connectionStatus->setText(ok ? rulesError : tr("Invalid request ID")); return;
+    }
     if (!CANConManager::getInstance()->isBusConnected(busSpin->value())) {
         connected = false;
         connectionStatus->setText(tr("Bus %1 is not connected").arg(busSpin->value()));
@@ -965,10 +1081,12 @@ void OBD2WorkbenchWindow::connectEndpoint()
         return;
     }
     handler->clearAllFilters();
-    handler->addFilter(busSpin->value(), 0x7E8, 0x7F8);
+    for (const auto &rule : rules)
+        handler->addFilter(busSpin->value(), rule.first, rule.second);
     handler->setReception(true);
     connected = true;
-    connectButton->setText(tr("Disconnect"));
+    connectButton->setText(tr("Disable OBD"));
+    for (QWidget *control : requestControls) control->setEnabled(true);
     connectionStatus->setText(tr("Ready - awaiting ECU response"));
     eventLog->append(tr("Listening for OBD-II ECU responses"));
     Q_UNUSED(requestId)
@@ -986,7 +1104,8 @@ void OBD2WorkbenchWindow::disconnectEndpoint()
     handler->clearAllFilters();
     handler->setReception(false);
     connected = false;
-    connectButton->setText(tr("Connect"));
+    connectButton->setText(tr("Enable OBD"));
+    for (QWidget *control : requestControls) control->setEnabled(false);
     connectionStatus->setText(tr("Disconnected"));
     eventLog->append(tr("Stopped OBD-II requests and response listening"));
 }
@@ -1095,7 +1214,15 @@ int OBD2WorkbenchWindow::clearPidRequests()
     return removed;
 }
 
-void OBD2WorkbenchWindow::removePid() { if (pidTable->currentRow() >= 0) pidTable->removeRow(pidTable->currentRow()); }
+void OBD2WorkbenchWindow::removePid()
+{
+    QSet<int> selectedRows;
+    for (const QModelIndex &index : pidTable->selectionModel()->selectedRows())
+        selectedRows.insert(index.row());
+    QList<int> rows = selectedRows.values();
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    for (int row : rows) pidTable->removeRow(row);
+}
 
 void OBD2WorkbenchWindow::loadPidList()
 {
@@ -1113,7 +1240,7 @@ void OBD2WorkbenchWindow::loadPidList()
     }
     const QJsonObject profile = document.object();
     busSpin->setValue(profile["bus"].toInt(busSpin->value()));
-    requestIdEdit->setText(profile["requestId"].toString(requestIdEdit->text()));
+    requestIdEdit->setCurrentText(profile["requestId"].toString(requestIdEdit->currentText()));
     loadPidRows(profile["pids"].toArray());
     connected = false;
     connectionStatus->setText(tr("Reconnect imported endpoint"));
@@ -1129,7 +1256,7 @@ void OBD2WorkbenchWindow::savePidList()
     QJsonObject profile;
     profile["version"] = 1;
     profile["bus"] = busSpin->value();
-    profile["requestId"] = requestIdEdit->text();
+    profile["requestId"] = requestIdEdit->currentText();
     profile["pids"] = pidRowsToJson();
     QSaveFile file(fileName);
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(profile).toJson()) < 0 || !file.commit())
@@ -1162,7 +1289,7 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
 {
     if (!connected || responseTimer.isActive()) { connectionStatus->setText(tr("Connect first or wait for the active request")); return; }
     bool ok = false;
-    const uint32_t requestId = parseNumber(requestIdEdit->text(), &ok);
+    const uint32_t requestId = parseNumber(requestIdEdit->currentText(), &ok);
     if (!ok) return;
     UDS_MESSAGE message;
     message.bus = busSpin->value();
@@ -1175,7 +1302,8 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
     context = nextContext;
     if (!handler->sendUDSFrame(message)) {
         connected = false;
-        connectButton->setText(tr("Connect"));
+        connectButton->setText(tr("Enable OBD"));
+        for (QWidget *control : requestControls) control->setEnabled(false);
         pollTimer.stop();
         if (pollCheck->isChecked()) pollCheck->setChecked(false);
         connectionStatus->setText(tr("Transmit failed on bus %1").arg(message.bus));
@@ -1211,7 +1339,10 @@ void OBD2WorkbenchWindow::clearDtcs()
 void OBD2WorkbenchWindow::requestVehicleInfo()
 {
     bool ok = false;
-    const uint32_t pid = parseNumber(vehiclePidEdit->text(), &ok);
+    QString pidText = vehiclePidEdit->currentText();
+    const int separator = pidText.indexOf(QStringLiteral(" - "));
+    if (separator >= 0) pidText.truncate(separator);
+    const uint32_t pid = parseNumber(pidText, &ok);
     if (!ok || pid > 0xFF) { vehicleOutput->setText(tr("Invalid information PID")); return; }
     vehicleOutput->clear();
     activePid = pid;
@@ -1222,6 +1353,7 @@ void OBD2WorkbenchWindow::scanModules()
 {
     discoveryOutput->clear();
     discoveryPidList->clear();
+    supportedPidsByEcu.clear();
     discoveryOutput->setText(tr("Sending functional Mode 01 PID 00 request..."));
     activePid = 0;
     sendRequest(1, QByteArray(1, char(0x00)), ModuleScan);
@@ -1302,6 +1434,98 @@ void OBD2WorkbenchWindow::addSelectedScannedPids()
     discoveryOutput->append(tr("Added %1 selected PIDs to Live data.").arg(added));
 }
 
+void OBD2WorkbenchWindow::saveDiscoveryResults()
+{
+    if (supportedPidsByEcu.isEmpty())
+    {
+        discoveryOutput->append(tr("There are no discovery results to save."));
+        return;
+    }
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Save OBD-II discovery results"), QString(),
+                                                     tr("OBD-II discovery results (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(".json", Qt::CaseInsensitive)) fileName += ".json";
+
+    QJsonArray ecus;
+    for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
+    {
+        QList<int> sortedPids = iterator.value().values();
+        std::sort(sortedPids.begin(), sortedPids.end());
+        QJsonArray pids;
+        for (int pid : sortedPids) pids.append(pid);
+        QJsonObject ecu;
+        ecu["responseId"] = QStringLiteral("0x%1").arg(iterator.key(), 0, 16).toUpper();
+        ecu["supportedPids"] = pids;
+        ecus.append(ecu);
+    }
+
+    QJsonObject document;
+    document["version"] = 1;
+    document["savedAt"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+    document["requestId"] = requestIdEdit->currentText();
+    document["responseMode"] = responseModeCombo->currentData().toString();
+    document["responseSpec"] = responseIdEdit->text();
+    document["responseMask"] = responseMaskEdit->text();
+    document["ecus"] = ecus;
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(document).toJson()) < 0 || !file.commit())
+    {
+        discoveryOutput->append(tr("Could not save discovery results: %1").arg(file.errorString()));
+        return;
+    }
+    discoveryOutput->append(tr("Saved discovery results for %1 ECU(s) to %2.")
+                            .arg(ecus.size()).arg(fileName));
+}
+
+void OBD2WorkbenchWindow::loadDiscoveryResults()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Load OBD-II discovery results"), QString(),
+                                                          tr("OBD-II discovery results (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        discoveryOutput->append(tr("Could not open discovery results: %1").arg(file.errorString()));
+        return;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        !document.object()["ecus"].isArray())
+    {
+        discoveryOutput->append(tr("Invalid discovery results: %1").arg(parseError.errorString()));
+        return;
+    }
+
+    QMap<uint32_t, QSet<int>> loaded;
+    for (const QJsonValue &value : document.object()["ecus"].toArray())
+    {
+        const QJsonObject ecu = value.toObject();
+        bool idOk = false;
+        const uint32_t responseId = parseNumber(ecu["responseId"].toString(), &idOk);
+        if (!idOk || responseId > 0x1FFFFFFF || !ecu["supportedPids"].isArray()) continue;
+        QSet<int> pids;
+        for (const QJsonValue &pidValue : ecu["supportedPids"].toArray())
+        {
+            const int pid = pidValue.toInt(-1);
+            if (pid >= 0 && pid <= 0xFF) pids.insert(pid);
+        }
+        loaded.insert(responseId, pids);
+    }
+    if (loaded.isEmpty())
+    {
+        discoveryOutput->append(tr("Discovery file contains no valid ECU results."));
+        return;
+    }
+    supportedPidsByEcu = loaded;
+    discoveryOutput->clear();
+    discoveryPidList->clear();
+    discoveryOutput->append(tr("Loaded discovery results for %1 ECU(s) from %2.")
+                            .arg(loaded.size()).arg(fileName));
+    finishSupportedPidScan();
+}
+
 QString OBD2WorkbenchWindow::decodeObdDtcs(const QByteArray &data) const
 {
     QStringList codes;
@@ -1353,7 +1577,7 @@ void OBD2WorkbenchWindow::exportDiagnosticReport()
     QTextStream out(&file);
     out << "SavvyCAN OBD-II diagnostic report\n"
         << "Generated: " << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << '\n'
-        << "Bus: " << busSpin->value() << "  Request ID: " << requestIdEdit->text() << '\n'
+        << "Bus: " << busSpin->value() << "  Request ID: " << requestIdEdit->currentText() << '\n'
         << "DTC database: " << dtcDatabaseSource << " " << dtcDatabaseVersion << "\n\nLive data\n";
     for (int row = 0; row < pidTable->rowCount(); ++row)
         out << pidTable->item(row, PidName)->text() << " (" << pidText(row) << "): "
@@ -1464,6 +1688,20 @@ QString OBD2WorkbenchWindow::decodeVehicleInfo(int pid, const QByteArray &data) 
     if (!value.isEmpty()) value.remove(0, 1); // record count or sequence byte
     if (pid == 0x02 || pid == 0x04 || pid == 0x0A)
         return QString::fromLatin1(value).remove(QChar('\0')).trimmed();
+    if (pid == 0x01 || pid == 0x03 || pid == 0x05 || pid == 0x07 || pid == 0x09)
+        return data.isEmpty() ? tr("No message count returned")
+                              : tr("%1 message(s)").arg(quint8(data.at(data.size() - 1)));
+    if (pid == 0x06)
+    {
+        QStringList values;
+        for (int offset = 0; offset + 3 < value.size(); offset += 4)
+        {
+            const uint32_t cvn = (quint8(value[offset]) << 24) | (quint8(value[offset + 1]) << 16) |
+                                 (quint8(value[offset + 2]) << 8) | quint8(value[offset + 3]);
+            values << QStringLiteral("0x%1").arg(cvn, 8, 16, QLatin1Char('0')).toUpper();
+        }
+        if (!values.isEmpty()) return values.join(QStringLiteral(", "));
+    }
     return QString::fromLatin1(data.toHex(' ').toUpper());
 }
 
@@ -1575,7 +1813,7 @@ QString OBD2WorkbenchWindow::decodeMonitorResults(const QByteArray &data) const
 
 void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
 {
-    if (message.bus != busSpin->value() || message.frameId() < 0x7E8 || message.frameId() > 0x7EF ||
+    if (message.bus != busSpin->value() || !responseMatches(message.frameId()) ||
         message.service != activeMode + 0x40) return;
     connectionStatus->setText(tr("ECU responding"));
     responseTimer.start();
@@ -1714,7 +1952,24 @@ void OBD2WorkbenchWindow::loadSettings()
 {
     QSettings settings;
     busSpin->setValue(settings.value("OBD2Workbench/Bus", 0).toInt());
-    requestIdEdit->setText(settings.value("OBD2Workbench/RequestId", "0x7DF").toString());
+    requestIdEdit->setCurrentText(settings.value("OBD2Workbench/RequestId", "0x7DF").toString());
+    if (settings.contains("OBD2Workbench/ResponseMode"))
+    {
+        const int modeIndex = responseModeCombo->findData(settings.value("OBD2Workbench/ResponseMode").toString());
+        responseModeCombo->setCurrentIndex(qMax(0, modeIndex));
+        responseIdEdit->setText(settings.value("OBD2Workbench/ResponseSpec", "0x7E8-0x7EF").toString());
+    }
+    else if (settings.contains("OBD2Workbench/ResponseId"))
+    {
+        responseModeCombo->setCurrentIndex(responseModeCombo->findData(QStringLiteral("mask")));
+        responseIdEdit->setText(settings.value("OBD2Workbench/ResponseId", "0x7E8").toString());
+    }
+    else
+    {
+        responseModeCombo->setCurrentIndex(responseModeCombo->findData(QStringLiteral("list")));
+        responseIdEdit->setText(QStringLiteral("0x7E8-0x7EF"));
+    }
+    responseMaskEdit->setText(settings.value("OBD2Workbench/ResponseMask", "0x7F8").toString());
     pollIntervalSpin->setValue(settings.value("OBD2Workbench/PollInterval", 1000).toInt());
     const QJsonArray rows = QJsonDocument::fromJson(settings.value("OBD2Workbench/Pids").toByteArray()).array();
     loadPidRows(rows);
@@ -1753,7 +2008,10 @@ void OBD2WorkbenchWindow::saveSettings() const
 {
     QSettings settings;
     settings.setValue("OBD2Workbench/Bus", busSpin->value());
-    settings.setValue("OBD2Workbench/RequestId", requestIdEdit->text());
+    settings.setValue("OBD2Workbench/RequestId", requestIdEdit->currentText());
+    settings.setValue("OBD2Workbench/ResponseMode", responseModeCombo->currentData().toString());
+    settings.setValue("OBD2Workbench/ResponseSpec", responseIdEdit->text());
+    settings.setValue("OBD2Workbench/ResponseMask", responseMaskEdit->text());
     settings.setValue("OBD2Workbench/PollInterval", pollIntervalSpin->value());
     settings.setValue("OBD2Workbench/Pids", QJsonDocument(pidRowsToJson()).toJson(QJsonDocument::Compact));
     settings.setValue("OBD2Workbench/DashboardColumns", dashboardColumnsSpin->value());

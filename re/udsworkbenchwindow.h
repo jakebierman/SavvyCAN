@@ -59,8 +59,15 @@ private slots:
     void addSelectedScannedDids();
     void saveDidScan();
     void loadDidScan();
+    void startEcuScan();
+    void stopEcuScan();
+    void useSelectedEcu();
+    void saveEcuScan();
+    void loadEcuScan();
     void startServiceScan();
     void stopServiceScan();
+    void saveServiceScan();
+    void loadServiceScan();
     void gotUDSReply(UDS_MESSAGE message);
     void requestTimedOut();
     void sendTesterPresent();
@@ -69,7 +76,8 @@ private slots:
 private:
     enum DidColumn { DidEnabled, DidName, DidIdentifier, DidFormat, DidPollMs, DidRaw, DidDecoded, DidStatus, DidUpdated, DidColumnCount };
     enum RequestContext { ContextNone, ContextSession, ContextManual, ContextDtcRead, ContextDtcClear,
-                          ContextRoutine, ContextDidScan, ContextServiceScan, ContextControl, ContextSecurity };
+                          ContextRoutine, ContextDidScan, ContextServiceScan, ContextEcuScan,
+                          ContextControl, ContextSecurity };
 
     void buildUi();
     void sendNextDid();
@@ -83,16 +91,22 @@ private:
     void sendServiceRequest(int service, const QByteArray &data, RequestContext context);
     void sendNextDidScan();
     void finishDidScan(const QString &status);
+    void sendNextEcuProbe();
+    void finishEcuScan(const QString &status);
+    void updateResponseIdFromMode();
     void sendNextServiceScan();
     void finishServiceScan(const QString &status);
     QString serviceName(int service) const;
     QString decodeDtcResponse(const QByteArray &payload) const;
     void appendCsvRow(int row);
     uint32_t parseNumber(const QString &text, bool *ok = nullptr) const;
+    QVector<uint32_t> parseIdSpec(const QString &text, bool *ok = nullptr) const;
 
     UDS_HANDLER *udsHandler;
     QSpinBox *busSpin;
     QLineEdit *requestIdEdit;
+    QComboBox *responseAddressModeCombo;
+    QLineEdit *responseOffsetEdit;
     QLineEdit *responseIdEdit;
     QComboBox *sessionCombo;
     QCheckBox *testerPresentCheck;
@@ -100,6 +114,7 @@ private:
     QSpinBox *pollIntervalSpin;
     QLabel *connectionStatus;
     QPushButton *connectButton;
+    QList<QWidget *> requestControls;
     QTableWidget *didTable;
     QLineEdit *manualServiceEdit;
     QLineEdit *manualPayloadEdit;
@@ -126,6 +141,12 @@ private:
     QPushButton *scanStartButton;
     QPushButton *scanResumeButton;
     QPushButton *scanStopButton;
+    QLineEdit *ecuRequestSpecEdit;
+    QLineEdit *ecuResponseSpecEdit;
+    QSpinBox *ecuScanTimeoutSpin;
+    QListWidget *ecuScanResults;
+    QPushButton *ecuScanStartButton;
+    QPushButton *ecuScanStopButton;
     QListWidget *serviceScanResults;
     QPushButton *serviceScanStartButton;
     QPushButton *serviceScanStopButton;
@@ -142,10 +163,14 @@ private:
     bool endpointConnected = false;
     DiagnosticGraphWindow *diagnosticGraph = nullptr;
     bool didScanActive = false;
+    bool ecuScanActive = false;
     bool serviceScanActive = false;
     int scanCurrentDid = 0;
     int scanEndDid = 0;
     QQueue<int> serviceScanQueue;
+    QQueue<uint32_t> ecuRequestQueue;
+    QVector<uint32_t> ecuResponseIds;
+    uint32_t activeEcuRequestId = 0;
     int normalResponseTimeout = 1500;
 };
 
