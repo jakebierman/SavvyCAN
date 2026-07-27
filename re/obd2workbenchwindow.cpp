@@ -365,7 +365,7 @@ void OBD2WorkbenchWindow::buildUi()
     busSpin = new QSpinBox(endpoint);
     busSpin->setRange(0, qMax(0, CANConManager::getInstance()->getNumBuses() - 1));
     requestIdEdit = new QLineEdit(QStringLiteral("0x7DF"), endpoint);
-    QPushButton *connectButton = new QPushButton(tr("Connect"), endpoint);
+    connectButton = new QPushButton(tr("Connect"), endpoint);
     connectionStatus = new QLabel(tr("Disconnected"), endpoint);
     endpointLayout->addWidget(new QLabel(tr("Bus"), endpoint));
     endpointLayout->addWidget(busSpin);
@@ -376,7 +376,9 @@ void OBD2WorkbenchWindow::buildUi()
     endpointLayout->addStretch();
     endpointLayout->addWidget(connectionStatus);
     root->addWidget(endpoint);
-    connect(connectButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::connectEndpoint);
+    connect(connectButton, &QPushButton::clicked, this, [this]() {
+        if (connected) disconnectEndpoint(); else connectEndpoint();
+    });
 
     QTabWidget *tabs = new QTabWidget(this);
     QWidget *livePage = new QWidget(tabs);
@@ -423,7 +425,11 @@ void OBD2WorkbenchWindow::buildUi()
     connect(graphButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::showDiagnosticGraph);
     connect(tripRecordButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::toggleTripRecording);
     connect(pollCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled) pollTimer.start(pollIntervalSpin->value()); else pollTimer.stop();
+        if (enabled) {
+            if (!connected) connectEndpoint();
+            if (connected) pollTimer.start(pollIntervalSpin->value());
+            else pollCheck->setChecked(false);
+        } else pollTimer.stop();
     });
     connect(pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         if (pollTimer.isActive()) pollTimer.start(value);
@@ -952,13 +958,37 @@ void OBD2WorkbenchWindow::connectEndpoint()
     bool ok = false;
     const uint32_t requestId = parseNumber(requestIdEdit->text(), &ok);
     if (!ok) { connectionStatus->setText(tr("Invalid request ID")); return; }
+    if (!CANConManager::getInstance()->isBusConnected(busSpin->value())) {
+        connected = false;
+        connectionStatus->setText(tr("Bus %1 is not connected").arg(busSpin->value()));
+        eventLog->append(tr("Cannot start OBD-II: selected CAN bus is not connected"));
+        return;
+    }
     handler->clearAllFilters();
     handler->addFilter(busSpin->value(), 0x7E8, 0x7F8);
     handler->setReception(true);
     connected = true;
-    connectionStatus->setText(tr("Connected"));
+    connectButton->setText(tr("Disconnect"));
+    connectionStatus->setText(tr("Ready - awaiting ECU response"));
     eventLog->append(tr("Listening for OBD-II ECU responses"));
     Q_UNUSED(requestId)
+}
+
+void OBD2WorkbenchWindow::disconnectEndpoint()
+{
+    pollTimer.stop();
+    responseTimer.stop();
+    if (pollCheck->isChecked()) pollCheck->setChecked(false);
+    pidQueue.clear();
+    activePidRow = -1;
+    activeMode = -1;
+    context = None;
+    handler->clearAllFilters();
+    handler->setReception(false);
+    connected = false;
+    connectButton->setText(tr("Connect"));
+    connectionStatus->setText(tr("Disconnected"));
+    eventLog->append(tr("Stopped OBD-II requests and response listening"));
 }
 
 void OBD2WorkbenchWindow::addPid()
@@ -1140,10 +1170,30 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
     message.setExtendedFrameFormat(requestId > 0x7FF);
     message.service = mode;
     message.subFuncLen = 0;
-    message.payload() = data;
+    message.setPayload(data);
     activeMode = mode;
     context = nextContext;
-    handler->sendUDSFrame(message);
+    if (!handler->sendUDSFrame(message)) {
+        connected = false;
+        connectButton->setText(tr("Connect"));
+        pollTimer.stop();
+        if (pollCheck->isChecked()) pollCheck->setChecked(false);
+        connectionStatus->setText(tr("Transmit failed on bus %1").arg(message.bus));
+        eventLog->append(tr("OBD-II transmit failed: bus %1, ID 0x%2")
+                         .arg(message.bus).arg(requestId, 0, 16).toUpper());
+        if (activePidRow >= 0 && activePidRow < pidTable->rowCount())
+            pidTable->item(activePidRow, PidResponses)->setText(tr("Transmit failed"));
+        pidQueue.clear();
+        activePidRow = -1;
+        activeMode = -1;
+        context = None;
+        return;
+    }
+    eventLog->append(tr("TX bus %1 ID 0x%2 service 0x%3 data %4")
+                     .arg(message.bus)
+                     .arg(requestId, 0, 16)
+                     .arg(mode, 2, 16, QLatin1Char('0'))
+                     .arg(QString::fromLatin1(data.toHex(' '))).toUpper());
     responseTimer.start();
 }
 
@@ -1527,6 +1577,7 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
 {
     if (message.bus != busSpin->value() || message.frameId() < 0x7E8 || message.frameId() > 0x7EF ||
         message.service != activeMode + 0x40) return;
+    connectionStatus->setText(tr("ECU responding"));
     responseTimer.start();
     QByteArray payload = message.payload();
     const QString ecu = QStringLiteral("0x%1").arg(message.frameId(), 3, 16, QLatin1Char('0')).toUpper();

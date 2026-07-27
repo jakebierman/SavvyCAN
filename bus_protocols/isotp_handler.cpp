@@ -48,14 +48,15 @@ void ISOTP_HANDLER::setReception(bool mode)
     }
 }
 
-void ISOTP_HANDLER::sendISOTPFrame(int bus, int ID, QByteArray data)
+bool ISOTP_HANDLER::sendISOTPFrame(int bus, int ID, QByteArray data)
 {
     CANFrame frame;
     frame.setFrameType(QCanBusFrame::DataFrame);
     int currByte = 0;
     int sequence = 1; //Initial Sequence number is 1
-    if (bus < 0) return;
-    if (bus >= CANConManager::getInstance()->getNumBuses()) return;
+    if (bus < 0) return false;
+    if (bus >= CANConManager::getInstance()->getNumBuses()) return false;
+    if (!CANConManager::getInstance()->isBusConnected(bus)) return false;
 
     lastSenderID = ID;
     lastSenderBus = bus;
@@ -72,7 +73,7 @@ void ISOTP_HANDLER::sendISOTPFrame(int bus, int ID, QByteArray data)
         bytes[0] = data.length();
         for (int i = 0; i < data.length(); i++) bytes[i + 1] = data[i];
         frame.setPayload(bytes);
-        CANConManager::getInstance()->sendFrame(frame);
+        return CANConManager::getInstance()->sendFrame(frame);
     }
     else //need to send a multi-part ISO_TP message - Respects timing and frame number based flow control
     {
@@ -81,7 +82,8 @@ void ISOTP_HANDLER::sendISOTPFrame(int bus, int ID, QByteArray data)
         bytes[1] = data.length() & 0xFF;
         for (int i = 0; i < 6; i++) bytes[2 + i] = data[currByte++];
         frame.setPayload(bytes);
-        CANConManager::getInstance()->sendFrame(frame);
+        if (!CANConManager::getInstance()->sendFrame(frame))
+            return false;
         //Queue up the rest of the frames
         waitingForFlow = true;
         frameTimer.setInterval(200); //wait a while for the flow frame to come in
@@ -99,6 +101,7 @@ void ISOTP_HANDLER::sendISOTPFrame(int bus, int ID, QByteArray data)
             sendingFrames.append(frame);
             //CANConManager::getInstance()->sendFrame(frame);
         }
+        return true;
     }
 }
 

@@ -75,7 +75,7 @@ void UDSWorkbenchWindow::buildUi()
     sessionCombo->addItem(tr("Extended (0x03)"), 3);
     sessionCombo->addItem(tr("Safety (0x04)"), 4);
     testerPresentCheck = new QCheckBox(tr("Tester Present"), endpoint);
-    QPushButton *connectButton = new QPushButton(tr("Connect session"), endpoint);
+    connectButton = new QPushButton(tr("Connect session"), endpoint);
     connectionStatus = new QLabel(tr("Disconnected"), endpoint);
     endpointLayout->addWidget(new QLabel(tr("Bus"), endpoint));
     endpointLayout->addWidget(busSpin);
@@ -88,7 +88,9 @@ void UDSWorkbenchWindow::buildUi()
     endpointLayout->addWidget(connectButton);
     endpointLayout->addWidget(connectionStatus);
     root->addWidget(endpoint);
-    connect(connectButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::connectEndpoint);
+    connect(connectButton, &QPushButton::clicked, this, [this]() {
+        if (endpointConnected || responseTimer.isActive()) disconnectEndpoint(); else connectEndpoint();
+    });
     connect(testerPresentCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled && endpointConnected) testerTimer.start(); else testerTimer.stop();
     });
@@ -352,6 +354,12 @@ void UDSWorkbenchWindow::connectEndpoint()
     const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
     const uint32_t responseId = parseNumber(responseIdEdit->text(), &responseOk);
     if (!requestOk || !responseOk) { connectionStatus->setText(tr("Invalid ID")); return; }
+    if (!CANConManager::getInstance()->isBusConnected(busSpin->value())) {
+        endpointConnected = false;
+        connectionStatus->setText(tr("Bus %1 is not connected").arg(busSpin->value()));
+        log(tr("Cannot start UDS session: selected CAN bus is not connected"));
+        return;
+    }
     udsHandler->clearAllFilters();
     udsHandler->addFilter(busSpin->value(), responseId, requestId > 0x7FF || responseId > 0x7FF ? 0x1FFFFFFF : 0x7FF);
     udsHandler->setReception(true);
@@ -364,12 +372,35 @@ void UDSWorkbenchWindow::connectEndpoint()
     message.subFunc = sessionCombo->currentData().toInt();
     activeService = message.service;
     requestContext = ContextSession;
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message)) {
+        endpointConnected = false;
+        connectionStatus->setText(tr("Session transmit failed"));
+        log(tr("UDS session request was rejected by the CAN interface"));
+        return;
+    }
     responseTimer.start();
-    endpointConnected = true;
+    endpointConnected = false;
+    connectButton->setText(tr("Disconnect"));
     connectionStatus->setText(tr("Session requested"));
-    if (testerPresentCheck->isChecked()) testerTimer.start();
     log(tr("Requested diagnostic session 0x%1").arg(message.subFunc, 2, 16, QLatin1Char('0')));
+}
+
+void UDSWorkbenchWindow::disconnectEndpoint()
+{
+    responseTimer.stop();
+    testerTimer.stop();
+    pollingTimer.stop();
+    if (pollingCheck->isChecked()) pollingCheck->setChecked(false);
+    didQueue.clear();
+    activeDidRow = -1;
+    activeService = -1;
+    requestContext = ContextNone;
+    udsHandler->clearAllFilters();
+    udsHandler->setReception(false);
+    endpointConnected = false;
+    connectButton->setText(tr("Connect session"));
+    connectionStatus->setText(tr("Disconnected"));
+    log(tr("Stopped UDS session activity and response listening"));
 }
 
 void UDSWorkbenchWindow::addDid()
@@ -617,10 +648,22 @@ void UDSWorkbenchWindow::sendServiceRequest(int service, const QByteArray &data,
     message.setExtendedFrameFormat(requestId > 0x7FF);
     message.service = service;
     message.subFuncLen = 0;
-    message.payload() = data;
+    message.setPayload(data);
     activeService = service;
     requestContext = context;
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message)) {
+        connectionStatus->setText(tr("Transmit failed on bus %1").arg(message.bus));
+        log(tr("UDS service 0x%1 transmit failed on bus %2")
+            .arg(service, 2, 16, QLatin1Char('0')).arg(message.bus).toUpper());
+        activeService = -1;
+        requestContext = ContextNone;
+        return;
+    }
+    log(tr("TX bus %1 ID 0x%2 service 0x%3 data %4")
+        .arg(message.bus).arg(requestId, 0, 16)
+        .arg(service, 2, 16, QLatin1Char('0'))
+        .arg(QString::fromLatin1(data.toHex(' '))).toUpper());
+    responseTimer.start();
     responseTimer.start();
 }
 
@@ -722,7 +765,22 @@ void UDSWorkbenchWindow::sendDidRow(int row)
     activeService = message.service;
     requestContext = ContextNone;
     didTable->item(row, DidStatus)->setText(tr("Waiting"));
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message)) {
+        endpointConnected = false;
+        pollingTimer.stop();
+        testerTimer.stop();
+        if (pollingCheck->isChecked()) pollingCheck->setChecked(false);
+        didTable->item(row, DidStatus)->setText(tr("Transmit failed"));
+        log(tr("DID 0x%1 transmit failed on bus %2")
+            .arg(did, 4, 16, QLatin1Char('0')).arg(message.bus).toUpper());
+        activeDidRow = -1;
+        activeService = -1;
+        didQueue.clear();
+        return;
+    }
+    log(tr("TX bus %1 ID 0x%2 ReadDataByIdentifier 0x%3")
+        .arg(message.bus).arg(requestId, 0, 16)
+        .arg(did, 4, 16, QLatin1Char('0')).toUpper());
     responseTimer.start();
 }
 
@@ -741,7 +799,7 @@ void UDSWorkbenchWindow::sendManualRequest()
     message.setExtendedFrameFormat(requestId > 0x7FF);
     message.service = service;
     message.subFuncLen = 0;
-    message.payload() = bytes;
+    message.setPayload(bytes);
     activeService = service;
     requestContext = ContextManual;
     udsHandler->sendUDSFrame(message);
@@ -1040,6 +1098,12 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         if (nrc == 0x78) { responseTimer.start(); log(tr("Response pending")); return; }
         const QString status = tr("NRC 0x%1: %2").arg(nrc, 2, 16, QLatin1Char('0'))
             .arg(udsHandler->getNegativeResponseShort(nrc));
+        if (requestContext == ContextSession)
+        {
+            endpointConnected = false;
+            connectButton->setText(tr("Connect session"));
+            connectionStatus->setText(status);
+        }
         if (requestContext == ContextDidScan)
         {
             responseTimer.stop();
@@ -1176,7 +1240,13 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         requestContext = ContextNone;
     }
     if (message.service == UDS_SERVICES::DIAG_CONTROL + 0x40)
+    {
+        endpointConnected = true;
+        connectButton->setText(tr("Disconnect"));
         connectionStatus->setText(tr("Session active"));
+        if (testerPresentCheck->isChecked()) testerTimer.start();
+        if (pollingCheck->isChecked()) pollingTimer.start(100);
+    }
 }
 
 void UDSWorkbenchWindow::showDiagnosticGraph()
@@ -1219,6 +1289,7 @@ void UDSWorkbenchWindow::requestTimedOut()
         if (activeService == UDS_SERVICES::DIAG_CONTROL)
         {
             endpointConnected = false;
+            connectButton->setText(tr("Connect session"));
             testerTimer.stop();
         }
         activeService = -1;
@@ -1238,7 +1309,10 @@ void UDSWorkbenchWindow::sendTesterPresent()
     message.service = UDS_SERVICES::TESTER_PRESENT;
     message.subFuncLen = 1;
     message.subFunc = 0x80;
-    udsHandler->sendUDSFrame(message);
+    if (!udsHandler->sendUDSFrame(message)) {
+        connectionStatus->setText(tr("Tester Present transmit failed"));
+        log(tr("Tester Present was rejected by the CAN interface"));
+    }
 }
 
 void UDSWorkbenchWindow::log(const QString &text)

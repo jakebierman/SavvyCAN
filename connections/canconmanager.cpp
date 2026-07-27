@@ -136,6 +136,24 @@ QList<CANConnection*>& CANConManager::getConnections()
     return mConns;
 }
 
+int CANConManager::getNumActiveBuses() const
+{
+    return static_cast<int>(mNumActiveBuses);
+}
+
+bool CANConManager::isBusConnected(int bus) const
+{
+    if (bus < 0) return false;
+    int busBase = 0;
+    foreach (CANConnection* conn, mConns)
+    {
+        if (bus < busBase + conn->getNumBuses())
+            return conn->getStatus() == CANCon::CONNECTED;
+        busBase += conn->getNumBuses();
+    }
+    return false;
+}
+
 
 CANConnection* CANConManager::getByName(const QString& pName) const
 {
@@ -218,6 +236,8 @@ bool CANConManager::sendFrame(const CANFrame& pFrame)
         //check if this CAN connection is supposed to handle the requested bus
         if (pFrame.bus < (busBase + conn->getNumBuses()))
         {
+            if (conn->getStatus() != CANCon::CONNECTED)
+                return false;
             workingFrame.bus -= busBase;
             workingFrame.isReceived = false;
             if (useSystemTime)

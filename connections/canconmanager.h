@@ -27,6 +27,8 @@ public:
     void resetTimeBasis();
 
     int getNumBuses();
+    int getNumActiveBuses() const;
+    bool isBusConnected(int bus) const;
     int getBusBase(CANConnection *);
 
     /**
@@ -85,4 +87,3 @@ private:
 };
 
 #endif // CANCONNECTIONMODEL_H
-

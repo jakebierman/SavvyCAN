@@ -635,14 +635,14 @@ void UDSScanWindow::setupScan(int idx)
 
         if (scanEntries[idx].sessType > 0)
         {
-            test.payload().clear();
+            test.setPayload(QByteArray());
             test.service = UDS_SERVICES::DIAG_CONTROL;
             test.subFuncLen = 1;
             test.subFunc = scanEntries[ idx].sessType;
             sendOnBuses(test, scanEntries[idx].busToScan);
         }
 
-        test.payload().clear();
+        test.setPayload(QByteArray());
 
         qDebug() << "Generating scan on ID " << QString::number(id, 16) << " of type " << scanEntries[idx].scanType;
 

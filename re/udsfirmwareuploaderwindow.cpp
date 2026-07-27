@@ -228,7 +228,7 @@ void UDSFirmwareUploaderWindow::sendSecurityKey(const QByteArray &seed)
     msg.service = UDS_SERVICES::SECURITY_ACCESS;
     msg.subFuncLen = 1;
     msg.subFunc = securityLevel * 2;
-    msg.payload() = seed;
+    msg.setPayload(seed);
 
     logMessage("Sending Security Key (0x27) - " + seed.toHex(' '));
     udsHandler->sendUDSFrame(msg);
@@ -259,7 +259,7 @@ void UDSFirmwareUploaderWindow::sendRequestDownload()
     for (int i = sizeLen - 1; i >= 0; i--)
         data.append((size >> (i * 8)) & 0xFF);
 
-    msg.payload() = data;
+    msg.setPayload(data);
 
     logMessage(QString("Sending Request Download (0x34) - Addr: 0x%1, Size: %2")
                .arg(addr, 0, 16).arg(size));
@@ -285,7 +285,7 @@ void UDSFirmwareUploaderWindow::sendDataBlock()
         bytesToSend = maxBlockLength;
 
     data.append(firmwareData.constData() + currentDataPos, bytesToSend);
-    msg.payload() = data;
+    msg.setPayload(data);
 
     udsHandler->sendUDSFrame(msg);
     setState(STATE_WAIT_DATA_RESP);

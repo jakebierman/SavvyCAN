@@ -91,7 +91,7 @@ public:
     void setExtendedAddressing(bool mode);
     static UDS_HANDLER* getInstance();
     void setReception(bool mode); //set whether to accept and forward frames or not
-    void sendUDSFrame(const UDS_MESSAGE &msg);
+    bool sendUDSFrame(const UDS_MESSAGE &msg);
     void setProcessAllIDs(bool state);
     void setFlowCtrl(bool state);
     void addFilter(uint32_t pBusId, uint32_t ID, uint32_t mask);

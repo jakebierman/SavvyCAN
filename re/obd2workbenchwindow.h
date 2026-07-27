@@ -50,6 +50,7 @@ signals:
 
 private slots:
     void connectEndpoint();
+    void disconnectEndpoint();
     void addPid();
     void removePid();
     void requestSelectedPid();
@@ -119,6 +120,7 @@ private:
     QSpinBox *busSpin;
     QLineEdit *requestIdEdit;
     QLabel *connectionStatus;
+    QPushButton *connectButton;
     QTableWidget *pidTable;
     QCheckBox *pollCheck;
     QSpinBox *pollIntervalSpin;

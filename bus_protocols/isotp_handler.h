@@ -20,7 +20,7 @@ public:
     void setExtendedAddressing(bool mode);
     void setReception(bool mode); //set whether to accept and forward frames or not
     void setEmitPartials(bool mode);
-    void sendISOTPFrame(int bus, int ID, QByteArray data);
+    bool sendISOTPFrame(int bus, int ID, QByteArray data);
     void setProcessAll(bool state);
     void setFlowCtrl(bool state);
     void addFilter(int pBusId, uint32_t ID, uint32_t mask);

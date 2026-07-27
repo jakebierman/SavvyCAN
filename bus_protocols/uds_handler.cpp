@@ -219,13 +219,17 @@ UDS_MESSAGE UDS_HANDLER::tryISOtoUDS(ISOTP_MESSAGE msg, bool *result)
                 *result = false;
                 return udsMsg;
             };
-            udsMsg.payload().remove(0, 2);
+            QByteArray payload = udsMsg.payload();
+            payload.remove(0, 2);
+            udsMsg.setPayload(payload);
         }
         else
         {
             udsMsg.isErrorReply = false;
             if (dataLen > 1) udsMsg.subFunc = data[1];
-            udsMsg.payload().remove(0, 1);
+            QByteArray payload = udsMsg.payload();
+            payload.remove(0, 1);
+            udsMsg.setPayload(payload);
         }
     }
     else
@@ -271,12 +275,12 @@ void UDS_HANDLER::setReception(bool mode)
     }
 }
 
-void UDS_HANDLER::sendUDSFrame(const UDS_MESSAGE &msg)
+bool UDS_HANDLER::sendUDSFrame(const UDS_MESSAGE &msg)
 {
     QByteArray data;
-    if (msg.bus < 0) return;
-    if (msg.bus >= CANConManager::getInstance()->getNumBuses()) return;
-    if (msg.service > 0xFF) return;
+    if (msg.bus < 0) return false;
+    if (msg.bus >= CANConManager::getInstance()->getNumBuses()) return false;
+    if (msg.service > 0xFF) return false;
 
     data.append(msg.service);
     for (int b = msg.subFuncLen - 1; b >= 0; b--)
@@ -285,7 +289,7 @@ void UDS_HANDLER::sendUDSFrame(const UDS_MESSAGE &msg)
     }
 
     data.append(msg.payload());
-    isoHandler->sendISOTPFrame(msg.bus, msg.frameId(), data);
+    return isoHandler->sendISOTPFrame(msg.bus, msg.frameId(), data);
 
     //qDebug() << "Data sending: " << data;
 
@@ -640,4 +644,3 @@ void UDS_HANDLER::clearAllFilters()
 {
     isoHandler->clearAllFilters();
 }
-

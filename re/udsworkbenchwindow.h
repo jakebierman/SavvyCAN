@@ -36,6 +36,7 @@ public:
 
 private slots:
     void connectEndpoint();
+    void disconnectEndpoint();
     void addDid();
     void removeDid();
     void requestSelectedDid();
@@ -98,6 +99,7 @@ private:
     QCheckBox *pollingCheck;
     QSpinBox *pollIntervalSpin;
     QLabel *connectionStatus;
+    QPushButton *connectButton;
     QTableWidget *didTable;
     QLineEdit *manualServiceEdit;
     QLineEdit *manualPayloadEdit;
