@@ -39,6 +39,10 @@ Dashboard PIDs must also be present and actively requested on the Live data tab.
 
 **Scan modules** sends a functional Mode 01 PID 00 request and lists every ECU responding from `0x7E8` through `0x7EF`. **Scan available PIDs** checks the standard support bitmap pages from `0x00` through `0xC0` and reports support separately for each ECU. Multi-select results and choose **Add selected to Live data**; recognized PIDs receive their known name and format, while unknown PIDs are added as editable raw/custom rows.
 
+Discovered standard-address ECUs are added to the endpoint target selector. **All ECUs** uses functional request ID `0x7DF`; choosing an ECU derives its physical request ID from the response ID and narrows the response filter. The editable request ID remains available for custom addressing.
+
+Passive safety mode permits listening but blocks requests. Read-only mode permits normal OBD queries and discovery. Full diagnostics is required for Mode 04 clearing and other control requests.
+
 ## Freeze frames and monitor tests
 
 The **Freeze frames** tab sends Mode 02 requests for a selected or custom PID and freeze-frame number. Known PIDs use the same automatic calculations as live Mode 01 data, including compound status and temperature results.

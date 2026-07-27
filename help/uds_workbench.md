@@ -50,4 +50,16 @@ The Manual service tab accepts a service byte and arbitrary hexadecimal payload 
 
 Only send diagnostic requests to vehicles and modules you own or are authorised to test.
 
+## Endpoint setup and safety
+
+The endpoint preset selects common 11-bit physical, 11-bit functional, or 29-bit normal-fixed addressing. Response addressing may use an explicit ID, request plus `0x8`, request plus `0x80`, or a custom offset. **Learn response** probes the current request ID and records responding endpoints.
+
+The Setup tab provides Passive, Read-only active, and Full diagnostics safety modes. Passive blocks all diagnostic transmission. Read-only permits discovery and data retrieval but blocks security, clearing, routines, resets, writes, downloads, and controls. Full diagnostics enables those operations while retaining their confirmation dialogs.
+
+P2 controls the normal response timeout and P2* controls Response Pending. ISO-TP block size and STmin are placed directly in generated flow-control frames. Endpoint profiles retain addressing, session, safety, timing, transport settings, and DID rows.
+
+## Discovery summary
+
+Session discovery probes the common `0x10` session subfunctions. The summary tree combines learned endpoints, sessions, services, and DIDs. It can export CSV and save or compare JSON snapshots to identify additions and missing capabilities.
+
 See [Diagnostic and CAN Tool Feature Roadmap](./diagnostic_feature_roadmap.md) for researched follow-on work and the proposed CANopen workbench.

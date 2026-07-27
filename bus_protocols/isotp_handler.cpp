@@ -8,6 +8,8 @@ ISOTP_HANDLER::ISOTP_HANDLER()
     issueFlowMsgs = false;
     processAll = false;
     sendPartialMessages = false;
+    flowControlBlockSize = 0;
+    flowControlSeparationTime = 3;
     lastSenderBus = 0;
     lastSenderID = 0;
 
@@ -29,6 +31,12 @@ void ISOTP_HANDLER::setExtendedAddressing(bool mode)
 void ISOTP_HANDLER::setFlowCtrl(bool state)
 {
     issueFlowMsgs = state;
+}
+
+void ISOTP_HANDLER::setFlowControlParameters(int blockSize, int separationTime)
+{
+    flowControlBlockSize = qBound(0, blockSize, 255);
+    flowControlSeparationTime = qBound(0, separationTime, 255);
 }
 
 void ISOTP_HANDLER::setReception(bool mode)
@@ -260,8 +268,8 @@ void ISOTP_HANDLER::processFrame(const CANFrame &frame)
             outFrame.setFrameId(lastSenderID);
             QByteArray bytes(8, 0);
             bytes[0] = 0x30; //flow control, go ahead and send
-            bytes[1] = 0; //dont ask again about flow control
-            bytes[2] = 3; //separation time in milliseconds between messages.
+            bytes[1] = char(flowControlBlockSize);
+            bytes[2] = char(flowControlSeparationTime);
             outFrame.setPayload(bytes);
             CANConManager::getInstance()->sendFrame(outFrame);
         }

@@ -31,6 +31,7 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTextStream>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -70,6 +71,11 @@ void UDSWorkbenchWindow::buildUi()
     QHBoxLayout *endpointLayout = new QHBoxLayout(endpoint);
     busSpin = new QSpinBox(endpoint);
     busSpin->setRange(0, qMax(0, CANConManager::getInstance()->getNumBuses() - 1));
+    addressPresetCombo = new QComboBox(endpoint);
+    addressPresetCombo->addItem(tr("11-bit physical"), QStringLiteral("11physical"));
+    addressPresetCombo->addItem(tr("11-bit functional"), QStringLiteral("11functional"));
+    addressPresetCombo->addItem(tr("29-bit normal fixed"), QStringLiteral("29fixed"));
+    addressPresetCombo->addItem(tr("Custom"), QStringLiteral("custom"));
     requestIdEdit = new QLineEdit(QStringLiteral("0x7E0"), endpoint);
     responseAddressModeCombo = new QComboBox(endpoint);
     responseAddressModeCombo->addItem(tr("Response ID"), QStringLiteral("id"));
@@ -93,6 +99,7 @@ void UDSWorkbenchWindow::buildUi()
     connectionStatus = new QLabel(tr("Disconnected"), endpoint);
     endpointLayout->addWidget(new QLabel(tr("Bus"), endpoint));
     endpointLayout->addWidget(busSpin);
+    endpointLayout->addWidget(addressPresetCombo);
     endpointLayout->addWidget(new QLabel(tr("Request ID"), endpoint));
     endpointLayout->addWidget(requestIdEdit);
     endpointLayout->addWidget(new QLabel(tr("Response"), endpoint));
@@ -116,8 +123,50 @@ void UDSWorkbenchWindow::buildUi()
             this, &UDSWorkbenchWindow::updateResponseIdFromMode);
     connect(responseOffsetEdit, &QLineEdit::editingFinished,
             this, &UDSWorkbenchWindow::updateResponseIdFromMode);
+    connect(addressPresetCombo, qOverload<int>(&QComboBox::activated),
+            this, &UDSWorkbenchWindow::applyAddressPreset);
 
     QTabWidget *tabs = new QTabWidget(this);
+    QWidget *setupPage = new QWidget(tabs);
+    QFormLayout *setupForm = new QFormLayout(setupPage);
+    safetyModeCombo = new QComboBox(setupPage);
+    safetyModeCombo->addItem(tr("Passive - no transmit"), QStringLiteral("passive"));
+    safetyModeCombo->addItem(tr("Read-only active"), QStringLiteral("read"));
+    safetyModeCombo->addItem(tr("Full diagnostics"), QStringLiteral("full"));
+    safetyModeCombo->setCurrentIndex(1);
+    p2TimeoutSpin = new QSpinBox(setupPage);
+    p2TimeoutSpin->setRange(20, 60000);
+    p2TimeoutSpin->setValue(1500);
+    p2TimeoutSpin->setSuffix(tr(" ms"));
+    p2StarTimeoutSpin = new QSpinBox(setupPage);
+    p2StarTimeoutSpin->setRange(100, 120000);
+    p2StarTimeoutSpin->setValue(5000);
+    p2StarTimeoutSpin->setSuffix(tr(" ms"));
+    flowBlockSizeSpin = new QSpinBox(setupPage);
+    flowBlockSizeSpin->setRange(0, 255);
+    flowStMinSpin = new QSpinBox(setupPage);
+    flowStMinSpin->setRange(0, 255);
+    flowStMinSpin->setValue(3);
+    flowStMinSpin->setSuffix(tr(" ms"));
+    QPushButton *learnResponseButton = new QPushButton(tr("Learn response for current request"), setupPage);
+    setupForm->addRow(tr("Safety mode"), safetyModeCombo);
+    setupForm->addRow(tr("P2 timeout"), p2TimeoutSpin);
+    setupForm->addRow(tr("P2* pending timeout"), p2StarTimeoutSpin);
+    setupForm->addRow(tr("ISO-TP block size"), flowBlockSizeSpin);
+    setupForm->addRow(tr("ISO-TP STmin"), flowStMinSpin);
+    setupForm->addRow(learnResponseButton);
+    connect(learnResponseButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::learnResponseAddress);
+    connect(p2TimeoutSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        normalResponseTimeout = value;
+        responseTimer.setInterval(value);
+    });
+    connect(flowBlockSizeSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
+        udsHandler->setFlowControlParameters(flowBlockSizeSpin->value(), flowStMinSpin->value());
+    });
+    connect(flowStMinSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
+        udsHandler->setFlowControlParameters(flowBlockSizeSpin->value(), flowStMinSpin->value());
+    });
+    tabs->addTab(setupPage, tr("Setup"));
     QWidget *ecuDiscoveryPage = new QWidget(tabs);
     QVBoxLayout *ecuDiscoveryLayout = new QVBoxLayout(ecuDiscoveryPage);
     QHBoxLayout *ecuScanControls = new QHBoxLayout;
@@ -283,6 +332,34 @@ void UDSWorkbenchWindow::buildUi()
     connect(saveServiceScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveServiceScan);
     tabs->addTab(serviceDiscoveryPage, tr("Service discovery"));
 
+    QWidget *sessionDiscoveryPage = new QWidget(tabs);
+    QVBoxLayout *sessionDiscoveryLayout = new QVBoxLayout(sessionDiscoveryPage);
+    sessionScanResults = new QListWidget(sessionDiscoveryPage);
+    sessionDiscoveryLayout->addWidget(sessionScanResults, 1);
+    QPushButton *sessionScanButton = new QPushButton(tr("Scan diagnostic sessions"), sessionDiscoveryPage);
+    sessionDiscoveryLayout->addWidget(sessionScanButton, 0, Qt::AlignRight);
+    connect(sessionScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::startSessionScan);
+    tabs->addTab(sessionDiscoveryPage, tr("Session discovery"));
+
+    QWidget *summaryPage = new QWidget(tabs);
+    QVBoxLayout *summaryLayout = new QVBoxLayout(summaryPage);
+    discoverySummaryTree = new QTreeWidget(summaryPage);
+    discoverySummaryTree->setHeaderLabels({tr("Diagnostic discovery"), tr("Details")});
+    summaryLayout->addWidget(discoverySummaryTree, 1);
+    QHBoxLayout *summaryButtons = new QHBoxLayout;
+    QPushButton *refreshSummaryButton = new QPushButton(tr("Refresh"), summaryPage);
+    QPushButton *exportSummaryButton = new QPushButton(tr("Export CSV"), summaryPage);
+    QPushButton *compareSummaryButton = new QPushButton(tr("Compare snapshot"), summaryPage);
+    summaryButtons->addWidget(refreshSummaryButton);
+    summaryButtons->addWidget(exportSummaryButton);
+    summaryButtons->addWidget(compareSummaryButton);
+    summaryButtons->addStretch();
+    summaryLayout->addLayout(summaryButtons);
+    connect(refreshSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::refreshDiscoverySummary);
+    connect(exportSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::exportDiscoveryCsv);
+    connect(compareSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::compareDiscoverySnapshot);
+    tabs->addTab(summaryPage, tr("Discovery summary"));
+
     QWidget *dtcPage = new QWidget(tabs);
     QVBoxLayout *dtcLayout = new QVBoxLayout(dtcPage);
     QHBoxLayout *dtcControls = new QHBoxLayout;
@@ -446,6 +523,62 @@ void UDSWorkbenchWindow::updateResponseIdFromMode()
     responseIdEdit->setText(QStringLiteral("0x%1").arg(requestId + offset, 0, 16).toUpper());
 }
 
+void UDSWorkbenchWindow::applyAddressPreset()
+{
+    const QString preset = addressPresetCombo->currentData().toString();
+    if (preset == QStringLiteral("11physical"))
+    {
+        requestIdEdit->setText(QStringLiteral("0x7E0"));
+        responseAddressModeCombo->setCurrentIndex(
+            responseAddressModeCombo->findData(QStringLiteral("offset8")));
+    }
+    else if (preset == QStringLiteral("11functional"))
+    {
+        requestIdEdit->setText(QStringLiteral("0x7DF"));
+        responseAddressModeCombo->setCurrentIndex(
+            responseAddressModeCombo->findData(QStringLiteral("id")));
+        responseIdEdit->setText(QStringLiteral("0x7E8"));
+    }
+    else if (preset == QStringLiteral("29fixed"))
+    {
+        requestIdEdit->setText(QStringLiteral("0x18DA10F1"));
+        responseAddressModeCombo->setCurrentIndex(
+            responseAddressModeCombo->findData(QStringLiteral("id")));
+        responseIdEdit->setText(QStringLiteral("0x18DAF110"));
+    }
+    updateResponseIdFromMode();
+}
+
+void UDSWorkbenchWindow::learnResponseAddress()
+{
+    bool requestOk = false;
+    const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
+    if (!requestOk) { log(tr("Enter a valid request ID first")); return; }
+    ecuRequestSpecEdit->setText(QStringLiteral("0x%1").arg(requestId, 0, 16).toUpper());
+    ecuResponseSpecEdit->setText(requestId > 0x7FF
+        ? QStringLiteral("0x18DA0000-0x18DA0FFF")
+        : QStringLiteral("0x700-0x7FF"));
+    startEcuScan();
+}
+
+bool UDSWorkbenchWindow::transmissionAllowed(int service, bool modifying)
+{
+    const QString mode = safetyModeCombo->currentData().toString();
+    if (mode == QStringLiteral("passive"))
+    {
+        connectionStatus->setText(tr("Passive safety mode blocks transmission"));
+        log(tr("Blocked service 0x%1 by passive safety mode").arg(service, 2, 16, QLatin1Char('0')));
+        return false;
+    }
+    if (modifying && mode != QStringLiteral("full"))
+    {
+        connectionStatus->setText(tr("Full diagnostics safety mode required"));
+        log(tr("Blocked modifying service 0x%1 in read-only mode").arg(service, 2, 16, QLatin1Char('0')));
+        return false;
+    }
+    return true;
+}
+
 QVector<uint32_t> UDSWorkbenchWindow::parseIdSpec(const QString &text, bool *ok) const
 {
     QVector<uint32_t> ids;
@@ -473,6 +606,7 @@ QVector<uint32_t> UDSWorkbenchWindow::parseIdSpec(const QString &text, bool *ok)
 
 void UDSWorkbenchWindow::connectEndpoint()
 {
+    if (!transmissionAllowed(UDS_SERVICES::DIAG_CONTROL)) return;
     bool requestOk = false, responseOk = false;
     const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
     const uint32_t responseId = parseNumber(responseIdEdit->text(), &responseOk);
@@ -650,6 +784,12 @@ void UDSWorkbenchWindow::importProfile()
     const int session = profile.value("session").toInt(sessionCombo->currentData().toInt());
     const int sessionIndex = sessionCombo->findData(session);
     if (sessionIndex >= 0) sessionCombo->setCurrentIndex(sessionIndex);
+    const int safetyIndex = safetyModeCombo->findData(profile.value("safetyMode").toString(QStringLiteral("read")));
+    safetyModeCombo->setCurrentIndex(qMax(0, safetyIndex));
+    p2TimeoutSpin->setValue(profile.value("p2Timeout").toInt(p2TimeoutSpin->value()));
+    p2StarTimeoutSpin->setValue(profile.value("p2StarTimeout").toInt(p2StarTimeoutSpin->value()));
+    flowBlockSizeSpin->setValue(profile.value("blockSize").toInt(flowBlockSizeSpin->value()));
+    flowStMinSpin->setValue(profile.value("stMin").toInt(flowStMinSpin->value()));
     loadDidRows(profile.value("dids").toArray());
     endpointConnected = false;
     testerTimer.stop();
@@ -671,6 +811,11 @@ void UDSWorkbenchWindow::exportProfile()
     profile["responseMode"] = responseAddressModeCombo->currentData().toString();
     profile["responseOffset"] = responseOffsetEdit->text();
     profile["session"] = sessionCombo->currentData().toInt();
+    profile["safetyMode"] = safetyModeCombo->currentData().toString();
+    profile["p2Timeout"] = p2TimeoutSpin->value();
+    profile["p2StarTimeout"] = p2StarTimeoutSpin->value();
+    profile["blockSize"] = flowBlockSizeSpin->value();
+    profile["stMin"] = flowStMinSpin->value();
     profile["dids"] = didRowsToJson();
     QSaveFile file(fileName);
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(profile).toJson()) < 0 || !file.commit())
@@ -778,6 +923,12 @@ void UDSWorkbenchWindow::sendSecurityKey()
 
 void UDSWorkbenchWindow::sendServiceRequest(int service, const QByteArray &data, RequestContext context)
 {
+    const bool modifying = service == UDS_SERVICES::CLEAR_DIAG || service == UDS_SERVICES::ECU_RESET ||
+        service == UDS_SERVICES::COMM_CTRL || service == UDS_SERVICES::WRITE_BY_ID ||
+        service == UDS_SERVICES::IO_CTRL || service == UDS_SERVICES::ROUTINE_CTRL ||
+        service == UDS_SERVICES::SECURITY_ACCESS || service == UDS_SERVICES::REQUEST_DOWNLOAD ||
+        service == UDS_SERVICES::REQUEST_UPLOAD || service == UDS_SERVICES::WRITE_BY_ADDR;
+    if (!transmissionAllowed(service, modifying)) return;
     if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
     if (responseTimer.isActive() || activeDidRow >= 0 || !didQueue.isEmpty()) { log(tr("Another request is active")); return; }
     bool requestOk = false;
@@ -890,6 +1041,7 @@ void UDSWorkbenchWindow::sendNextDid()
 
 void UDSWorkbenchWindow::sendDidRow(int row)
 {
+    if (!transmissionAllowed(UDS_SERVICES::READ_BY_ID)) { didQueue.clear(); return; }
     if (row < 0 || row >= didTable->rowCount()) return;
     bool didOk = false, requestOk = false;
     const uint32_t did = parseNumber(didTable->item(row, DidIdentifier)->text(), &didOk);
@@ -934,6 +1086,8 @@ void UDSWorkbenchWindow::sendManualRequest()
     const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
     QByteArray bytes = QByteArray::fromHex(manualPayloadEdit->text().toLatin1());
     if (!serviceOk || service > 0xFF || !requestOk) { manualResponse->setText(tr("Invalid service or request ID")); return; }
+    if (!transmissionAllowed(service, service != UDS_SERVICES::READ_BY_ID &&
+        service != UDS_SERVICES::READ_DTC && service != UDS_SERVICES::TESTER_PRESENT)) return;
     UDS_MESSAGE message;
     message.bus = busSpin->value();
     message.setFrameId(requestId);
@@ -950,6 +1104,7 @@ void UDSWorkbenchWindow::sendManualRequest()
 
 void UDSWorkbenchWindow::startEcuScan()
 {
+    if (!transmissionAllowed(UDS_SERVICES::TESTER_PRESENT)) return;
     if (endpointConnected || responseTimer.isActive() || didScanActive || serviceScanActive)
     {
         log(tr("Disconnect the active session or wait for the current request"));
@@ -1037,6 +1192,7 @@ void UDSWorkbenchWindow::finishEcuScan(const QString &status)
     ecuScanStopButton->setEnabled(false);
     connectionStatus->setText(tr("Disconnected"));
     log(tr("%1; %2 ECU endpoint pair(s)").arg(status).arg(ecuScanResults->count()));
+    refreshDiscoverySummary();
 }
 
 void UDSWorkbenchWindow::useSelectedEcu()
@@ -1112,6 +1268,7 @@ void UDSWorkbenchWindow::loadEcuScan()
 
 void UDSWorkbenchWindow::startDidScan()
 {
+    if (!transmissionAllowed(UDS_SERVICES::READ_BY_ID)) return;
     if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
     if (responseTimer.isActive() || activeDidRow >= 0 || !didQueue.isEmpty()) { log(tr("Another request is active")); return; }
     bool startOk = false, endOk = false;
@@ -1203,6 +1360,7 @@ void UDSWorkbenchWindow::finishDidScan(const QString &status)
     scanStopButton->setEnabled(false);
     if (pollingCheck->isChecked()) pollingTimer.start(100);
     log(tr("%1; %2 DIDs found").arg(status).arg(scanResults->count()));
+    refreshDiscoverySummary();
 }
 
 void UDSWorkbenchWindow::saveDidScan()
@@ -1320,6 +1478,7 @@ QString UDSWorkbenchWindow::serviceName(int service) const
 
 void UDSWorkbenchWindow::startServiceScan()
 {
+    if (!transmissionAllowed(0)) return;
     if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
     if (responseTimer.isActive() || activeDidRow >= 0 || !didQueue.isEmpty() || didScanActive)
     {
@@ -1348,6 +1507,60 @@ void UDSWorkbenchWindow::startServiceScan()
     responseTimer.setInterval(scanTimeoutSpin->value());
     log(tr("Scanning %1 standard UDS services").arg(serviceScanQueue.size()));
     sendNextServiceScan();
+}
+
+void UDSWorkbenchWindow::startSessionScan()
+{
+    if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
+    if (!transmissionAllowed(UDS_SERVICES::DIAG_CONTROL) || responseTimer.isActive()) return;
+    sessionScanQueue.clear();
+    for (int session : {1, 2, 3, 4}) sessionScanQueue.enqueue(session);
+    sessionScanResults->clear();
+    sessionScanActive = true;
+    pollingTimer.stop();
+    sendNextSessionScan();
+}
+
+void UDSWorkbenchWindow::sendNextSessionScan()
+{
+    if (!sessionScanActive) return;
+    if (sessionScanQueue.isEmpty())
+    {
+        finishSessionScan(tr("Session scan complete"));
+        return;
+    }
+    bool requestOk = false;
+    const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
+    if (!requestOk) { finishSessionScan(tr("Invalid request ID")); return; }
+    activeSessionScan = sessionScanQueue.dequeue();
+    UDS_MESSAGE message;
+    message.bus = busSpin->value();
+    message.setFrameId(requestId);
+    message.setExtendedFrameFormat(requestId > 0x7FF);
+    message.service = UDS_SERVICES::DIAG_CONTROL;
+    message.subFuncLen = 1;
+    message.subFunc = activeSessionScan;
+    activeService = message.service;
+    requestContext = ContextSessionScan;
+    if (!udsHandler->sendUDSFrame(message))
+    {
+        finishSessionScan(tr("Session scan transmit failed"));
+        return;
+    }
+    responseTimer.start();
+}
+
+void UDSWorkbenchWindow::finishSessionScan(const QString &status)
+{
+    responseTimer.stop();
+    sessionScanQueue.clear();
+    sessionScanActive = false;
+    activeSessionScan = -1;
+    activeService = -1;
+    requestContext = ContextNone;
+    if (pollingCheck->isChecked()) pollingTimer.start(100);
+    log(tr("%1; %2 supported session(s)").arg(status).arg(sessionScanResults->count()));
+    refreshDiscoverySummary();
 }
 
 void UDSWorkbenchWindow::sendNextServiceScan()
@@ -1394,6 +1607,7 @@ void UDSWorkbenchWindow::finishServiceScan(const QString &status)
     serviceScanStopButton->setEnabled(false);
     if (pollingCheck->isChecked()) pollingTimer.start(100);
     log(tr("%1; %2 recognized services").arg(status).arg(serviceScanResults->count()));
+    refreshDiscoverySummary();
 }
 
 void UDSWorkbenchWindow::saveServiceScan()
@@ -1451,6 +1665,102 @@ void UDSWorkbenchWindow::loadServiceScan()
     log(tr("Loaded %1 service discovery result(s)").arg(serviceScanResults->count()));
 }
 
+void UDSWorkbenchWindow::refreshDiscoverySummary()
+{
+    discoverySummaryTree->clear();
+    QTreeWidgetItem *endpoint = new QTreeWidgetItem(discoverySummaryTree,
+        {tr("Endpoint"), tr("%1 -> %2").arg(requestIdEdit->text(), responseIdEdit->text())});
+    QTreeWidgetItem *ecus = new QTreeWidgetItem(endpoint, {tr("ECUs"), QString::number(ecuScanResults->count())});
+    for (int i = 0; i < ecuScanResults->count(); ++i)
+        new QTreeWidgetItem(ecus, {ecuScanResults->item(i)->text(), QString()});
+    QTreeWidgetItem *sessions = new QTreeWidgetItem(endpoint,
+        {tr("Sessions"), QString::number(sessionScanResults->count())});
+    for (int i = 0; i < sessionScanResults->count(); ++i)
+        new QTreeWidgetItem(sessions, {sessionScanResults->item(i)->text(), QString()});
+    QTreeWidgetItem *services = new QTreeWidgetItem(endpoint,
+        {tr("Services"), QString::number(serviceScanResults->count())});
+    for (int i = 0; i < serviceScanResults->count(); ++i)
+        new QTreeWidgetItem(services, {serviceScanResults->item(i)->text(), QString()});
+    QTreeWidgetItem *dids = new QTreeWidgetItem(endpoint,
+        {tr("Discovered DIDs"), QString::number(scanResults->count())});
+    for (int i = 0; i < scanResults->count(); ++i)
+        new QTreeWidgetItem(dids, {scanResults->item(i)->text(), QString()});
+    discoverySummaryTree->expandAll();
+}
+
+void UDSWorkbenchWindow::exportDiscoveryCsv()
+{
+    refreshDiscoverySummary();
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Export discovery summary"), QString(),
+                                                     tr("CSV files (*.csv);;All files (*)"));
+    if (fileName.isEmpty()) return;
+    if (!fileName.endsWith(".csv", Qt::CaseInsensitive)) fileName += ".csv";
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) { log(tr("Could not export summary")); return; }
+    QTextStream stream(&file);
+    stream << "category,item,details\n";
+    for (int category = 0; category < discoverySummaryTree->topLevelItem(0)->childCount(); ++category)
+    {
+        QTreeWidgetItem *group = discoverySummaryTree->topLevelItem(0)->child(category);
+        for (int row = 0; row < group->childCount(); ++row)
+            stream << '"' << group->text(0).replace('"', "\"\"") << "\",\""
+                   << group->child(row)->text(0).replace('"', "\"\"") << "\",\""
+                   << group->child(row)->text(1).replace('"', "\"\"") << "\"\n";
+    }
+    if (!file.commit()) log(tr("Could not commit discovery CSV"));
+    else log(tr("Exported discovery summary to %1").arg(fileName));
+}
+
+void UDSWorkbenchWindow::compareDiscoverySnapshot()
+{
+    refreshDiscoverySummary();
+    QStringList current;
+    QTreeWidgetItem *root = discoverySummaryTree->topLevelItem(0);
+    for (int category = 0; root && category < root->childCount(); ++category)
+        for (int row = 0; row < root->child(category)->childCount(); ++row)
+            current << root->child(category)->text(0) + QStringLiteral("|") +
+                       root->child(category)->child(row)->text(0);
+
+    QMessageBox box(QMessageBox::Question, tr("Discovery snapshot"),
+                    tr("Save the current discovery state or compare it with an earlier snapshot?"),
+                    QMessageBox::Save | QMessageBox::Open | QMessageBox::Cancel, this);
+    const int choice = box.exec();
+    if (choice == QMessageBox::Save)
+    {
+        QString fileName = QFileDialog::getSaveFileName(this, tr("Save discovery snapshot"), QString(),
+                                                         tr("Discovery snapshot (*.json)"));
+        if (fileName.isEmpty()) return;
+        if (!fileName.endsWith(".json", Qt::CaseInsensitive)) fileName += ".json";
+        QJsonArray entries;
+        for (const QString &entry : current) entries.append(entry);
+        QJsonObject object;
+        object["version"] = 1;
+        object["entries"] = entries;
+        QSaveFile file(fileName);
+        if (file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(object).toJson()) >= 0 && file.commit())
+            log(tr("Saved discovery snapshot"));
+        else
+            log(tr("Could not save discovery snapshot"));
+        return;
+    }
+    if (choice != QMessageBox::Open) return;
+    const QString fileName = QFileDialog::getOpenFileName(this, tr("Compare discovery snapshot"), QString(),
+                                                          tr("Discovery snapshot (*.json)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) { log(tr("Could not open discovery snapshot")); return; }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    QStringList previous;
+    for (const QJsonValue &value : document.object()["entries"].toArray()) previous << value.toString();
+    QStringList added, removed;
+    for (const QString &entry : current) if (!previous.contains(entry)) added << entry;
+    for (const QString &entry : previous) if (!current.contains(entry)) removed << entry;
+    QMessageBox::information(this, tr("Discovery comparison"),
+        tr("Added (%1):\n%2\n\nMissing (%3):\n%4")
+            .arg(added.size()).arg(added.join('\n'))
+            .arg(removed.size()).arg(removed.join('\n')));
+}
+
 void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
 {
     if (ecuScanActive && requestContext == ContextEcuScan)
@@ -1486,7 +1796,11 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
     if (message.isErrorReply)
     {
         const int nrc = message.subFunc;
-        if (nrc == 0x78) { responseTimer.start(); log(tr("Response pending")); return; }
+        if (nrc == 0x78) {
+            responseTimer.start(p2StarTimeoutSpin->value());
+            log(tr("Response pending; P2* timeout active"));
+            return;
+        }
         const QString status = tr("NRC 0x%1: %2").arg(nrc, 2, 16, QLatin1Char('0'))
             .arg(udsHandler->getNegativeResponseShort(nrc));
         if (requestContext == ContextSession)
@@ -1518,6 +1832,16 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
             }
             sendNextServiceScan();
         }
+        else if (requestContext == ContextSessionScan)
+        {
+            responseTimer.stop();
+            if (nrc != 0x12)
+                sessionScanResults->addItem(tr("0x%1  NRC 0x%2: %3")
+                    .arg(activeSessionScan, 2, 16, QLatin1Char('0'))
+                    .arg(nrc, 2, 16, QLatin1Char('0'))
+                    .arg(udsHandler->getNegativeResponseShort(nrc)).toUpper());
+            sendNextSessionScan();
+        }
         else if (activeDidRow >= 0) finishCurrentRequest(status);
         else
         {
@@ -1542,6 +1866,12 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         item->setData(Qt::UserRole, activeService);
         item->setData(Qt::UserRole + 1, -1);
         sendNextServiceScan();
+    }
+    else if (requestContext == ContextSessionScan)
+    {
+        sessionScanResults->addItem(tr("0x%1  positive response")
+            .arg(activeSessionScan, 2, 16, QLatin1Char('0')).toUpper());
+        sendNextSessionScan();
     }
     else if (requestContext == ContextDidScan && message.service == UDS_SERVICES::READ_BY_ID + 0x40)
     {
@@ -1673,6 +2003,10 @@ void UDSWorkbenchWindow::requestTimedOut()
     {
         sendNextEcuProbe();
     }
+    else if (requestContext == ContextSessionScan)
+    {
+        sendNextSessionScan();
+    }
     else if (requestContext == ContextDidScan)
     {
         ++scanCurrentDid;
@@ -1746,6 +2080,15 @@ void UDSWorkbenchWindow::loadSettings()
     responseAddressModeCombo->setCurrentIndex(
         qMax(0, responseAddressModeCombo->findData(responseMode)));
     updateResponseIdFromMode();
+    const int safetyIndex = safetyModeCombo->findData(
+        settings.value("UDSWorkbench/SafetyMode", "read").toString());
+    safetyModeCombo->setCurrentIndex(qMax(0, safetyIndex));
+    p2TimeoutSpin->setValue(settings.value("UDSWorkbench/P2Timeout", 1500).toInt());
+    p2StarTimeoutSpin->setValue(settings.value("UDSWorkbench/P2StarTimeout", 5000).toInt());
+    flowBlockSizeSpin->setValue(settings.value("UDSWorkbench/FlowBlockSize", 0).toInt());
+    flowStMinSpin->setValue(settings.value("UDSWorkbench/FlowStMin", 3).toInt());
+    normalResponseTimeout = p2TimeoutSpin->value();
+    udsHandler->setFlowControlParameters(flowBlockSizeSpin->value(), flowStMinSpin->value());
     sessionCombo->setCurrentIndex(settings.value("UDSWorkbench/Session", 2).toInt());
     pollIntervalSpin->setValue(settings.value("UDSWorkbench/PollInterval", 1000).toInt());
     pollingCheck->setChecked(settings.value("UDSWorkbench/PollEnabled", false).toBool());
@@ -1762,6 +2105,11 @@ void UDSWorkbenchWindow::saveSettings() const
     settings.setValue("UDSWorkbench/ResponseId", responseIdEdit->text());
     settings.setValue("UDSWorkbench/ResponseMode", responseAddressModeCombo->currentData().toString());
     settings.setValue("UDSWorkbench/ResponseOffset", responseOffsetEdit->text());
+    settings.setValue("UDSWorkbench/SafetyMode", safetyModeCombo->currentData().toString());
+    settings.setValue("UDSWorkbench/P2Timeout", p2TimeoutSpin->value());
+    settings.setValue("UDSWorkbench/P2StarTimeout", p2StarTimeoutSpin->value());
+    settings.setValue("UDSWorkbench/FlowBlockSize", flowBlockSizeSpin->value());
+    settings.setValue("UDSWorkbench/FlowStMin", flowStMinSpin->value());
     settings.setValue("UDSWorkbench/Session", sessionCombo->currentIndex());
     settings.setValue("UDSWorkbench/PollInterval", pollIntervalSpin->value());
     settings.setValue("UDSWorkbench/PollEnabled", pollingCheck->isChecked());

@@ -94,6 +94,7 @@ public:
     bool sendUDSFrame(const UDS_MESSAGE &msg);
     void setProcessAllIDs(bool state);
     void setFlowCtrl(bool state);
+    void setFlowControlParameters(int blockSize, int separationTime);
     void addFilter(uint32_t pBusId, uint32_t ID, uint32_t mask);
     void removeFilter(uint32_t pBusId, uint32_t ID, uint32_t mask);
     void clearAllFilters();

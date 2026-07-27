@@ -182,6 +182,11 @@ UDS_HANDLER::~UDS_HANDLER()
     delete isoHandler;
 }
 
+void UDS_HANDLER::setFlowControlParameters(int blockSize, int separationTime)
+{
+    isoHandler->setFlowControlParameters(blockSize, separationTime);
+}
+
 UDS_MESSAGE UDS_HANDLER::tryISOtoUDS(ISOTP_MESSAGE msg, bool *result)
 {
     const unsigned char *data = reinterpret_cast<const unsigned char *>(msg.payload().constData());

@@ -23,6 +23,7 @@ public:
     bool sendISOTPFrame(int bus, int ID, QByteArray data);
     void setProcessAll(bool state);
     void setFlowCtrl(bool state);
+    void setFlowControlParameters(int blockSize, int separationTime);
     void addFilter(int pBusId, uint32_t ID, uint32_t mask);
     void removeFilter(int pBusId, uint32_t ID, uint32_t mask);
     void clearAllFilters();
@@ -47,6 +48,8 @@ private:
     bool processAll;
     bool issueFlowMsgs;
     bool sendPartialMessages;
+    int flowControlBlockSize;
+    int flowControlSeparationTime;
     QTimer frameTimer;
     uint32_t lastSenderID;
     uint32_t lastSenderBus;

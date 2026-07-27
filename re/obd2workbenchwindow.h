@@ -119,10 +119,14 @@ private:
     uint32_t parseNumber(const QString &text, bool *ok = nullptr) const;
     QVector<QPair<uint32_t, uint32_t>> responseRules(bool *ok = nullptr, QString *error = nullptr) const;
     bool responseMatches(uint32_t id) const;
+    void refreshEcuTargets();
+    bool transmissionAllowed(bool modifying = false);
 
     UDS_HANDLER *handler;
     QSpinBox *busSpin;
     QComboBox *requestIdEdit;
+    QComboBox *ecuTargetCombo;
+    QComboBox *safetyModeCombo;
     QComboBox *responseModeCombo;
     QLineEdit *responseIdEdit;
     QLineEdit *responseMaskEdit;

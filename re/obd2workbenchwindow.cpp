@@ -373,6 +373,13 @@ void OBD2WorkbenchWindow::buildUi()
         requestIdEdit->addItem(QStringLiteral("0x%1").arg(id, 0, 16).toUpper());
     requestIdEdit->setCurrentText(QStringLiteral("0x7DF"));
     requestIdEdit->setToolTip(tr("Functional 0x7DF or a physical/custom 11-bit or 29-bit request ID"));
+    ecuTargetCombo = new QComboBox(endpoint);
+    ecuTargetCombo->addItem(tr("All ECUs (functional)"), QStringLiteral("0x7DF"));
+    safetyModeCombo = new QComboBox(endpoint);
+    safetyModeCombo->addItem(tr("Passive"), QStringLiteral("passive"));
+    safetyModeCombo->addItem(tr("Read-only"), QStringLiteral("read"));
+    safetyModeCombo->addItem(tr("Full diagnostics"), QStringLiteral("full"));
+    safetyModeCombo->setCurrentIndex(1);
     responseModeCombo = new QComboBox(endpoint);
     responseModeCombo->addItem(tr("Range / List"), QStringLiteral("list"));
     responseModeCombo->addItem(tr("ID + Mask"), QStringLiteral("mask"));
@@ -385,12 +392,14 @@ void OBD2WorkbenchWindow::buildUi()
     endpointLayout->addWidget(busSpin);
     endpointLayout->addWidget(new QLabel(tr("Request ID"), endpoint));
     endpointLayout->addWidget(requestIdEdit);
+    endpointLayout->addWidget(ecuTargetCombo);
     endpointLayout->addWidget(new QLabel(tr("Responses"), endpoint));
     endpointLayout->addWidget(responseModeCombo);
     endpointLayout->addWidget(responseIdEdit);
     endpointLayout->addWidget(responseMaskLabel);
     endpointLayout->addWidget(responseMaskEdit);
     endpointLayout->addWidget(connectButton);
+    endpointLayout->addWidget(safetyModeCombo);
     endpointLayout->addStretch();
     endpointLayout->addWidget(connectionStatus);
     root->addWidget(endpoint);
@@ -413,6 +422,15 @@ void OBD2WorkbenchWindow::buildUi()
             responseIdEdit->setText(QStringLiteral("0x7E8-0x7EF"));
         else if (requestId >= 0x7E0 && requestId <= 0x7E7)
             responseIdEdit->setText(QStringLiteral("0x%1").arg(requestId + 8, 0, 16).toUpper());
+    });
+    connect(ecuTargetCombo, qOverload<int>(&QComboBox::activated), this, [this](int) {
+        requestIdEdit->setCurrentText(ecuTargetCombo->currentData().toString());
+        bool ok = false;
+        const uint32_t requestId = parseNumber(requestIdEdit->currentText(), &ok);
+        if (!ok) return;
+        responseModeCombo->setCurrentIndex(responseModeCombo->findData(QStringLiteral("list")));
+        responseIdEdit->setText(requestId == 0x7DF ? QStringLiteral("0x7E8-0x7EF")
+            : QStringLiteral("0x%1").arg(requestId + 8, 0, 16).toUpper());
     });
     responseMaskLabel->setVisible(false);
     responseMaskEdit->setVisible(false);
@@ -1092,6 +1110,38 @@ void OBD2WorkbenchWindow::connectEndpoint()
     Q_UNUSED(requestId)
 }
 
+bool OBD2WorkbenchWindow::transmissionAllowed(bool modifying)
+{
+    const QString mode = safetyModeCombo->currentData().toString();
+    if (mode == QStringLiteral("passive"))
+    {
+        connectionStatus->setText(tr("Passive safety mode blocks transmission"));
+        return false;
+    }
+    if (modifying && mode != QStringLiteral("full"))
+    {
+        connectionStatus->setText(tr("Full diagnostics safety mode required"));
+        return false;
+    }
+    return true;
+}
+
+void OBD2WorkbenchWindow::refreshEcuTargets()
+{
+    const QString selected = ecuTargetCombo->currentData().toString();
+    ecuTargetCombo->clear();
+    ecuTargetCombo->addItem(tr("All ECUs (functional)"), QStringLiteral("0x7DF"));
+    for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
+    {
+        const uint32_t responseId = iterator.key();
+        if (responseId >= 8 && responseId <= 0x7FF)
+            ecuTargetCombo->addItem(tr("ECU response 0x%1").arg(responseId, 0, 16).toUpper(),
+                QStringLiteral("0x%1").arg(responseId - 8, 0, 16).toUpper());
+    }
+    const int index = ecuTargetCombo->findData(selected);
+    ecuTargetCombo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
 void OBD2WorkbenchWindow::disconnectEndpoint()
 {
     pollTimer.stop();
@@ -1287,6 +1337,7 @@ void OBD2WorkbenchWindow::pollPids() { if (connected && !responseTimer.isActive(
 
 void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context nextContext)
 {
+    if (!transmissionAllowed(mode == 4 || mode == 8)) return;
     if (!connected || responseTimer.isActive()) { connectionStatus->setText(tr("Connect first or wait for the active request")); return; }
     bool ok = false;
     const uint32_t requestId = parseNumber(requestIdEdit->currentText(), &ok);
@@ -1406,6 +1457,7 @@ void OBD2WorkbenchWindow::finishSupportedPidScan()
             discoveryPidList);
         item->setData(Qt::UserRole, pid);
     }
+    refreshEcuTargets();
 }
 
 void OBD2WorkbenchWindow::addSelectedScannedPids()
@@ -1519,6 +1571,7 @@ void OBD2WorkbenchWindow::loadDiscoveryResults()
         return;
     }
     supportedPidsByEcu = loaded;
+    refreshEcuTargets();
     discoveryOutput->clear();
     discoveryPidList->clear();
     discoveryOutput->append(tr("Loaded discovery results for %1 ECU(s) from %2.")
@@ -1932,6 +1985,7 @@ void OBD2WorkbenchWindow::requestFinished()
     const Context finishedContext = context;
     context = None;
     activeMode = -1;
+    if (finishedContext == ModuleScan) refreshEcuTargets();
     if (finishedContext == SupportedPidScan)
     {
         if (scanPidBases.isEmpty()) { finishSupportedPidScan(); return; }
@@ -1953,6 +2007,8 @@ void OBD2WorkbenchWindow::loadSettings()
     QSettings settings;
     busSpin->setValue(settings.value("OBD2Workbench/Bus", 0).toInt());
     requestIdEdit->setCurrentText(settings.value("OBD2Workbench/RequestId", "0x7DF").toString());
+    safetyModeCombo->setCurrentIndex(qMax(0, safetyModeCombo->findData(
+        settings.value("OBD2Workbench/SafetyMode", "read").toString())));
     if (settings.contains("OBD2Workbench/ResponseMode"))
     {
         const int modeIndex = responseModeCombo->findData(settings.value("OBD2Workbench/ResponseMode").toString());
@@ -2009,6 +2065,7 @@ void OBD2WorkbenchWindow::saveSettings() const
     QSettings settings;
     settings.setValue("OBD2Workbench/Bus", busSpin->value());
     settings.setValue("OBD2Workbench/RequestId", requestIdEdit->currentText());
+    settings.setValue("OBD2Workbench/SafetyMode", safetyModeCombo->currentData().toString());
     settings.setValue("OBD2Workbench/ResponseMode", responseModeCombo->currentData().toString());
     settings.setValue("OBD2Workbench/ResponseSpec", responseIdEdit->text());
     settings.setValue("OBD2Workbench/ResponseMask", responseMaskEdit->text());

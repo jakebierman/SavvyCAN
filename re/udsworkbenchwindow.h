@@ -20,6 +20,7 @@ class QPushButton;
 class QSpinBox;
 class QTableWidget;
 class QTextEdit;
+class QTreeWidget;
 class DiagnosticGraphWindow;
 
 class UDSWorkbenchWindow : public QDialog
@@ -68,6 +69,12 @@ private slots:
     void stopServiceScan();
     void saveServiceScan();
     void loadServiceScan();
+    void startSessionScan();
+    void refreshDiscoverySummary();
+    void exportDiscoveryCsv();
+    void compareDiscoverySnapshot();
+    void applyAddressPreset();
+    void learnResponseAddress();
     void gotUDSReply(UDS_MESSAGE message);
     void requestTimedOut();
     void sendTesterPresent();
@@ -76,7 +83,7 @@ private slots:
 private:
     enum DidColumn { DidEnabled, DidName, DidIdentifier, DidFormat, DidPollMs, DidRaw, DidDecoded, DidStatus, DidUpdated, DidColumnCount };
     enum RequestContext { ContextNone, ContextSession, ContextManual, ContextDtcRead, ContextDtcClear,
-                          ContextRoutine, ContextDidScan, ContextServiceScan, ContextEcuScan,
+                          ContextRoutine, ContextDidScan, ContextServiceScan, ContextEcuScan, ContextSessionScan,
                           ContextControl, ContextSecurity };
 
     void buildUi();
@@ -96,6 +103,9 @@ private:
     void updateResponseIdFromMode();
     void sendNextServiceScan();
     void finishServiceScan(const QString &status);
+    void sendNextSessionScan();
+    void finishSessionScan(const QString &status);
+    bool transmissionAllowed(int service, bool modifying = false);
     QString serviceName(int service) const;
     QString decodeDtcResponse(const QByteArray &payload) const;
     void appendCsvRow(int row);
@@ -105,10 +115,16 @@ private:
     UDS_HANDLER *udsHandler;
     QSpinBox *busSpin;
     QLineEdit *requestIdEdit;
+    QComboBox *addressPresetCombo;
     QComboBox *responseAddressModeCombo;
     QLineEdit *responseOffsetEdit;
     QLineEdit *responseIdEdit;
     QComboBox *sessionCombo;
+    QComboBox *safetyModeCombo;
+    QSpinBox *p2TimeoutSpin;
+    QSpinBox *p2StarTimeoutSpin;
+    QSpinBox *flowBlockSizeSpin;
+    QSpinBox *flowStMinSpin;
     QCheckBox *testerPresentCheck;
     QCheckBox *pollingCheck;
     QSpinBox *pollIntervalSpin;
@@ -150,6 +166,8 @@ private:
     QListWidget *serviceScanResults;
     QPushButton *serviceScanStartButton;
     QPushButton *serviceScanStopButton;
+    QListWidget *sessionScanResults;
+    QTreeWidget *discoverySummaryTree;
     QPushButton *csvLogButton;
     QTextEdit *eventLog;
     QFile *csvLogFile = nullptr;
@@ -159,15 +177,18 @@ private:
     QQueue<int> didQueue;
     int activeDidRow = -1;
     int activeService = -1;
+    int activeSessionScan = -1;
     RequestContext requestContext = ContextNone;
     bool endpointConnected = false;
     DiagnosticGraphWindow *diagnosticGraph = nullptr;
     bool didScanActive = false;
     bool ecuScanActive = false;
     bool serviceScanActive = false;
+    bool sessionScanActive = false;
     int scanCurrentDid = 0;
     int scanEndDid = 0;
     QQueue<int> serviceScanQueue;
+    QQueue<int> sessionScanQueue;
     QQueue<uint32_t> ecuRequestQueue;
     QVector<uint32_t> ecuResponseIds;
     uint32_t activeEcuRequestId = 0;
