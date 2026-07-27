@@ -641,6 +641,7 @@ void ConnectionWindow::loadConnections()
     for(int i = 0 ; i < portNames.count() ; i++)
     {
       CANConnection* conn_p = create((CANCon::type)devTypes[i], portNames[i], driverNames[i], serialSpeeds[i], busSpeeds[i], isCanFds[i] ? true : false, DataRates[i]);
+        if (!conn_p) continue;
         /* add connection to model */
         connModel->add(conn_p);
     }
@@ -665,7 +666,10 @@ void ConnectionWindow::saveConnections()
  
     /* save connections */
     foreach(CANConnection* conn_p, conns)
-      { CANBus bus;
+      {
+        // Simulator buses are restored from simulator projects, not hardware settings.
+        if (!conn_p || conn_p->getType() == CANCon::SIMULATOR) continue;
+        CANBus bus;
 
         if (conn_p->getBusSettings(0, bus)) {
           busSpeeds.append(bus.getSpeed());

@@ -54,6 +54,12 @@ Only send diagnostic requests to vehicles and modules you own or are authorised 
 
 The endpoint preset selects common 11-bit physical, 11-bit functional, or 29-bit normal-fixed addressing. Response addressing may use an explicit ID, request plus `0x8`, request plus `0x80`, or a custom offset. **Learn response** probes the current request ID and records responding endpoints.
 
+In ECU discovery, **Any response ID** installs a temporary wildcard receive filter. Only frames that decode as a reply to the active UDS probe are recorded. This is useful when neither the 11-bit nor 29-bit response address is known; select the discovered pair and choose **Use selected ECU** afterward.
+
+**Infer from capture** passively finds standard 11-bit and ISO 15765 normal-fixed 29-bit endpoint pairs from captured single-frame UDS replies. Normal-fixed results include decoded source and target bytes. Passive results begin at lower confidence than active positive responses.
+
+Active scans have an inter-request gap and request limit, checkpoint their remaining IDs, and offer to resume after an interrupted run. A newly observed CAN error frame aborts the scan. Multiple replies to one request are marked as ambiguous. **Verify physically** probes only the selected pair. Names and notes are retained in saved results, and loading additional result files merges endpoint pairs rather than clearing the list.
+
 The Setup tab provides Passive, Read-only active, and Full diagnostics safety modes. Passive blocks all diagnostic transmission. Read-only permits discovery and data retrieval but blocks security, clearing, routines, resets, writes, downloads, and controls. Full diagnostics enables those operations while retaining their confirmation dialogs.
 
 P2 controls the normal response timeout and P2* controls Response Pending. ISO-TP block size and STmin are placed directly in generated flow-control frames. Endpoint profiles retain addressing, session, safety, timing, transport settings, and DID rows.
@@ -61,5 +67,7 @@ P2 controls the normal response timeout and P2* controls Response Pending. ISO-T
 ## Discovery summary
 
 Session discovery probes the common `0x10` session subfunctions. The summary tree combines learned endpoints, sessions, services, and DIDs. It can export CSV and save or compare JSON snapshots to identify additions and missing capabilities.
+
+After session discovery, the workbench sends a request to restore the session selected before the scan.
 
 See [Diagnostic and CAN Tool Feature Roadmap](./diagnostic_feature_roadmap.md) for researched follow-on work and the proposed CANopen workbench.

@@ -38,6 +38,7 @@
 #include "re/canopenworkbenchwindow.h"
 #include "re/busdiagnosticswindow.h"
 #include "re/aiworkbenchwindow.h"
+#include "re/diagnosticsimulatorwindow.h"
 #include "canbridgewindow.h"
 
 class CANConnection;
@@ -110,6 +111,7 @@ private slots:
     void showCANopenWorkbenchWindow();
     void showBusDiagnosticsWindow();
     void showAIWorkbenchWindow();
+    void showDiagnosticSimulatorWindow();
     void syncTripPlayback(qint64 elapsedMs);
     void showISOInterpreterWindow();
     void showSnifferWindow();
@@ -246,6 +248,7 @@ private:
     CANopenWorkbenchWindow *canopenWorkbenchWindow;
     BusDiagnosticsWindow *busDiagnosticsWindow;
     AIWorkbenchWindow *aiWorkbenchWindow;
+    DiagnosticSimulatorWindow *diagnosticSimulatorWindow;
     ISOTP_InterpreterWindow *isoWindow;
     SnifferWindow* snifferWindow;
     MotorControllerConfigWindow *motorctrlConfigWindow;

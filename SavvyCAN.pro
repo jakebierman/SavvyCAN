@@ -93,6 +93,7 @@ SOURCES += main.cpp\
     re/obddashboardcanvas.cpp \
     re/canopenworkbenchwindow.cpp \
     re/busdiagnosticswindow.cpp \
+    re/diagnosticsimulatorwindow.cpp \
     re/aiworkbenchwindow.cpp \
     re/aichattranscript.cpp \
     re/aiactionregistry.cpp \
@@ -198,6 +199,7 @@ HEADERS  += mainwindow.h \
     re/obddashboardcanvas.h \
     re/canopenworkbenchwindow.h \
     re/busdiagnosticswindow.h \
+    re/diagnosticsimulatorwindow.h \
     re/aiworkbenchwindow.h \
     re/aichattranscript.h \
     re/aiactionregistry.h \

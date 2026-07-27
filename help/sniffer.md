@@ -67,3 +67,36 @@ View Bits
 ==========
 
 This option changes the view very starkly. This is the view shown in the picture associated with this topic. When View Bits is selected the display will change to show each bit within the bytes as separate blocks that each can separately be black when set and unchanged, white when unset and unchanged, red when freshly unset, and green when freshly set. This allows for a very fine grained view. Fade inactive, and never expire still work as usual. This mode might be a bit "busy" and lowers the number of IDs you can see at once. But, the choice is yours. You give up some density in exchange for verbosity.
+
+Differential Experiments
+========================
+
+The differential controls retain three labelled sample sets:
+
+1. Record **Baseline** while the system is idle.
+2. Record **Action** while performing the operation being investigated.
+3. Optionally record **Control** without the operation, under otherwise similar conditions.
+4. Stop recording and select **Analyze**.
+
+Each recording button replaces the previous sample for that phase. Up to 250,000
+received data frames are retained per phase. The analysis ranks bits whose set
+frequency changes during the action and discounts changes also present in the
+control. Scores are evidence priorities rather than proof of signal meaning.
+
+Reverse-Engineering Evidence
+============================
+
+The results window provides additional candidate analyses:
+
+- **Counters / checksums** detects byte and nibble counters, XOR checksums,
+  additive checksums and common complements.
+- **Diagnostic correlation** compares observed UDS DID or OBD PID response
+  values with broadcast bytes.
+- **Signal clusters** identifies strongly correlated bytes on different CAN IDs.
+- **Export DBC candidates** writes selected evidence, or every row when nothing
+  is selected, as an editable DBC file.
+
+Correlation currently compares retained sample sequences. Use captures with
+similar duration and sampling conditions, then validate every candidate through
+repeatable experiments. Generated DBC signals are deliberately named as
+candidates and use raw byte scaling until their actual layout is confirmed.

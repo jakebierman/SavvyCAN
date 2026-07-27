@@ -121,6 +121,7 @@ MainWindow::MainWindow(QWidget *parent) :
     canopenWorkbenchWindow = nullptr;
     busDiagnosticsWindow = nullptr;
     aiWorkbenchWindow = nullptr;
+    diagnosticSimulatorWindow = nullptr;
     aiAssistantDock = nullptr;
     motorctrlConfigWindow = nullptr;
     isoWindow = nullptr;
@@ -152,6 +153,11 @@ MainWindow::MainWindow(QWidget *parent) :
     busDiagnosticsWindow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     workspaceTabs->addTab(busDiagnosticsWindow, tr("Bus Diagnostics"));
     busDiagnosticsWindow->setProperty("helpPage", QStringLiteral("bus_diagnostics.md"));
+    diagnosticSimulatorWindow = new DiagnosticSimulatorWindow(model->getListReference(), this);
+    diagnosticSimulatorWindow->setWindowFlags(Qt::Widget);
+    diagnosticSimulatorWindow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    diagnosticSimulatorWindow->setProperty("helpPage", QStringLiteral("diagnostic_simulator.md"));
+    workspaceTabs->addTab(diagnosticSimulatorWindow, tr("Diagnostic Simulator"));
     aiWorkbenchWindow = new AIWorkbenchWindow(model->getListReference(), this);
     aiWorkbenchWindow->setApplicationContextProvider([this]() { return aiApplicationContext(); });
     aiWorkbenchWindow->setWindowFlags(Qt::Widget);
@@ -288,6 +294,10 @@ MainWindow::MainWindow(QWidget *parent) :
     QAction *busDiagnosticsAction = new QAction(tr("Bus Diagnostics"), this);
     ui->menuSend_Frames->insertAction(ui->actionUDS_Scanner, busDiagnosticsAction);
     connect(busDiagnosticsAction, &QAction::triggered, this, &MainWindow::showBusDiagnosticsWindow);
+    QAction *diagnosticSimulatorAction = new QAction(tr("Diagnostic Replay Simulator"), this);
+    ui->menuSend_Frames->insertAction(ui->actionUDS_Scanner, diagnosticSimulatorAction);
+    connect(diagnosticSimulatorAction, &QAction::triggered,
+            this, &MainWindow::showDiagnosticSimulatorWindow);
     QAction *aiWorkbenchAction = new QAction(tr("AI Analysis Workbench"), this);
     ui->menuSend_Frames->insertAction(ui->actionUDS_Scanner, aiWorkbenchAction);
     connect(aiWorkbenchAction, &QAction::triggered, this, &MainWindow::showAIWorkbenchWindow);
@@ -3243,6 +3253,18 @@ void MainWindow::showAIWorkbenchWindow()
                 this, &MainWindow::handleAIActions);
     }
     activateWorkspace(aiWorkbenchWindow, tr("AI Workbench"));
+}
+
+void MainWindow::showDiagnosticSimulatorWindow()
+{
+    if (!diagnosticSimulatorWindow)
+    {
+        diagnosticSimulatorWindow = new DiagnosticSimulatorWindow(model->getListReference(), this);
+        diagnosticSimulatorWindow->setWindowFlags(Qt::Widget);
+        diagnosticSimulatorWindow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        diagnosticSimulatorWindow->setProperty("helpPage", QStringLiteral("diagnostic_simulator.md"));
+    }
+    activateWorkspace(diagnosticSimulatorWindow, tr("Diagnostic Simulator"));
 }
 
 void MainWindow::showScriptingWindow()

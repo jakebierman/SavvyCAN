@@ -2,6 +2,7 @@
 #define SNIFFER_H
 
 #include <QDialog>
+#include <QHash>
 #include <QListWidgetItem>
 #include "sniffermodel.h"
 #include "SnifferDelegate.h"
@@ -46,12 +47,23 @@ public slots:
     void fltAll();
     void fltNone();
     void itemChanged(QListWidgetItem*);
+    void captureExperimentFrames(CANConnection*, QVector<CANFrame>& frames);
+    void analyzeExperiment();
+    void inferCountersAndChecksums();
+    void correlateDiagnostics();
+    void clusterSignals();
+    void exportDbcCandidates();
 
 private:
     void filter(bool pFilter);
     bool eventFilter(QObject *obj, QEvent *event);
     void readSettings();
     void writeSettings();
+    void beginExperimentCapture(int phase);
+    void addAnalysisRow(const QString &type, quint32 id, const QString &field,
+                        double score, const QString &evidence);
+    QVector<CANFrame> experimentFrames() const;
+    static double correlation(const QVector<double> &left, const QVector<double> &right);
 
     Ui::snifferWindow*          ui;
     SnifferModel                mModel;
@@ -62,6 +74,13 @@ private:
     SnifferDelegate             *sniffDel;
     QAbstractItemDelegate       *defaultDel;
     bool                        notchPingPong;
+    int                         mExperimentPhase = -1;
+    QVector<CANFrame>           mBaselineFrames;
+    QVector<CANFrame>           mActionFrames;
+    QVector<CANFrame>           mControlFrames;
+    class QLabel                *mExperimentStatus = nullptr;
+    class QDialog               *mAnalysisDialog = nullptr;
+    class QTableWidget          *mAnalysisTable = nullptr;
 };
 
 #endif // SNIFFER_H

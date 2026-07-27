@@ -75,6 +75,9 @@ private slots:
     void compareDiscoverySnapshot();
     void applyAddressPreset();
     void learnResponseAddress();
+    void inferPassiveEndpoints();
+    void verifySelectedEcu();
+    void editSelectedEcuDetails();
     void gotUDSReply(UDS_MESSAGE message);
     void requestTimedOut();
     void sendTesterPresent();
@@ -100,6 +103,10 @@ private:
     void finishDidScan(const QString &status);
     void sendNextEcuProbe();
     void finishEcuScan(const QString &status);
+    void addEcuDiscoveryResult(uint32_t requestId, uint32_t responseId,
+                               const QString &status, int confidence);
+    uint32_t inferredRequestId(uint32_t responseId, bool *ok = nullptr) const;
+    QString describe29BitAddress(uint32_t id) const;
     void updateResponseIdFromMode();
     void sendNextServiceScan();
     void finishServiceScan(const QString &status);
@@ -159,7 +166,10 @@ private:
     QPushButton *scanStopButton;
     QLineEdit *ecuRequestSpecEdit;
     QLineEdit *ecuResponseSpecEdit;
+    QCheckBox *ecuAnyResponseCheck;
     QSpinBox *ecuScanTimeoutSpin;
+    QSpinBox *ecuScanDelaySpin;
+    QSpinBox *ecuScanLimitSpin;
     QListWidget *ecuScanResults;
     QPushButton *ecuScanStartButton;
     QPushButton *ecuScanStopButton;
@@ -178,6 +188,7 @@ private:
     int activeDidRow = -1;
     int activeService = -1;
     int activeSessionScan = -1;
+    int originalSessionScan = 1;
     RequestContext requestContext = ContextNone;
     bool endpointConnected = false;
     DiagnosticGraphWindow *diagnosticGraph = nullptr;
@@ -191,7 +202,10 @@ private:
     QQueue<int> sessionScanQueue;
     QQueue<uint32_t> ecuRequestQueue;
     QVector<uint32_t> ecuResponseIds;
+    bool ecuAcceptAnyResponse = false;
     uint32_t activeEcuRequestId = 0;
+    int ecuProbeCount = 0;
+    int ecuErrorFrameBaseline = 0;
     int normalResponseTimeout = 1500;
 };
 

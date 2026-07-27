@@ -1,6 +1,8 @@
 #include "udsworkbenchwindow.h"
 
 #include "connections/canconmanager.h"
+#include "canframemodel.h"
+#include "mainwindow.h"
 #include "payloadformatter.h"
 #include "diagnosticgraphwindow.h"
 
@@ -20,6 +22,7 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QInputDialog>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QProgressBar>
@@ -172,10 +175,19 @@ void UDSWorkbenchWindow::buildUi()
     QHBoxLayout *ecuScanControls = new QHBoxLayout;
     ecuRequestSpecEdit = new QLineEdit(QStringLiteral("0x7E0-0x7E7"), ecuDiscoveryPage);
     ecuResponseSpecEdit = new QLineEdit(QStringLiteral("0x7E8-0x7EF"), ecuDiscoveryPage);
+    ecuAnyResponseCheck = new QCheckBox(tr("Any response ID"), ecuDiscoveryPage);
     ecuScanTimeoutSpin = new QSpinBox(ecuDiscoveryPage);
     ecuScanTimeoutSpin->setRange(20, 5000);
     ecuScanTimeoutSpin->setValue(150);
     ecuScanTimeoutSpin->setSuffix(tr(" ms"));
+    ecuScanDelaySpin = new QSpinBox(ecuDiscoveryPage);
+    ecuScanDelaySpin->setRange(0, 10000);
+    ecuScanDelaySpin->setValue(25);
+    ecuScanDelaySpin->setSuffix(tr(" ms gap"));
+    ecuScanLimitSpin = new QSpinBox(ecuDiscoveryPage);
+    ecuScanLimitSpin->setRange(1, 4096);
+    ecuScanLimitSpin->setValue(256);
+    ecuScanLimitSpin->setPrefix(tr("Limit "));
     ecuScanStartButton = new QPushButton(tr("Scan ECUs"), ecuDiscoveryPage);
     ecuScanStopButton = new QPushButton(tr("Stop"), ecuDiscoveryPage);
     ecuScanStopButton->setEnabled(false);
@@ -183,8 +195,11 @@ void UDSWorkbenchWindow::buildUi()
     ecuScanControls->addWidget(ecuRequestSpecEdit);
     ecuScanControls->addWidget(new QLabel(tr("Response IDs"), ecuDiscoveryPage));
     ecuScanControls->addWidget(ecuResponseSpecEdit);
+    ecuScanControls->addWidget(ecuAnyResponseCheck);
     ecuScanControls->addWidget(new QLabel(tr("Timeout"), ecuDiscoveryPage));
     ecuScanControls->addWidget(ecuScanTimeoutSpin);
+    ecuScanControls->addWidget(ecuScanDelaySpin);
+    ecuScanControls->addWidget(ecuScanLimitSpin);
     ecuScanControls->addWidget(ecuScanStartButton);
     ecuScanControls->addWidget(ecuScanStopButton);
     ecuDiscoveryLayout->addLayout(ecuScanControls);
@@ -195,16 +210,26 @@ void UDSWorkbenchWindow::buildUi()
     QPushButton *loadEcuScanButton = new QPushButton(tr("Load results"), ecuDiscoveryPage);
     QPushButton *saveEcuScanButton = new QPushButton(tr("Save results"), ecuDiscoveryPage);
     QPushButton *useEcuButton = new QPushButton(tr("Use selected ECU"), ecuDiscoveryPage);
+    QPushButton *passiveEcuButton = new QPushButton(tr("Infer from capture"), ecuDiscoveryPage);
+    QPushButton *verifyEcuButton = new QPushButton(tr("Verify physically"), ecuDiscoveryPage);
+    QPushButton *editEcuButton = new QPushButton(tr("Name / notes"), ecuDiscoveryPage);
+    ecuResultControls->addWidget(passiveEcuButton);
     ecuResultControls->addWidget(loadEcuScanButton);
     ecuResultControls->addWidget(saveEcuScanButton);
     ecuResultControls->addStretch();
     ecuResultControls->addWidget(useEcuButton);
+    ecuResultControls->addWidget(verifyEcuButton);
+    ecuResultControls->addWidget(editEcuButton);
     ecuDiscoveryLayout->addLayout(ecuResultControls);
     connect(ecuScanStartButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::startEcuScan);
     connect(ecuScanStopButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::stopEcuScan);
     connect(loadEcuScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::loadEcuScan);
     connect(saveEcuScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveEcuScan);
     connect(useEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::useSelectedEcu);
+    connect(passiveEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::inferPassiveEndpoints);
+    connect(verifyEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::verifySelectedEcu);
+    connect(editEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::editSelectedEcuDetails);
+    connect(ecuAnyResponseCheck, &QCheckBox::toggled, ecuResponseSpecEdit, &QWidget::setDisabled);
     tabs->addTab(ecuDiscoveryPage, tr("ECU discovery"));
 
     QWidget *didPage = new QWidget(tabs);
@@ -555,10 +580,119 @@ void UDSWorkbenchWindow::learnResponseAddress()
     const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
     if (!requestOk) { log(tr("Enter a valid request ID first")); return; }
     ecuRequestSpecEdit->setText(QStringLiteral("0x%1").arg(requestId, 0, 16).toUpper());
-    ecuResponseSpecEdit->setText(requestId > 0x7FF
-        ? QStringLiteral("0x18DA0000-0x18DA0FFF")
-        : QStringLiteral("0x700-0x7FF"));
+    ecuAnyResponseCheck->setChecked(true);
     startEcuScan();
+}
+
+uint32_t UDSWorkbenchWindow::inferredRequestId(uint32_t responseId, bool *ok) const
+{
+    if (responseId >= 0x7E8 && responseId <= 0x7EF)
+    {
+        if (ok) *ok = true;
+        return responseId - 8;
+    }
+    if ((responseId & 0x1FFF0000U) == 0x18DA0000U)
+    {
+        if (ok) *ok = true;
+        return (responseId & 0x1FFF0000U) |
+            ((responseId & 0xFFU) << 8) | ((responseId >> 8) & 0xFFU);
+    }
+    if (ok) *ok = false;
+    return 0;
+}
+
+QString UDSWorkbenchWindow::describe29BitAddress(uint32_t id) const
+{
+    if ((id & 0x1FFF0000U) != 0x18DA0000U) return QString();
+    return tr("target 0x%1, source 0x%2")
+        .arg((id >> 8) & 0xFF, 2, 16, QLatin1Char('0'))
+        .arg(id & 0xFF, 2, 16, QLatin1Char('0')).toUpper();
+}
+
+void UDSWorkbenchWindow::addEcuDiscoveryResult(uint32_t requestId, uint32_t responseId,
+                                               const QString &status, int confidence)
+{
+    int responsesForRequest = 0;
+    for (int index = 0; index < ecuScanResults->count(); ++index)
+    {
+        QListWidgetItem *existing = ecuScanResults->item(index);
+        if (existing->data(Qt::UserRole).toUInt() == requestId) ++responsesForRequest;
+        if (existing->data(Qt::UserRole).toUInt() == requestId &&
+            existing->data(Qt::UserRole + 1).toUInt() == responseId)
+        {
+            if (confidence > existing->data(Qt::UserRole + 2).toInt())
+                existing->setData(Qt::UserRole + 2, confidence);
+            return;
+        }
+    }
+    QString text = tr("REQ 0x%1 -> RESP 0x%2  [%3%] %4")
+        .arg(requestId, 0, 16).arg(responseId, 0, 16).arg(confidence).arg(status);
+    const QString address = describe29BitAddress(responseId);
+    if (!address.isEmpty()) text += QStringLiteral("  ") + address;
+    QListWidgetItem *item = new QListWidgetItem(text.toUpper(), ecuScanResults);
+    item->setData(Qt::UserRole, requestId);
+    item->setData(Qt::UserRole + 1, responseId);
+    item->setData(Qt::UserRole + 2, confidence);
+    if (responsesForRequest > 0)
+    {
+        item->setToolTip(tr("Multiple response IDs were observed for this request. Verify each endpoint physically."));
+        log(tr("Ambiguous endpoint: request 0x%1 has multiple responding IDs")
+            .arg(requestId, 0, 16).toUpper());
+    }
+}
+
+void UDSWorkbenchWindow::inferPassiveEndpoints()
+{
+    const QVector<CANFrame> *frames = MainWindow::getReference()->getCANFrameModel()->getListReference();
+    int added = 0;
+    for (const CANFrame &frame : *frames)
+    {
+        if (!frame.isReceived || frame.bus != busSpin->value() ||
+            frame.frameType() != QCanBusFrame::DataFrame) continue;
+        const QByteArray payload = frame.payload();
+        if (payload.size() < 2 || (quint8(payload[0]) >> 4) != 0) continue;
+        const int length = quint8(payload[0]) & 0xF;
+        const int service = quint8(payload[1]);
+        if (length < 1 || !((service >= 0x50 && service <= 0x7E) || service == 0x7F)) continue;
+        bool requestOk = false;
+        const uint32_t requestId = inferredRequestId(frame.frameId(), &requestOk);
+        if (!requestOk) continue;
+        const int before = ecuScanResults->count();
+        addEcuDiscoveryResult(requestId, frame.frameId(), tr("passive UDS response"), 70);
+        if (ecuScanResults->count() > before) ++added;
+    }
+    log(tr("Passive inference added %1 endpoint pair(s)").arg(added));
+    refreshDiscoverySummary();
+}
+
+void UDSWorkbenchWindow::verifySelectedEcu()
+{
+    QListWidgetItem *item = ecuScanResults->currentItem();
+    if (!item) { log(tr("Select an endpoint to verify")); return; }
+    ecuRequestSpecEdit->setText(QStringLiteral("0x%1")
+        .arg(item->data(Qt::UserRole).toUInt(), 0, 16).toUpper());
+    ecuResponseSpecEdit->setText(QStringLiteral("0x%1")
+        .arg(item->data(Qt::UserRole + 1).toUInt(), 0, 16).toUpper());
+    ecuAnyResponseCheck->setChecked(false);
+    startEcuScan();
+}
+
+void UDSWorkbenchWindow::editSelectedEcuDetails()
+{
+    QListWidgetItem *item = ecuScanResults->currentItem();
+    if (!item) return;
+    bool accepted = false;
+    const QString name = QInputDialog::getText(this, tr("Endpoint name"), tr("Name"),
+        QLineEdit::Normal, item->data(Qt::UserRole + 3).toString(), &accepted);
+    if (!accepted) return;
+    const QString notes = QInputDialog::getMultiLineText(this, tr("Endpoint notes"), tr("Notes"),
+        item->data(Qt::UserRole + 4).toString(), &accepted);
+    if (!accepted) return;
+    item->setData(Qt::UserRole + 3, name);
+    item->setData(Qt::UserRole + 4, notes);
+    item->setToolTip(notes);
+    if (!name.trimmed().isEmpty() && !item->text().startsWith(name + QStringLiteral(": ")))
+        item->setText(name + QStringLiteral(": ") + item->text());
 }
 
 bool UDSWorkbenchWindow::transmissionAllowed(int service, bool modifying)
@@ -1117,43 +1251,86 @@ void UDSWorkbenchWindow::startEcuScan()
     }
     bool requestsOk = false, responsesOk = false;
     const QVector<uint32_t> requests = parseIdSpec(ecuRequestSpecEdit->text(), &requestsOk);
-    ecuResponseIds = parseIdSpec(ecuResponseSpecEdit->text(), &responsesOk);
+    ecuAcceptAnyResponse = ecuAnyResponseCheck->isChecked();
+    if (ecuAcceptAnyResponse)
+        responsesOk = true;
+    else
+        ecuResponseIds = parseIdSpec(ecuResponseSpecEdit->text(), &responsesOk);
     if (!requestsOk || !responsesOk)
     {
         log(tr("Invalid ECU request/response ID list or range"));
         return;
     }
-    if (requests.size() > 256 && QMessageBox::warning(this, tr("Large ECU scan"),
-            tr("Probe %1 request IDs? This creates active diagnostic traffic.").arg(requests.size()),
+    QVector<uint32_t> limitedRequests = requests;
+    if (limitedRequests.size() > ecuScanLimitSpin->value())
+        limitedRequests.resize(ecuScanLimitSpin->value());
+    QSettings resumeSettings;
+    const QString resumeText = resumeSettings.value("UDSWorkbench/EcuScanRemaining").toString();
+    if (!resumeText.isEmpty() && QMessageBox::question(this, tr("Resume ECU scan"),
+            tr("Resume the previously interrupted ECU discovery job?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+    {
+        bool resumeOk = false;
+        const QVector<uint32_t> resumed = parseIdSpec(resumeText, &resumeOk);
+        if (resumeOk) limitedRequests = resumed;
+    }
+    if (limitedRequests.size() > 256 && QMessageBox::warning(this, tr("Large ECU scan"),
+            tr("Probe %1 request IDs? This creates active diagnostic traffic.").arg(limitedRequests.size()),
             QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
         return;
 
     udsHandler->clearAllFilters();
-    for (uint32_t responseId : ecuResponseIds)
-        udsHandler->addFilter(busSpin->value(), responseId, responseId > 0x7FF ? 0x1FFFFFFF : 0x7FF);
+    if (ecuAcceptAnyResponse)
+        udsHandler->addFilter(busSpin->value(), 0, 0);
+    else
+        for (uint32_t responseId : ecuResponseIds)
+            udsHandler->addFilter(busSpin->value(), responseId, responseId > 0x7FF ? 0x1FFFFFFF : 0x7FF);
     udsHandler->setReception(true);
     ecuRequestQueue.clear();
-    for (uint32_t requestId : requests) ecuRequestQueue.enqueue(requestId);
-    ecuScanResults->clear();
+    for (uint32_t requestId : limitedRequests) ecuRequestQueue.enqueue(requestId);
     ecuScanActive = true;
+    ecuProbeCount = 0;
+    ecuErrorFrameBaseline = 0;
+    const QVector<CANFrame> *frames = MainWindow::getReference()->getCANFrameModel()->getListReference();
+    for (const CANFrame &frame : *frames)
+        if (frame.bus == busSpin->value() && frame.frameType() == QCanBusFrame::ErrorFrame)
+            ++ecuErrorFrameBaseline;
     ecuScanStartButton->setEnabled(false);
     ecuScanStopButton->setEnabled(true);
     responseTimer.setInterval(ecuScanTimeoutSpin->value());
     connectionStatus->setText(tr("Scanning ECU IDs"));
-    log(tr("Scanning %1 request ID(s) against %2 response ID(s)")
-        .arg(requests.size()).arg(ecuResponseIds.size()));
+    log(ecuAcceptAnyResponse
+        ? tr("Scanning %1 request ID(s) for any UDS response ID").arg(limitedRequests.size())
+        : tr("Scanning %1 request ID(s) against %2 response ID(s)")
+            .arg(limitedRequests.size()).arg(ecuResponseIds.size()));
     sendNextEcuProbe();
 }
 
 void UDSWorkbenchWindow::sendNextEcuProbe()
 {
     if (!ecuScanActive) return;
+    int errorFrames = 0;
+    const QVector<CANFrame> *frames = MainWindow::getReference()->getCANFrameModel()->getListReference();
+    for (const CANFrame &frame : *frames)
+        if (frame.bus == busSpin->value() && frame.frameType() == QCanBusFrame::ErrorFrame)
+            ++errorFrames;
+    if (errorFrames > ecuErrorFrameBaseline)
+    {
+        finishEcuScan(tr("ECU scan aborted after CAN error frame"));
+        return;
+    }
     if (ecuRequestQueue.isEmpty())
     {
         finishEcuScan(tr("ECU scan complete"));
         return;
     }
     activeEcuRequestId = ecuRequestQueue.dequeue();
+    ++ecuProbeCount;
+    QStringList remaining;
+    remaining << QStringLiteral("0x%1").arg(activeEcuRequestId, 0, 16);
+    for (uint32_t requestId : ecuRequestQueue)
+        remaining << QStringLiteral("0x%1").arg(requestId, 0, 16);
+    QSettings().setValue("UDSWorkbench/EcuScanRemaining", remaining.join(','));
     UDS_MESSAGE message;
     message.bus = busSpin->value();
     message.setFrameId(activeEcuRequestId);
@@ -1179,9 +1356,12 @@ void UDSWorkbenchWindow::stopEcuScan()
 void UDSWorkbenchWindow::finishEcuScan(const QString &status)
 {
     responseTimer.stop();
+    const bool completed = status == tr("ECU scan complete");
     ecuScanActive = false;
     ecuRequestQueue.clear();
     ecuResponseIds.clear();
+    ecuAcceptAnyResponse = false;
+    if (completed) QSettings().remove("UDSWorkbench/EcuScanRemaining");
     activeEcuRequestId = 0;
     activeService = -1;
     requestContext = ContextNone;
@@ -1223,6 +1403,9 @@ void UDSWorkbenchWindow::saveEcuScan()
         result["requestId"] = QStringLiteral("0x%1").arg(item->data(Qt::UserRole).toUInt(), 0, 16).toUpper();
         result["responseId"] = QStringLiteral("0x%1").arg(item->data(Qt::UserRole + 1).toUInt(), 0, 16).toUpper();
         result["status"] = item->text();
+        result["confidence"] = item->data(Qt::UserRole + 2).toInt();
+        result["name"] = item->data(Qt::UserRole + 3).toString();
+        result["notes"] = item->data(Qt::UserRole + 4).toString();
         results.append(result);
     }
     QJsonObject root;
@@ -1251,7 +1434,6 @@ void UDSWorkbenchWindow::loadEcuScan()
         log(tr("Invalid ECU discovery file"));
         return;
     }
-    ecuScanResults->clear();
     for (const QJsonValue &value : document.object()["results"].toArray())
     {
         const QJsonObject result = value.toObject();
@@ -1259,9 +1441,16 @@ void UDSWorkbenchWindow::loadEcuScan()
         const uint32_t requestId = parseNumber(result["requestId"].toString(), &requestOk);
         const uint32_t responseId = parseNumber(result["responseId"].toString(), &responseOk);
         if (!requestOk || !responseOk) continue;
-        QListWidgetItem *item = new QListWidgetItem(result["status"].toString(), ecuScanResults);
-        item->setData(Qt::UserRole, requestId);
-        item->setData(Qt::UserRole + 1, responseId);
+        const int before = ecuScanResults->count();
+        addEcuDiscoveryResult(requestId, responseId, result["status"].toString(),
+                              result["confidence"].toInt(75));
+        if (ecuScanResults->count() > before)
+        {
+            QListWidgetItem *item = ecuScanResults->item(ecuScanResults->count() - 1);
+            item->setData(Qt::UserRole + 3, result["name"].toString());
+            item->setData(Qt::UserRole + 4, result["notes"].toString());
+            item->setToolTip(result["notes"].toString());
+        }
     }
     log(tr("Loaded %1 ECU discovery result(s)").arg(ecuScanResults->count()));
 }
@@ -1514,6 +1703,7 @@ void UDSWorkbenchWindow::startSessionScan()
     if (!endpointConnected) { connectionStatus->setText(tr("Connect a session first")); return; }
     if (!transmissionAllowed(UDS_SERVICES::DIAG_CONTROL) || responseTimer.isActive()) return;
     sessionScanQueue.clear();
+    originalSessionScan = sessionCombo->currentData().toInt();
     for (int session : {1, 2, 3, 4}) sessionScanQueue.enqueue(session);
     sessionScanResults->clear();
     sessionScanActive = true;
@@ -1553,6 +1743,21 @@ void UDSWorkbenchWindow::sendNextSessionScan()
 void UDSWorkbenchWindow::finishSessionScan(const QString &status)
 {
     responseTimer.stop();
+    bool requestOk = false;
+    const uint32_t requestId = parseNumber(requestIdEdit->text(), &requestOk);
+    if (requestOk)
+    {
+        UDS_MESSAGE restore;
+        restore.bus = busSpin->value();
+        restore.setFrameId(requestId);
+        restore.setExtendedFrameFormat(requestId > 0x7FF);
+        restore.service = UDS_SERVICES::DIAG_CONTROL;
+        restore.subFuncLen = 1;
+        restore.subFunc = originalSessionScan;
+        if (udsHandler->sendUDSFrame(restore))
+            log(tr("Restored diagnostic session 0x%1 after discovery")
+                .arg(originalSessionScan, 2, 16, QLatin1Char('0')));
+    }
     sessionScanQueue.clear();
     sessionScanActive = false;
     activeSessionScan = -1;
@@ -1765,26 +1970,18 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
 {
     if (ecuScanActive && requestContext == ContextEcuScan)
     {
-        if (message.bus != busSpin->value() || !ecuResponseIds.contains(message.frameId()) ||
+        if (message.bus != busSpin->value() ||
+            (!ecuAcceptAnyResponse && !ecuResponseIds.contains(message.frameId())) ||
             (message.service != activeService && message.service != activeService + 0x40))
             return;
-        for (int index = 0; index < ecuScanResults->count(); ++index)
-        {
-            QListWidgetItem *existing = ecuScanResults->item(index);
-            if (existing->data(Qt::UserRole).toUInt() == activeEcuRequestId &&
-                existing->data(Qt::UserRole + 1).toUInt() == message.frameId())
-                return;
-        }
-        QString result = tr("REQ 0x%1 -> RESP 0x%2  ")
-            .arg(activeEcuRequestId, 0, 16).arg(message.frameId(), 0, 16);
+        QString result;
         if (message.isErrorReply)
             result += tr("NRC 0x%1: %2").arg(message.subFunc, 2, 16, QLatin1Char('0'))
                 .arg(udsHandler->getNegativeResponseShort(message.subFunc));
         else
             result += tr("TesterPresent positive");
-        QListWidgetItem *item = new QListWidgetItem(result.toUpper(), ecuScanResults);
-        item->setData(Qt::UserRole, activeEcuRequestId);
-        item->setData(Qt::UserRole + 1, message.frameId());
+        addEcuDiscoveryResult(activeEcuRequestId, message.frameId(), result,
+                              message.isErrorReply ? 85 : 100);
         return;
     }
 
@@ -2001,7 +2198,7 @@ void UDSWorkbenchWindow::requestTimedOut()
 {
     if (requestContext == ContextEcuScan)
     {
-        sendNextEcuProbe();
+        QTimer::singleShot(ecuScanDelaySpin->value(), this, &UDSWorkbenchWindow::sendNextEcuProbe);
     }
     else if (requestContext == ContextSessionScan)
     {
