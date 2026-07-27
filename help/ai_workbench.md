@@ -175,8 +175,11 @@ The workbench analyzes a recent portion of SavvyCAN's current capture:
 For every accepted identifier, SavvyCAN supplies frame counts, length range,
 capture duration, mean interval, first payload, observed changed-bit mask and a
 small sample of payloads. The **Evidence** tab shows the exact JSON sent to the
-model. This evidence is a starting point; richer transition, entropy,
-correlation, counter and checksum tools remain roadmap items.
+model. This evidence is a starting point. Deterministic differential experiments,
+diagnostic correlation, signal clustering, counter/checksum inference and DBC
+candidate export are available in **RE Tools > Sniffer**. Their results are not
+automatically added to the AI prompt; export or describe reviewed candidates
+when asking the model to reason about them.
 
 ## Resources
 

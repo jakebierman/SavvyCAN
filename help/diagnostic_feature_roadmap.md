@@ -83,6 +83,13 @@ Recommended phases:
   control.
 - Model tool calls must be proposals. A host-side policy gate validates every
   transmit request; blocked IDs and limits cannot be changed by the model.
+
+Implemented deterministic support is available in the Sniffer: labelled
+baseline/action/control capture, control-adjusted changed-bit ranking,
+counter/checksum candidates, UDS/OBD-to-broadcast correlation, cross-ID signal
+clustering and editable DBC candidate export. Entropy maps, protocol-aware
+multi-byte signal discovery and direct transfer of reviewed evidence into AI
+analysis remain future work.
   Diagnostic-session changes, resets, writes, security access, firmware
   operations, CANopen NMT/LSS and broadcast frames require an additional user
   confirmation regardless of the selected mode.

@@ -27,6 +27,12 @@ DID read/write, DTC read/clear, routines, communication and DTC controls, IO
 control, and transfer-service acknowledgements. Unsupported services return NRC
 `0x11`; unknown identifiers return NRC `0x31`.
 
+Requests longer than a single CAN frame are reassembled after the simulator
+issues ISO-TP Continue To Send flow control. Long responses are segmented into
+First and Consecutive frames. The current response sender uses the ECU delay and
+a fixed 3 ms consecutive-frame separation; it does not yet pause response blocks
+for tester flow-control parameters.
+
 ## Capture learning
 
 **Learn from capture** identifies ISO-TP single-frame request/response pairs in
@@ -56,6 +62,17 @@ exported with the activity log as JSON or text.
 
 Simulator projects are portable JSON files containing ECU definitions, values,
 fault policy and assertions.
+
+## Current boundaries
+
+- Value encoding is retained as project metadata; response bytes are edited in
+  hexadecimal rather than calculated from the encoding label.
+- Learned capture definitions cover ISO-TP single-frame exchanges.
+- Scenario assertions inspect recorded activity text; they do not yet transmit
+  timed steps or evaluate protocol state directly.
+- SecurityAccess uses a deterministic demonstration seed and accepts key
+  submissions. It does not import production seed/key algorithms.
+- Transfer services acknowledge the workflow but do not emulate flash memory.
 
 ## Safety
 
