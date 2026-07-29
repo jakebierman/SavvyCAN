@@ -328,7 +328,8 @@ void DiagnosticSimulatorWindow::buildUi()
     mEcuTable = new QTableWidget(0, 9, ecusPage);
     mEcuTable->setHorizontalHeaderLabels({tr("On"), tr("Name"), tr("Request ID"),
         tr("Response ID"), tr("Ext"), tr("Delay ms"), tr("Session"), tr("Security"), tr("Notes")});
-    mEcuTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    mEcuTable->resizeColumnsToContents();
+    mEcuTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mEcuTable->horizontalHeader()->setStretchLastSection(true);
     mEcuTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mEcuTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -349,7 +350,8 @@ void DiagnosticSimulatorWindow::buildUi()
     mValueTable = new QTableWidget(0, 6, valuesPage);
     mValueTable->setHorizontalHeaderLabels({tr("Kind"), tr("Key"), tr("Name"),
                                             tr("Bytes"), tr("Encoding"), tr("Writable")});
-    mValueTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    mValueTable->resizeColumnsToContents();
+    mValueTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mValueTable->horizontalHeader()->setStretchLastSection(true);
     mValueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mValueTable->setSelectionMode(QAbstractItemView::ExtendedSelection);

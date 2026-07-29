@@ -39,6 +39,8 @@ public slots:
     void addSendRecord(FrameSendData record);
     void removeSendRecord(int idx);
     FrameSendData *getSendRecordRef(int idx);
+    void setRecordEnabled(int idx, bool enabled);
+    void resetRecordCount(int idx);
 
 signals:
 
@@ -60,6 +62,7 @@ private:
     bool inhibitChanged = false;
     QMutex mutex;
     DBCHandler *dbcHandler;
+    int idleTimerIntervalMs = 100;
 
     void doModifiers(int);
     int fetchOperand(int, ModifierOperand);

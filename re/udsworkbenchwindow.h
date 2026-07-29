@@ -34,6 +34,7 @@ public:
                        int pollMs, QString *error = nullptr);
     bool executeAIRequest(const QString &operation, const QJsonObject &arguments,
                           QString *error = nullptr);
+    QJsonObject aiState() const;
 
 private slots:
     void connectEndpoint();
@@ -134,6 +135,7 @@ private:
     QSpinBox *flowStMinSpin;
     QCheckBox *testerPresentCheck;
     QCheckBox *pollingCheck;
+    QPushButton *pollingButton;
     QSpinBox *pollIntervalSpin;
     QLabel *connectionStatus;
     QPushButton *connectButton;

@@ -39,6 +39,26 @@ void ISOTP_HANDLER::setFlowControlParameters(int blockSize, int separationTime)
     flowControlSeparationTime = qBound(0, separationTime, 255);
 }
 
+void ISOTP_HANDLER::sendFlowControlFrame(int bus, uint32_t responseId)
+{
+    if (!issueFlowMsgs || lastSenderID == 0 || lastSenderBus != static_cast<uint32_t>(bus)) return;
+
+    // Functional OBD requests receive replies on 0x7E8-0x7EF, but ISO-TP
+    // flow control must be returned to the ECU's physical request ID.
+    const uint32_t flowControlID = lastSenderID == 0x7DF && responseId >= 0x7E8 && responseId <= 0x7EF
+        ? responseId - 8 : lastSenderID;
+    CANFrame outFrame;
+    outFrame.bus = bus;
+    outFrame.setExtendedFrameFormat(flowControlID > 0x7FF);
+    outFrame.setFrameId(flowControlID);
+    QByteArray bytes(8, 0);
+    bytes[0] = 0x30;
+    bytes[1] = char(flowControlBlockSize);
+    bytes[2] = char(flowControlSeparationTime);
+    outFrame.setPayload(bytes);
+    CANConManager::getInstance()->sendFrame(outFrame);
+}
+
 void ISOTP_HANDLER::setReception(bool mode)
 {
     if (isReceiving == mode) return;
@@ -258,21 +278,8 @@ void ISOTP_HANDLER::processFrame(const CANFrame &frame)
         msg.lastSequence = -1;
         msg.setPayload(dataBytes);
         messageBuffer.insert(msg.frameId(), msg);
-        //The sending ID is set to the last ID we used to send from this class which is
-        //very likely to be correct. But, caution, there is a chance that it isn't. Beware.
-        if (issueFlowMsgs && lastSenderID > 0 && lastSenderBus==static_cast<uint32_t>(frame.bus))
-        {
-            CANFrame outFrame;
-            outFrame.bus = lastSenderBus;
-            outFrame.setExtendedFrameFormat(false);
-            outFrame.setFrameId(lastSenderID);
-            QByteArray bytes(8, 0);
-            bytes[0] = 0x30; //flow control, go ahead and send
-            bytes[1] = char(flowControlBlockSize);
-            bytes[2] = char(flowControlSeparationTime);
-            outFrame.setPayload(bytes);
-            CANConManager::getInstance()->sendFrame(outFrame);
-        }
+        receivedFramesSinceFlow.insert(msg.frameId(), 0);
+        sendFlowControlFrame(frame.bus, uint32_t(ID));
         break;
     case 2: //subsequent frames for multi-frame messages
         pMsg = nullptr;
@@ -297,10 +304,17 @@ void ISOTP_HANDLER::processFrame(const CANFrame &frame)
             for (int j = 0; j < ln; j++) dataBytes.append(frame.payload()[j+1]);
         }
         pMsg->setPayload(dataBytes);
+        receivedFramesSinceFlow[uint32_t(ID)] = receivedFramesSinceFlow.value(uint32_t(ID)) + 1;
         if (pMsg->reportedLength <= pMsg->payload().count())
         {
             qDebug() << "Emitting multiframe ISOTP message";
             checkNeedFlush(pMsg->frameId());
+        }
+        else if (flowControlBlockSize > 0 &&
+                 receivedFramesSinceFlow.value(uint32_t(ID)) >= flowControlBlockSize)
+        {
+            receivedFramesSinceFlow[uint32_t(ID)] = 0;
+            sendFlowControlFrame(frame.bus, uint32_t(ID));
         }
         break;
     case 3: //flow control messages
@@ -352,6 +366,7 @@ void ISOTP_HANDLER::checkNeedFlush(uint64_t ID)
             else qDebug() << "Have a partial message but sending of such is disabled. Throwing it away";
         }        
         messageBuffer.remove(ID);
+        receivedFramesSinceFlow.remove(uint32_t(ID));
     }
 }
 

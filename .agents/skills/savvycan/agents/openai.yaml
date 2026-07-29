@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN"
+  short_description: "Develop and explain SavvyCAN safely"
+  default_prompt: "Use $savvycan to handle this SavvyCAN request with its native capability, diagnostic, Qt, and safety conventions."

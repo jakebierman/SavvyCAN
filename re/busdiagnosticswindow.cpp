@@ -18,8 +18,8 @@ BusDiagnosticsWindow::BusDiagnosticsWindow(QWidget *parent) : QDialog(parent)
     busTable->setHorizontalHeaderLabels({tr("Bus"), tr("Controller"), tr("Bitrate"), tr("Load"),
         tr("Frames"), tr("Errors"), tr("Bus off"), tr("Missing ACK"), tr("Protocol"),
         tr("Arbitration"), tr("TEC / REC")});
-    busTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    busTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    busTable->resizeColumnsToContents();
+    busTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     layout->addWidget(busTable);
     QPushButton *reset = new QPushButton(tr("Reset counters"), this);
     layout->addWidget(reset, 0, Qt::AlignLeft);

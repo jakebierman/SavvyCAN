@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN Fuzzing"
+  short_description: "Configure bounded CAN fuzzing workflows"
+  default_prompt: "Use @savvycan-fuzzing to prepare this authorized fuzzing workflow safely."

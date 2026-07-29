@@ -38,6 +38,7 @@ signals:
 
 private:
     QHash<uint32_t, ISOTP_MESSAGE> messageBuffer;
+    QHash<uint32_t, int> receivedFramesSinceFlow;
     QList<CANFrame> sendingFrames;
     QList<CANFilter> filters;
     const QVector<CANFrame> *modelFrames;
@@ -56,4 +57,5 @@ private:
 
     void processFrame(const CANFrame &frame);
     void checkNeedFlush(uint64_t ID);
+    void sendFlowControlFrame(int bus, uint32_t responseId);
 };

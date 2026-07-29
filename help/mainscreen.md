@@ -31,6 +31,35 @@ The Payload Display dock applies these choices without leaving the main window. 
 
 See [Payload Formatter Reference](./payload_formatter.md) for the complete custom-format grammar and examples.
 
+The Trace Sender
+================
+
+The panel below the CAN Trace is a compact sender for one-shot frames and simple
+periodic transmission. Drag the divider to resize it or use the arrow at the
+right of its toolbar to collapse it.
+
+- **Add** creates an explicit draft row. Editing the table never starts
+  transmission or silently creates another row.
+- **Send once** transmits each selected row exactly once.
+- **Start** begins periodic transmission of the selected rows. **Stop** stops
+  the selection and **Stop all** immediately disables every Trace sender row.
+- **Interval** is the delay between transmissions in milliseconds.
+- **Limit** is the number of frames to send before stopping. Zero means
+  unlimited.
+- **Sent** and **Status** show current progress. A row can be Draft, Stopped,
+  Running, Complete, Invalid, or Unavailable when no bus is connected.
+
+Select several rows with Ctrl or Shift before using toolbar or context-menu
+commands. Right-click a row to send, start, stop, duplicate, delete, copy the
+currently selected CAN Trace frame, or copy the configuration into the advanced
+Frame Sender. The advanced sender remains the place for received-frame
+triggers, modifiers, and other complex schedules.
+
+The **More** menu saves and loads the complete compact sender list as JSON.
+Right-click a column heading to show or hide columns; extended-frame and RTR
+flags are hidden by default. Column order, visibility, widths, divider position,
+and collapsed state are retained between sessions.
+
 
 The Bottom Statusbar
 ====================

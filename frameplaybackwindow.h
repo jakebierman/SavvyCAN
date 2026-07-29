@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QListWidget>
+#include <QJsonObject>
 #include "can_structs.h"
 #include "framefileio.h"
 #include "frameplaybackobject.h"
@@ -18,6 +19,8 @@ class FramePlaybackWindow : public QDialog
 public:
     explicit FramePlaybackWindow(const QVector<CANFrame> *frames, QWidget *parent = 0);
     ~FramePlaybackWindow();
+    bool executeAIRequest(const QString &operation, const QJsonObject &arguments,
+                          QString *error = nullptr);
 
 private slots:
     void btnBackOneClick();

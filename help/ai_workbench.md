@@ -63,6 +63,15 @@ requested count.
 Single frames use the native direct-send path instead. **Emergency stop**
 disables sender rows and disarms full access.
 
+The compact panel is also exposed through `trace_sender.*` capabilities. Chat
+receives `trace_sender_rows` context containing row number, bus, CAN ID, frame
+flags, payload, interval, limit, sent count, and status. It can add or edit
+drafts, start, stop, send configured rows once, remove or clear rows, copy the
+selected Trace frame, save/load JSON lists, or transfer rows to the advanced
+Frame Sender. Starting or transmitting rows still passes through full-access,
+arming, and confirmation checks. The older `frame.*` draft/grid actions refer
+to the advanced sender and its trigger/modifier workflow.
+
 The **Confirm sends** setting controls confirmation popups:
 
 - **Every transmission** reviews the workflow and confirms each send.
@@ -95,6 +104,12 @@ and retrieves relevant excerpts from its installed help pages. Questions about
 UDS, OBD-II, CANopen, payload formatting, frame sending or scripting therefore
 receive the corresponding application documentation without loading the source
 tree or every manual into the model context.
+
+The compact `ai_chat_skill.md` operating guide is supplied to normal chat
+requests. Detailed workbench manuals are loaded only for explanatory questions;
+ordinary actions rely on the selected domain manifest, native tool schemas and
+current application state. This keeps small GUI commands substantially smaller
+than source-analysis or documentation requests.
 
 Qwen, Llama 3.1 and Mistral models receive that registry through Ollama's
 native tool-call API, allowing ordinary language to select a real SavvyCAN
@@ -272,25 +287,31 @@ completion, failures, cancellation and blocked access attempts.
 ## App-wide actions
 
 Chat uses the same capability catalog as the application dispatcher. It can
-open the main analysis tools and propose reviewed edits for UDS DID lists, OBD
-PID lists, the CANopen Object Dictionary, the main payload formatter, script
-drafts, fuzzing configuration and disabled Frame Sender rows.
+open the main analysis tools and propose reviewed edits for UDS and OBD
+request lists, OBD dashboards, the CANopen Object Dictionary, DBC databases,
+filters, playback sequences, Sniffer experiments, the payload formatter,
+script drafts, fuzzing configuration and Frame Sender rows.
 
 Each edit shows its complete JSON arguments before it is applied. Fuzzing
-configuration never starts fuzzing, Frame Sender drafts remain disabled, and
-script drafts are neither saved nor compiled automatically.
+configuration never starts fuzzing, newly created Frame Sender drafts remain
+disabled, and script drafts are neither saved nor compiled automatically.
 
 Actions marked `confirm-send` or `armed-confirm-send` require the timed access
 gate and an additional confirmation. Unknown capabilities and invalid
 arguments are rejected.
 
 One response may contain several action blocks or a JSON array of actions.
-SavvyCAN shows the ordered workflow before processing it. Each result is added
-to subsequent conversation context and written to the audit log.
+SavvyCAN shows the ordered workflow before processing it. Chat normally receives
+one combined completion summary per workflow, while every individual result is
+still written to the audit log. Ask for detailed or individual action results
+when each result should also be shown separately in chat.
 
 Chat history is retained in application settings. Audit records are appended as
 JSON Lines under the platform application-data directory and recent records are
 shown in the Audit tab on startup.
+
+Use **Clear audit log** in the Audit tab to clear the visible records and delete
+the persisted `ai-audit.jsonl` file. New application events start a fresh log.
 
 The model receives current GUI context including the active workspace, selected
 trace frame, capture state, connected-bus count, DBC/overwrite state and active
@@ -299,6 +320,262 @@ counts, changed-bit masks, per-byte entropy and per-bit transition counts.
 
 When a review model is selected it reviews both capture analysis and ordinary
 chat replies before they are displayed or dispatched.
+
+## Application skills and natural-language actions
+
+Chat routes each current message through an application-owned skill registry.
+The registry contains domain triggers, exact capability schemas, operating
+rules and worked examples for OBD-II, UDS, CAN frames, CANopen, fuzzing, trace
+display, capture playback, DBC editing, reverse-engineering experiments,
+connections and scripting. This is local application data rather than model
+training or a cloud service.
+The installed definitions live in `help/ai_skills.json`; an embedded fallback
+keeps the core skills available if that file is missing or invalid.
+
+The focused skills are:
+
+- **SavvyCAN interface** for workspaces, trace options, filters, formatting and
+  analysis tools.
+- **Raw CAN** for one-shot frames, bounded loops and sender drafts.
+- **Capture Playback** for capture sources, transport and replay settings.
+- **DBC Signals** for databases, nodes, messages and signal definitions.
+- **Reverse Engineering** for Sniffer notching and differential experiments.
+- **OBD-II**, **UDS** and **CANopen** for their separate diagnostic object and
+  request models.
+- **Connections** for existing interfaces and new connection profiles.
+- **Fuzzing** for bounded fuzz configuration and guarded execution.
+- **Scripting** only when JavaScript or scripting is explicitly requested.
+
+Up to three matching skills can be combined for a cross-domain request. Native
+tool definitions are generated directly from `AIActionRegistry`, so the model
+does not rely on a separately maintained argument reference.
+
+Each domain is also packaged as a standalone OpenAI Agent Skill under
+`skills/`. Every folder has a clearly named `SKILL.md` and
+`agents/openai.yaml`, and `skills/skill-bundle.json` provides a human-readable
+bundle index. The embedded router records the corresponding package path in
+`ai_skills.json`.
+
+Repository-local symlinks under `.agents/skills/` make the individual packages
+discoverable in Codex. They can be invoked explicitly as `$savvycan-obd`,
+`$savvycan-uds`, `$savvycan-canopen`, `$savvycan-raw-can`,
+`$savvycan-interface`, `$savvycan-capture-playback`,
+`$savvycan-dbc-signals`, `$savvycan-reverse-engineering`,
+`$savvycan-connections`, `$savvycan-fuzzing`, or `$savvycan-scripting`.
+ChatGPT desktop uses the same standalone skill format and exposes skills with
+`@` mentions. These instruction packages explain workflows; only SavvyCAN's
+native capability dispatcher can inspect or operate the running application.
+
+Only the capabilities belonging to the best-matching skills are exposed as
+native model tools for that turn. The active workspace provides a small routing
+hint, while explicit words in the current message receive greater weight. This
+keeps small local models from choosing among the entire application API on
+every request. Scripting remains unavailable unless the message explicitly
+mentions scripting or JavaScript.
+
+Short follow-ups with no new domain phrase retain the previous skill selection,
+so phrases such as "add one more" or "send five more" keep the immediately
+preceding OBD or frame context. Clearing chat also clears that routing context.
+
+The skill bundle has an explicit version recorded in model context and audit
+entries. **Validate skills** on the Context tab checks the natural-language
+routing cases in `ai_skill_evaluations.json`, rejects references to unknown
+capabilities and reports any native capability missing from every skill. The
+same checks are available in the `test/aiskills.pro` Qt test.
+
+Enable **Preview AI actions without applying them** under Scope and Access to
+exercise natural-language routing and argument validation without changing GUI
+state or transmitting CAN traffic. The proposed workflow and validation result
+are retained in chat and audit history.
+
+The model also receives the current OBD PID list, UDS DID list, request and
+response identifiers, bus selection, connection state, polling state and cycle
+interval. References such as "the enabled PIDs" or "that DID" can therefore be
+resolved against visible application state rather than old chat text.
+
+DBC turns receive a bounded structured view of loaded files, nodes, messages,
+signals, scaling, value types, enum tables and multiplex relationships. The
+selected trace frame and open Sniffer evidence are included when available, so
+the DBC and reverse-engineering skills can be combined to turn a supported
+candidate into a reviewed signal edit. Byte-aligned fields can use
+`byte_offset`/`byte_length`; arbitrary fields use `start_bit`/`bit_length`.
+
+Application state is relevance-scoped before prompting: raw-frame turns receive
+the selected frame, diagnostic turns receive only their workbench state, and
+connection turns receive connection profiles. Broader trace and Sniffer state
+is included only for matching interface questions.
+
+OBD descriptions are resolved a second time by SavvyCAN's built-in PID catalog
+before an action is validated. For example, `rpm`, `engine speed` and `coolant
+temperature` resolve to their known Mode 01 PIDs without trusting an identifier
+invented by the model. `obd.configure_pids` is a compound intent used for
+requests such as:
+
+> Clear the list, add RPM and coolant temperature, then start polling.
+
+SavvyCAN expands that intent into an ordered clear, add and request workflow,
+validates every resulting action, applies the configured review and transmit
+permissions, and reports the actual result back into chat.
+
+UDS DID names are not globally reliable because many are manufacturer-specific.
+The UDS skill therefore uses the current request list or an explicit DID and
+asks for clarification when neither is available. It must not infer a
+manufacturer-specific DID from a descriptive name alone.
+
+## Online OpenAI and Headroom providers
+
+The Models tab selects one of three providers:
+
+- **Local - Ollama** keeps the existing fully offline behavior.
+- **Online - OpenAI API** sends requests to the OpenAI Responses API.
+- **Gateway - Headroom / OpenAI compatible** sends OpenAI Responses API
+  requests to a Headroom proxy, normally at `http://127.0.0.1:8787`.
+
+Online providers use the same application-skill router, capability schemas,
+action normalization, access arming, confirmations and local dispatcher as the
+offline provider. A network model can propose an operation, but it never sends
+CAN traffic or edits a workbench directly.
+
+Network requests are disabled by default. Enable them explicitly on the
+**Online Provider** tab. Filtered CAN evidence uploads have a separate setting
+and are also disabled by default. Application state, compressed chat history,
+capture evidence, provider-side storage and per-request confirmation each have
+independent controls. The confirmation dialog displays the complete prompt
+text before protocol wrapping.
+
+**Confirm each online API call** is enabled by default. Disable it to stop the
+preview popup on normal sends. When a Review model is selected, a chat turn can
+make two API calls: the primary generation and the review. Selecting **None**
+for Review model avoids the second call.
+
+This privacy control is separate from **Confirm CAN transmissions** in Scope
+and Access. **No popups while armed** suppresses approval dialogs for
+AI-proposed CAN and diagnostic transmissions; it does not suppress online
+prompt previews.
+
+An HTTP `429 Too Many Requests` response is a temporary provider rate or quota
+limit. SavvyCAN keeps the selected online provider active, displays any
+`Retry-After` guidance returned by the provider and allows a later retry. It
+does not fall back to Ollama automatically.
+
+The usage line reports tokens, not a request count. For example, `5092 input
+tokens` means one request contained approximately that much context. Input can
+include the current question, the selected application skill and native tool
+schemas, permitted GUI state, chat history, relevant help extracts and
+Graphify context. Disable unneeded context controls or clear chat to reduce it.
+
+Short connectivity messages such as `test`, `ping` and `are you working` use a
+minimal online prompt without application documentation, history or native
+tools. If these still receive HTTP `429`, the limiting factor is the provider
+account, quota or request allowance rather than SavvyCAN's normal context size.
+
+For direct OpenAI access, provide `OPENAI_API_KEY` in the process environment
+or enter a key for the current SavvyCAN process. For Headroom, use
+`HEADROOM_API_KEY` when a separately managed or remote proxy requires
+authentication. Requests to SavvyCAN's managed localhost Headroom process use
+the managed upstream OpenAI key automatically, including as the bearer
+credential required by Headroom's Responses API route. Keys entered in the
+provider/gateway key field are held only in memory and are not written to
+`QSettings`, profiles, projects or audit logs. The managed Headroom upstream
+key has its own explicitly enabled storage control described below. Non-local
+endpoints must use HTTPS.
+
+Headroom is an optional optimizer and gateway. It does not itself provide an
+OpenAI model entitlement. Configure its upstream provider separately, then
+select the upstream model name in SavvyCAN. **Token reduction** prioritizes
+immediate prompt compression. **Cache stability** preserves stable prompt
+prefixes so the upstream provider can reuse its prompt cache. The mode is
+applied when the managed proxy starts; restart Headroom after changing it.
+SavvyCAN uses Headroom's OpenAI Responses API route so reasoning models and
+GUI function tools can be used together. It does not add a provider-specific
+mode parameter to individual requests. Saved endpoint URLs ending in
+`/chat/completions` are normalized to `/v1/responses` automatically.
+
+SavvyCAN can manage a project-local Headroom installation without terminal
+commands. Select **Gateway - Headroom / OpenAI compatible**, then use the
+**Managed Headroom** controls:
+
+1. Select **Install**. SavvyCAN creates `local-ai/headroom` and installs the
+   Headroom proxy there. Python 3 and an internet connection are required for
+   this one-time download.
+2. Enter the upstream OpenAI key. Enable **Remember upstream key on this
+   computer** to keep it in SavvyCAN's per-user application-data directory with
+   owner-only file permissions. Otherwise the key remains in memory only.
+3. Select **Start**, or leave **Auto-start** enabled. SavvyCAN starts the proxy
+   on `127.0.0.1:8787`, routes Headroom requests through it, and stops the
+   managed process when SavvyCAN exits.
+4. Select **Test connection** to run a real health request. A successful local
+   Headroom test displays **Verified** and enables docked chat. SavvyCAN also
+   runs this check shortly after starting its managed proxy. For direct OpenAI,
+   the test makes an authenticated request to the provider's model endpoint.
+
+The docked chat **Send** button is disabled while a request is running, when
+network-provider access is disabled, or after a connection test/request fails.
+Re-enable provider access and select **Test connection** to verify and restore
+chat availability.
+
+The separate **API key** field authenticates SavvyCAN to a remote gateway. It
+is normally left blank for the managed localhost proxy, where SavvyCAN
+automatically supplies the upstream key. The remembered upstream key is not
+stored in the repository, project files, `QSettings`, chat history or audit
+output. It is protected by filesystem permissions rather than an
+operating-system credential vault; disable the remember option to delete it.
+
+Usage from the most recent network response is displayed in the Online
+Provider tab. Audit records contain the provider, destination hostname and
+estimated token count, but never the API key or prompt contents.
+
+The Audit tab displays the newest event first. Its persisted `ai-audit.jsonl`
+file remains append-only and chronological.
+
+After each successful Headroom request, SavvyCAN reads the proxy's `/stats`
+totals and audits active compression separately from provider prefix-cache
+reuse. Headroom deliberately retains instructions, user text and stable prompt
+prefixes; a normal stateless SavvyCAN chat request can therefore have no
+eligible content to compress even though Headroom is working. Large tool
+results and redundant tool schemas provide the main active-compression
+opportunity. Cache-read tokens and their estimated discount are reported
+separately when the upstream provider supplies cache metrics. USD values
+depend on Headroom's provider-pricing data.
+
+## Graphify repository context
+
+Graphify can complement the application skill registry with structural
+knowledge of the SavvyCAN source tree. It does not replace the capability
+schemas or live workbench state: Graphify explains how the implementation is
+connected, while the registry remains the authority for actions the running
+application can perform.
+
+Generate a graph with Graphify so the repository contains:
+
+```text
+graphify-out/graph.json
+graphify-out/GRAPH_REPORT.md
+graphify-out/graph.html
+```
+
+Then enable **Use Graphify repository context** on the AI Workbench
+**Context** tab. SavvyCAN auto-detects a graph beside the source or build
+directory, and a different `graph.json` can be selected manually.
+
+When the `graphify` executable is available, SavvyCAN runs a local, bounded
+`graphify query` only for source-code, implementation, build or architecture
+questions and adds only the relevant subgraph to
+the model context. The query budget is configurable from 200 to 4000 tokens.
+Arguments are passed directly to `QProcess` rather than through a shell. If the
+CLI is unavailable but `GRAPH_REPORT.md` exists, SavvyCAN uses a bounded portion
+of that report as broad orientation.
+
+Graphify repository context is enabled by default when a graph is available,
+and local models can use it without a network connection. For OpenAI or a
+Headroom gateway, Graphify context is withheld unless **Permit retrieved
+Graphify context in network requests** is separately enabled. The normal
+network request preview shows the resulting prompt before it is sent.
+
+Graph provenance remains important. `EXTRACTED` edges are parsed source
+relationships. `INFERRED` and `AMBIGUOUS` edges are supplied as hypotheses and
+must not override live application state, capability validation or bus-access
+permissions.
 
 The model proposes an action using a fenced block:
 

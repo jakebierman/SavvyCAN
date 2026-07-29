@@ -4,6 +4,7 @@
 #include <QDialog>
 #include <QHash>
 #include <QListWidgetItem>
+#include <QJsonObject>
 #include "sniffermodel.h"
 #include "SnifferDelegate.h"
 
@@ -39,6 +40,8 @@ public:
     void showEvent(QShowEvent*);
     void closeEvent(QCloseEvent*);
     QJsonObject aiState() const;
+    bool executeAIRequest(const QString &operation, const QJsonObject &arguments,
+                          QString *error = nullptr);
 
 public slots:
     void update();
@@ -56,10 +59,10 @@ public slots:
 
 private:
     void filter(bool pFilter);
-    bool eventFilter(QObject *obj, QEvent *event);
     void readSettings();
     void writeSettings();
     void beginExperimentCapture(int phase);
+    void ensureAnalysisWindow();
     void addAnalysisRow(const QString &type, quint32 id, const QString &field,
                         double score, const QString &evidence);
     QVector<CANFrame> experimentFrames() const;

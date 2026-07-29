@@ -5,6 +5,10 @@
 #include <QFileDialog>
 #include <QDebug>
 #include <QSignalBlocker>
+#include <QFileInfo>
+#include <QRegularExpression>
+#include <algorithm>
+#include <functional>
 #include "mainwindow.h"
 #include "helpwindow.h"
 #include "connections/canconmanager.h"
@@ -30,7 +34,7 @@ FrameSenderWindow::FrameSenderWindow(const QVector<CANFrame> *frames, QWidget *p
 
     intervalTimer = new QTimer();
     intervalTimer->setTimerType(Qt::PreciseTimer);
-    intervalTimer->setInterval(1);
+    intervalTimer->setInterval(100);
 
     setupGrid();
     createBlankRow();
@@ -116,6 +120,18 @@ bool FrameSenderWindow::addFrameDraft(int bus, quint32 canId, bool extended,
     return true;
 }
 
+bool FrameSenderWindow::addFrameDraftWithFlags(int bus, quint32 canId, bool extended,
+                                               bool remote, const QByteArray &payload,
+                                               QString *error)
+{
+    const int row = ui->tableSender->rowCount() - 1;
+    if (!addFrameDraft(bus, canId, extended, payload, error)) return false;
+    ui->tableSender->item(row, SENDTAB_COL_REM)->setCheckState(
+        remote ? Qt::Checked : Qt::Unchecked);
+    processCellChange(row, SENDTAB_COL_REM);
+    return true;
+}
+
 bool FrameSenderWindow::addFrameLoopDraft(int bus, quint32 canId, bool extended,
                                           const QByteArray &payload, int count,
                                           int intervalMs, QString *error)
@@ -134,6 +150,19 @@ bool FrameSenderWindow::addFrameLoopDraft(int bus, quint32 canId, bool extended,
     return sendingData.value(row).enabled;
 }
 
+bool FrameSenderWindow::addFrameLoopDraftWithFlags(
+    int bus, quint32 canId, bool extended, bool remote, const QByteArray &payload,
+    int count, int intervalMs, QString *error)
+{
+    const int row = ui->tableSender->rowCount() - 1;
+    if (!addFrameLoopDraft(bus, canId, extended, payload, count, intervalMs, error))
+        return false;
+    ui->tableSender->item(row, SENDTAB_COL_REM)->setCheckState(
+        remote ? Qt::Checked : Qt::Unchecked);
+    processCellChange(row, SENDTAB_COL_REM);
+    return true;
+}
+
 bool FrameSenderWindow::enableDraftRow(int row, QString *error)
 {
     if (row < 0 || row >= sendingData.size()) {
@@ -147,6 +176,110 @@ bool FrameSenderWindow::enableDraftRow(int row, QString *error)
 void FrameSenderWindow::disableAllRows()
 {
     disableAll();
+}
+
+bool FrameSenderWindow::updateDraftRow(int row, const QJsonObject &values, QString *error)
+{
+    if (row < 0 || row >= sendingData.size()) {
+        if (error) *error = tr("Frame Sender row is outside the configured draft list.");
+        return false;
+    }
+    const auto setText = [this, row, &values](const char *key, int column) {
+        const QString name = QString::fromLatin1(key);
+        if (values.contains(name))
+            ui->tableSender->item(row, column)->setText(values.value(name).toVariant().toString());
+    };
+    setText("bus", SENDTAB_COL_BUS);
+    setText("can_id", SENDTAB_COL_ID);
+    setText("payload", SENDTAB_COL_DATA);
+    setText("trigger", SENDTAB_COL_TRIGGER);
+    setText("modifications", SENDTAB_COL_MODS);
+    if (values.contains(QStringLiteral("extended")))
+        ui->tableSender->item(row, SENDTAB_COL_EXT)->setCheckState(
+            values.value(QStringLiteral("extended")).toBool() ? Qt::Checked : Qt::Unchecked);
+    if (values.contains(QStringLiteral("remote")))
+        ui->tableSender->item(row, SENDTAB_COL_REM)->setCheckState(
+            values.value(QStringLiteral("remote")).toBool() ? Qt::Checked : Qt::Unchecked);
+    if (values.contains(QStringLiteral("payload"))) {
+        const int length = values.value(QStringLiteral("payload")).toString()
+                               .split(QRegularExpression(QStringLiteral("\\s+")),
+                                      Qt::SkipEmptyParts).size();
+        ui->tableSender->item(row, SENDTAB_COL_LEN)->setText(QString::number(length));
+    }
+    for (int col : {SENDTAB_COL_BUS, SENDTAB_COL_ID, SENDTAB_COL_LEN, SENDTAB_COL_EXT,
+                    SENDTAB_COL_REM, SENDTAB_COL_DATA, SENDTAB_COL_TRIGGER, SENDTAB_COL_MODS})
+        processCellChange(row, col);
+    if (values.contains(QStringLiteral("enabled")))
+        return setDraftRowEnabled(row, values.value(QStringLiteral("enabled")).toBool(), error);
+    return true;
+}
+
+bool FrameSenderWindow::setDraftRowEnabled(int row, bool enabled, QString *error)
+{
+    if (row < 0 || row >= sendingData.size()) {
+        if (error) *error = tr("Frame Sender row is outside the configured draft list.");
+        return false;
+    }
+    ui->tableSender->item(row, SENDTAB_COL_EN)->setCheckState(
+        enabled ? Qt::Checked : Qt::Unchecked);
+    processCellChange(row, SENDTAB_COL_EN);
+    return sendingData.value(row).enabled == enabled;
+}
+
+bool FrameSenderWindow::removeDraftRows(const QList<int> &rows, QString *error)
+{
+    QList<int> ordered = rows;
+    std::sort(ordered.begin(), ordered.end(), std::greater<int>());
+    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+    for (int row : ordered) {
+        if (row < 0 || row >= sendingData.size()) {
+            if (error) *error = tr("Frame Sender row %1 does not exist.").arg(row);
+            return false;
+        }
+    }
+    for (int row : ordered) {
+        sendingData[row].enabled = false;
+        sendingData.removeAt(row);
+        ui->tableSender->removeRow(row);
+    }
+    return true;
+}
+
+int FrameSenderWindow::clearDraftRows()
+{
+    const int removed = sendingData.size();
+    clearGrid();
+    return removed;
+}
+
+void FrameSenderWindow::setAllDraftRowsEnabled(bool enabled)
+{
+    enabled ? enableAll() : disableAll();
+}
+
+bool FrameSenderWindow::saveDraftGrid(const QString &filename, QString *error)
+{
+    if (filename.trimmed().isEmpty()) {
+        if (error) *error = tr("A destination filename is required.");
+        return false;
+    }
+    saveSenderFile(filename);
+    const QFileInfo info(filename);
+    const bool ok = info.exists() && info.isFile();
+    if (!ok && error) *error = tr("Could not save the Frame Sender definition.");
+    return ok;
+}
+
+bool FrameSenderWindow::loadDraftGrid(const QString &filename, QString *error)
+{
+    if (!QFileInfo::exists(filename)) {
+        if (error) *error = tr("Frame Sender definition does not exist.");
+        return false;
+    }
+    loadSenderFile(filename);
+    createBlankRow();
+    setupGrid();
+    return true;
 }
 
 bool FrameSenderWindow::eventFilter(QObject *obj, QEvent *event)
@@ -603,6 +736,7 @@ void FrameSenderWindow::handleTick()
     Trigger *trigger;
     QList<CANFrame> sendingList;
     
+    int nextIntervalMs = 100;
     if(mutex.tryLock())
     {
         int elapsed = elapsedTimer.restart();
@@ -623,11 +757,16 @@ void FrameSenderWindow::handleTick()
                 continue; //abort any processing on this if it is not enabled.
             }
             if (sendData->triggers.count() == 0) continue;
+            bool hasPendingTrigger = false;
             for (int j = 0; j < sendData->triggers.count(); j++)
             {
                 trigger = &sendData->triggers[j];
                 if (trigger->maxCount > 0 && trigger->currCount >= trigger->maxCount) continue; //don't process if we've sent max frames we were supposed to
+                hasPendingTrigger = true;
                 if (!trigger->readyCount) continue; //don't tick if not ready to tick
+                if (trigger->milliseconds > 0)
+                    nextIntervalMs = qMin(nextIntervalMs,
+                                          qBound(1, trigger->milliseconds - trigger->msCounter, 10));
                 //is it time to fire?
                 trigger->msCounter += elapsed; //gives proper tracking even if timer doesn't fire as fast as it should
                 if (trigger->msCounter >= trigger->milliseconds)
@@ -641,6 +780,12 @@ void FrameSenderWindow::handleTick()
                     if (trigger->ID > 0) trigger->readyCount = false; //reset flag if this is a timed ID trigger
                 }
             }
+            if (!hasPendingTrigger)
+            {
+                sendData->enabled = false;
+                const QSignalBlocker blocker(ui->tableSender);
+                ui->tableSender->item(i, SENDTAB_COL_EN)->setCheckState(Qt::Unchecked);
+            }
         }
 
         //if we have any frames to send after the above then send as a batch
@@ -650,6 +795,8 @@ void FrameSenderWindow::handleTick()
         }
         
         mutex.unlock();
+        if (intervalTimer->interval() != nextIntervalMs)
+            intervalTimer->setInterval(nextIntervalMs);
     }
     else
     {
@@ -1104,6 +1251,7 @@ void FrameSenderWindow::processCellChange(int line, int col)
             if (ui->tableSender->item(line, 0)->checkState() == Qt::Checked)
             {
                 sendingData[line].enabled = true;
+                intervalTimer->setInterval(1);
                 // Process all fields to ensure frame is properly configured
                 // Do this in a specific order: Bus, ID, Ext, Len, Data, Triggers
                 inhibitChanged = true;

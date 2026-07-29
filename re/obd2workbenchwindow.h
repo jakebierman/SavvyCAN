@@ -41,6 +41,7 @@ public:
                           QString *error = nullptr);
     bool addDashboardPidByNumber(int pid, QString *error = nullptr);
     int clearPidRequests();
+    QJsonObject aiState() const;
     static bool resolvePidDescription(const QString &description, int *pid,
                                       QString *name = nullptr, QString *format = nullptr,
                                       double *confidence = nullptr);
@@ -58,6 +59,9 @@ private slots:
     void loadPidList();
     void savePidList();
     void pollPids();
+    void startPolling();
+    void stopPolling();
+    void responseTimedOut();
     void readStoredDtcs();
     void readPendingDtcs();
     void readPermanentDtcs();
@@ -89,7 +93,8 @@ private slots:
     void setTripPlaybackRow(int row);
 
 private:
-    enum PidColumn { PidEnabled, PidName, PidNumber, PidFormat, PidResponses, PidUpdated, PidColumnCount };
+    enum PidColumn { PidEnabled, PidName, PidNumber, PidFormat, PidRaw,
+                     PidResponses, PidUpdated, PidColumnCount };
     enum Context { None, LivePid, StoredDtc, PendingDtc, PermanentDtc, ClearDtc, VehicleInfo,
                    ModuleScan, SupportedPidScan, FreezeFrame, FreezeSupportScan, MonitorResults };
 
@@ -102,11 +107,14 @@ private:
     QString decodeCompoundPid(int pid, const QByteArray &data) const;
     QString supportedPidText(const QByteArray &data, int basePid, QSet<int> *result = nullptr) const;
     void finishSupportedPidScan();
+    void refreshDiscoveryPidList();
     QString decodeObdDtcs(const QByteArray &data) const;
     QString decodeVehicleInfo(int pid, const QByteArray &data) const;
     QString decodeMonitorResults(const QByteArray &data) const;
     QString decodeReadiness(int pid, const QByteArray &data) const;
     void rebuildDashboard();
+    void syncDashboardPidRows();
+    QList<int> combinedPidRows() const;
     QPair<QString, double> dashboardDisplayValue(const QString &name, double value) const;
     void updateDashboard(int pid, const QString &ecu, const QString &decoded,
                          const QVector<QPair<QString, double>> &numericValues);
@@ -136,6 +144,8 @@ private:
     QList<QWidget *> requestControls;
     QTableWidget *pidTable;
     QCheckBox *pollCheck;
+    QCheckBox *liveRequestsCheck;
+    QPushButton *pollStartButton;
     QSpinBox *pollIntervalSpin;
     QTextEdit *dtcOutput;
     QLabel *dtcDatabaseStatus;
@@ -147,10 +157,14 @@ private:
     QLineEdit *monitorMidEdit;
     QTextEdit *monitorOutput;
     QTextEdit *discoveryOutput;
+    QComboBox *discoveryEcuCombo;
     QListWidget *discoveryPidList;
     QComboBox *dashboardPidCombo;
     QComboBox *dashboardRemoveCombo;
     QSpinBox *dashboardColumnsSpin;
+    QCheckBox *dashboardRequestsCheck;
+    QPushButton *dashboardPollStartButton;
+    QSpinBox *dashboardPollIntervalSpin;
     QGridLayout *dashboardGrid;
     OBDDashboardCanvas *widgetDashboardCanvas;
     QList<int> dashboardPids;
@@ -183,6 +197,7 @@ private:
     int activeMode = -1;
     int activePid = -1;
     int activePidRow = -1;
+    bool activePidHadResponse = false;
     bool connected = false;
     DiagnosticGraphWindow *diagnosticGraph = nullptr;
 };

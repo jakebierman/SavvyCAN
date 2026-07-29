@@ -1,0 +1,3 @@
+interface:
+  display_name: "SavvyCAN DBC Signals"
+  short_description: "Edit DBC messages and decoded signals"

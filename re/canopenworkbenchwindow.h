@@ -108,6 +108,8 @@ private:
     void sendBlockDownloadWindow();
     void finishSdo(const QString &message);
     void startNextQueuedWrite();
+    bool importEdsFile(const QString &fileName, QString *error = nullptr);
+    bool exportDcfFile(const QString &fileName, QString *error = nullptr);
     int selectedNode() const;
     int number(const QString &text, bool *ok = nullptr) const;
     QByteArray parseBytes(const QString &text, bool *ok = nullptr) const;

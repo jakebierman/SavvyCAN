@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN OBD-II"
+  short_description: "Operate OBD requests and live diagnostics"
+  default_prompt: "Use @savvycan-obd to handle this OBD-II workflow in SavvyCAN."

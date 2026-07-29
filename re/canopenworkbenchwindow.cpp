@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -88,6 +89,174 @@ bool CANopenWorkbenchWindow::executeAIRequest(const QString &operation,
         return false;
     }
     if (operation == QStringLiteral("scan_nodes")) { scanNodes(); return true; }
+    if (operation == QStringLiteral("sync")) { sendSync(); return true; }
+    if (operation == QStringLiteral("time")) { sendTime(); return true; }
+    if (operation == QStringLiteral("discover_lss")) { discoverLss(); return true; }
+    if (operation == QStringLiteral("nmt")) {
+        const int node = arguments.value("node_id").toInt();
+        const QString command = arguments.value("command").toString().toLower();
+        const QMap<QString, int> commands = {
+            {QStringLiteral("start"), 0x01},
+            {QStringLiteral("stop"), 0x02},
+            {QStringLiteral("pre_operational"), 0x80},
+            {QStringLiteral("reset_node"), 0x81},
+            {QStringLiteral("reset_communication"), 0x82}
+        };
+        if (node < 1 || node > 127 || !commands.contains(command)) {
+            if (error) *error = tr("Invalid CANopen node or NMT command.");
+            return false;
+        }
+        nodeSpin->setValue(node);
+        sendFrame(0x000, QByteArray({char(commands.value(command)), char(node)}));
+        return true;
+    }
+    if (operation == QStringLiteral("read_drive_state")) {
+        const int node = arguments.value("node_id").toInt();
+        if (node < 1 || node > 127) {
+            if (error) *error = tr("Invalid CANopen node.");
+            return false;
+        }
+        nodeSpin->setValue(node);
+        readDriveState();
+        return transfer.active;
+    }
+    if (operation == QStringLiteral("remove_object")) {
+        bool indexOk = false;
+        const int index = number(arguments.value("index").toString(), &indexOk);
+        const int subIndex = arguments.value("subindex").toVariant().toInt();
+        const int row = indexOk ? findObjectRow(index, subIndex) : -1;
+        if (row < 0) {
+            if (error) *error = tr("Object Dictionary entry was not found.");
+            return false;
+        }
+        objectTable->removeRow(row);
+        return true;
+    }
+    if (operation == QStringLiteral("clear_emcy")) {
+        emcyTable->setRowCount(0);
+        for (auto it = nodes.begin(); it != nodes.end(); ++it) {
+            it->emergency.clear();
+            if (it->row >= 0) nodeTable->item(it->row, NodeEmergency)->setText(QString());
+        }
+        return true;
+    }
+    if (operation == QStringLiteral("import_eds"))
+        return importEdsFile(arguments.value("path").toString(), error);
+    if (operation == QStringLiteral("export_dcf"))
+        return exportDcfFile(arguments.value("path").toString(), error);
+    if (operation == QStringLiteral("configure_lss")) {
+        const int node = arguments.value("node_id").toInt();
+        const int bitrate = arguments.value("bitrate_index").toInt(-1);
+        const int comboIndex = lssBitrateCombo->findData(bitrate);
+        if (node < 1 || node > 127 || comboIndex < 0) {
+            if (error) *error = tr("Invalid LSS node ID or CiA bitrate index.");
+            return false;
+        }
+        lssNodeSpin->setValue(node);
+        lssBitrateCombo->setCurrentIndex(comboIndex);
+        QByteArray request(8, 0);
+        request[0] = 0x04; request[1] = 0x01; sendFrame(0x7E5, request);
+        request.fill(0); request[0] = 0x11; request[1] = char(node); sendFrame(0x7E5, request);
+        request.fill(0); request[0] = 0x13; request[2] = char(bitrate); sendFrame(0x7E5, request);
+        request.fill(0); request[0] = 0x17; sendFrame(0x7E5, request);
+        request.fill(0); request[0] = 0x04; sendFrame(0x7E5, request);
+        lssStatusLabel->setText(tr("LSS configuration commands sent"));
+        return true;
+    }
+    if (operation == QStringLiteral("remap_pdo")) {
+        const int node = arguments.value("node_id").toInt();
+        const int pdoNumber = arguments.value("pdo").toInt();
+        const bool transmit = arguments.value("direction").toString().toLower()
+            != QStringLiteral("rpdo");
+        bool cobOk = false;
+        const quint32 cobId = number(arguments.value("cob_id").toString(), &cobOk);
+        QList<quint32> mappings;
+        int totalBits = 0;
+        for (const QJsonValue &value : arguments.value("mappings").toArray()) {
+            const QJsonObject item = value.toObject();
+            bool indexOk = false;
+            const int index = number(item.value("index").toString(), &indexOk);
+            const int sub = item.value("subindex").toInt(-1);
+            const int bits = item.value("bits").toInt();
+            if (!indexOk || index < 0 || index > 0xFFFF || sub < 0 || sub > 0xFF
+                || bits < 1 || bits > 64) {
+                mappings.clear();
+                break;
+            }
+            mappings.append(quint32(index) << 16 | quint32(sub) << 8 | quint32(bits));
+            totalBits += bits;
+        }
+        if (node < 1 || node > 127 || pdoNumber < 1 || pdoNumber > 4 || !cobOk
+            || cobId > 0x1FFFFFFF || mappings.isEmpty() || totalBits > 64) {
+            if (error) *error = tr("Invalid node, PDO, COB-ID, or mapping; mapped bits must total 64 or less.");
+            return false;
+        }
+        auto bytes = [](quint32 value, int count) {
+            QByteArray result;
+            for (int i = 0; i < count; ++i)
+                result.append(char((value >> (8 * i)) & 0xFF));
+            return result;
+        };
+        nodeSpin->setValue(node);
+        const int communicationIndex = (transmit ? 0x1800 : 0x1400) + pdoNumber - 1;
+        const int mappingIndex = (transmit ? 0x1A00 : 0x1600) + pdoNumber - 1;
+        writeQueue.clear();
+        writeQueue.enqueue({communicationIndex, 1, bytes(cobId | 0x80000000U, 4)});
+        writeQueue.enqueue({mappingIndex, 0, bytes(0, 1)});
+        for (int i = 0; i < mappings.size(); ++i)
+            writeQueue.enqueue({mappingIndex, i + 1, bytes(mappings[i], 4)});
+        writeQueue.enqueue({mappingIndex, 0, bytes(mappings.size(), 1)});
+        writeQueue.enqueue({communicationIndex, 1, bytes(cobId, 4)});
+        startNextQueuedWrite();
+        return transfer.active;
+    }
+    if (operation == QStringLiteral("upload_objects")) {
+        const int node = arguments.value("node_id").toInt();
+        if (node < 1 || node > 127) {
+            if (error) *error = tr("Invalid CANopen node.");
+            return false;
+        }
+        nodeSpin->setValue(node);
+        uploadQueue.clear();
+        for (const QJsonValue &value : arguments.value("objects").toArray()) {
+            const QJsonObject item = value.toObject();
+            bool ok = false;
+            const int index = number(item.value("index").toString(), &ok);
+            const int sub = item.value("subindex").toInt(-1);
+            if (!ok || sub < 0 || sub > 0xFF) {
+                if (error) *error = tr("Invalid object in bulk upload list.");
+                uploadQueue.clear();
+                return false;
+            }
+            uploadQueue.enqueue(qMakePair(index, sub));
+        }
+        startNextQueuedWrite();
+        return transfer.active;
+    }
+    if (operation == QStringLiteral("write_objects")) {
+        const int node = arguments.value("node_id").toInt();
+        if (node < 1 || node > 127) {
+            if (error) *error = tr("Invalid CANopen node.");
+            return false;
+        }
+        nodeSpin->setValue(node);
+        writeQueue.clear();
+        for (const QJsonValue &value : arguments.value("objects").toArray()) {
+            const QJsonObject item = value.toObject();
+            bool ok = false;
+            const int index = number(item.value("index").toString(), &ok);
+            const int sub = item.value("subindex").toInt(-1);
+            const QByteArray bytes = QByteArray::fromHex(item.value("value").toString().toLatin1());
+            if (!ok || sub < 0 || sub > 0xFF || bytes.isEmpty() || bytes.size() > 4) {
+                if (error) *error = tr("Bulk expedited writes require 1-4 bytes per valid object.");
+                writeQueue.clear();
+                return false;
+            }
+            writeQueue.enqueue({index, sub, bytes});
+        }
+        startNextQueuedWrite();
+        return transfer.active;
+    }
     bool indexOk = false;
     const int index = number(arguments.value("index").toString(), &indexOk);
     const int node = arguments.value("node_id").toVariant().toInt();
@@ -134,8 +303,8 @@ void CANopenWorkbenchWindow::buildUi()
     nodeTable = new QTableWidget(0, NodeColumnCount, nodesPage);
     nodeTable->setHorizontalHeaderLabels({tr("Node"), tr("NMT state"), tr("Heartbeat age"),
                                           tr("Identity"), tr("Last emergency")});
-    nodeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    nodeTable->horizontalHeader()->setSectionResizeMode(NodeIdentity, QHeaderView::Stretch);
+    nodeTable->resizeColumnsToContents();
+    nodeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     nodeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     nodesLayout->addWidget(nodeTable);
     QHBoxLayout *nodeControls = new QHBoxLayout;
@@ -165,8 +334,8 @@ void CANopenWorkbenchWindow::buildUi()
     objectTable = new QTableWidget(0, ObjectColumnCount, objectsPage);
     objectTable->setHorizontalHeaderLabels({tr("Index"), tr("Sub"), tr("Name"), tr("Data type"),
                                             tr("Access"), tr("Value"), tr("Default")});
-    objectTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    objectTable->horizontalHeader()->setSectionResizeMode(ObjectName, QHeaderView::Stretch);
+    objectTable->resizeColumnsToContents();
+    objectTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     objectTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     objectTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     objectsLayout->addWidget(objectTable);
@@ -230,8 +399,8 @@ void CANopenWorkbenchWindow::buildUi()
     pdoTable = new QTableWidget(0, PdoColumnCount, pdoPage);
     pdoTable->setHorizontalHeaderLabels({tr("COB-ID"), tr("Node"), tr("PDO"), tr("Data"),
                                          tr("Mapped values"), tr("Frames"), tr("Updated")});
-    pdoTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    pdoTable->horizontalHeader()->setSectionResizeMode(PdoDecoded, QHeaderView::Stretch);
+    pdoTable->resizeColumnsToContents();
+    pdoTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     pdoLayout->addWidget(pdoTable);
     QPushButton *pdoGraphButton = new QPushButton(tr("Live mapped-value graph"), pdoPage);
     QPushButton *pdoRemapButton = new QPushButton(tr("Remap selected PDO"), pdoPage);
@@ -249,8 +418,8 @@ void CANopenWorkbenchWindow::buildUi()
     emcyTable = new QTableWidget(0, 6, emcyPage);
     emcyTable->setHorizontalHeaderLabels({tr("Time"), tr("Node"), tr("Error code"), tr("Error register"),
                                           tr("Manufacturer data"), tr("Description")});
-    emcyTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    emcyTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    emcyTable->resizeColumnsToContents();
+    emcyTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     emcyLayout->addWidget(emcyTable);
     tabs->addTab(emcyPage, tr("EMCY history"));
 
@@ -958,8 +1127,16 @@ void CANopenWorkbenchWindow::importEds()
     const QString fileName = QFileDialog::getOpenFileName(this, tr("Import EDS or DCF"), QString(),
                                                            tr("CANopen descriptions (*.eds *.dcf);;All files (*)"));
     if (fileName.isEmpty()) return;
+    importEdsFile(fileName);
+}
+
+bool CANopenWorkbenchWindow::importEdsFile(const QString &fileName, QString *error)
+{
     QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) *error = tr("Could not open the EDS/DCF file.");
+        return false;
+    }
     objectTable->setRowCount(0);
     QTextStream input(&file);
     int index = -1, sub = 0;
@@ -995,14 +1172,23 @@ void CANopenWorkbenchWindow::importEds()
     }
     flush();
     eventLog->append(tr("Imported %1 object entries from %2").arg(objectTable->rowCount()).arg(fileName));
+    return true;
 }
 
 void CANopenWorkbenchWindow::exportDcf()
 {
     const QString fileName = QFileDialog::getSaveFileName(this, tr("Export DCF"), QString(), tr("DCF (*.dcf)"));
     if (fileName.isEmpty()) return;
+    exportDcfFile(fileName);
+}
+
+bool CANopenWorkbenchWindow::exportDcfFile(const QString &fileName, QString *error)
+{
     QSaveFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (error) *error = tr("Could not open the DCF destination.");
+        return false;
+    }
     QTextStream out(&file);
     out << "[FileInfo]\nFileName=" << QFileInfo(fileName).fileName() << "\nFileVersion=1\n\n";
     for (int row = 0; row < objectTable->rowCount(); ++row)
@@ -1016,7 +1202,11 @@ void CANopenWorkbenchWindow::exportDcf()
             << "\nDefaultValue=" << objectTable->item(row, ObjectDefault)->text()
             << "\nParameterValue=" << objectTable->item(row, ObjectValue)->text() << "\n\n";
     }
-    file.commit();
+    if (!file.commit()) {
+        if (error) *error = tr("Could not commit the DCF file.");
+        return false;
+    }
+    return true;
 }
 
 void CANopenWorkbenchWindow::addObjectEntry()

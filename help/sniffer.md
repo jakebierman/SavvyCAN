@@ -1,102 +1,130 @@
-Sniffer Window
-=================
+# CAN Sniffer
+
+Open **RE Tools > Sniffer**. Press **F1** anywhere in the Sniffer window, including while a table, filter, or numeric control has focus, to reopen this page.
 
 ![Sniffer Window](./images/Sniffer.png)
 
-Using the Sniffer Window
-=========================
+## Live view
 
-This window is essentially a turbo charged graphical version of the linux 
-can_utils program "cansniffer". The general idea here is to display a list 
-of frames such that you only see frames that are actively updating. If a given 
-ID has not been seen in 5 seconds the ID portion will turn RED and then disappear
-from the list. In this way only frames that are updating are in the list. They are
-ordered by ID. Bytes that have decremented will be red and bytes that have incremented 
-will be green. You can use the "Filters" area to mask away some IDs so that they never 
-show up. This can help to declutter the list. 
+The Sniffer condenses live traffic to one row per CAN ID, ordered by ID. It is intended for finding changing fields without scrolling through every received frame.
 
-This window updates with a 200ms interval.
+- **Delta** is the time between recent frames for that ID.
+- **Frequency** is the estimated update rate.
+- **ID** is the CAN identifier.
+- **Data 0-7** show the most recently observed classic-CAN payload bytes.
+- An incrementing byte or bit is highlighted green; a decrementing one is highlighted red.
+- The display refreshes every 200 ms. Frame reception itself is not limited to that rate.
 
-Notching and Unnotching
-========================
+By default, an ID turns red after its configured expiry time and is then removed if no new frame arrives. **Expire Interval** changes that inactivity threshold. **Never Expire IDs** retains inactive rows, which keeps the layout stable during experiments.
 
-While the window is running it keeps a running list each 200ms cycle of all the bits that 
-changed in that timespan. Each 200ms this list is backed up and reset. If you push the 
-notch button the system will remember all the bits that were set in the last 200ms window 
-and will not color the output if those bits are toggled in the future. They will thus somewhat 
-be ignored except that you can visually still see them updating. If you click the Notch 
-button repeatedly it will add any new changed bits to the old changed bits. In this way you 
-can build up a set of bits to ignore. Un-notching causes all notched (ignored) bits to be 
-reset and thus all changes will be colored once again. Notching is used to ignore bits that are changing all of the time. Why do this? The biggest reason is that you will probably want to ignore the "steady state" when you are doing research. Here is an example: Let's say you are searching for the steering position in your car. If you aren't moving the steering wheel you could safely assume that the value is not changing either. So, you might notch several times to mask out all the changing bits. You know anything currently changing isn't steering angle because you aren't moving the steering wheel. So, after thoroughly notching you then move the steeering wheel and see if you can spot an ID where suddenly bits changed where they weren't before. This can also be used to find gear selectors, speed and tachometer values, etc. Keep in mind that the default behavior when bits are notched is to still update but no longer change color. You can change this (see below)
+Column widths are manually resizable and are restored between sessions when window-position persistence is enabled.
 
-Advanced Options
-==================
+## Filters
 
-All of the above was valid if you do not check any of the four checkboxes. With the checkboxes
-unchecked this window is very close to cansniffer on the command line. But, what fun is that?
-These checkboxes modify the way the window works in a variety of ways.
+The **Filters** list contains observed CAN IDs. Checked IDs are visible when filtering is active.
 
-Never Expire IDs
-==================
+- **All** selects every observed ID.
+- **None** clears every selection.
+- Individual checkboxes narrow the view to relevant IDs.
 
-This checkbox will do exactly what it says on the tin. Instead of frame ID's expiring after
-5 seconds of inactivity they will stick around forever. This can be useful so that the ID you
-are watching doesn't jump up and down as IDs expire and potentially come back later on or new IDs
-are seen. With no expiration you will get a more consistent view of the IDs. You are still free
-to filter away IDs you are not interested in.
+Filtering changes the live presentation. Differential experiment capture records received data frames independently, so use repeatable physical conditions rather than assuming the visible filter limits the experiment samples.
 
-Mute notched bits
-===================
+## Notching
 
-This checkbox might sound a bit strange. With this checked any bytes that you have notched will
-ignore any notched bits and not even change the display to update if only notched bits were changed.
-This completely hides all notched data. The view of the frames will then NOT perfectly or correctly
-represent the actual most up to date data for each ID. So, use this option with caution. But, it
-is handy when you are looking for a needle in a haystack and you don't want things changing if you've
-already told the program to notch them away. This will make changes even more visible but you must be cautious since the data is now somewhat "fake" anywhere there are notched bits.
+Notching suppresses bits that changed during the most recently completed notch interval. This is useful for removing background activity before performing a deliberate action.
 
-Fade inactive bytes
-====================
+1. Leave the system in its baseline state.
+2. Select a suitable **Notch Interval**.
+3. Press **Notch** repeatedly while unrelated traffic changes.
+4. Perform the action of interest.
+5. Look for newly changing, non-notched bits.
 
-This can be used with mute or without but has a similar purpose. When this is checked any bytes
-that haven't updated recently will begin to fade away to white. They never quite get all the way
-to disappearing but will fade to be very light. In this way only data which is actively changing will
-be very visible. This drastically aids in helping you to ignore any bytes that are not changing.
+Each press adds recently changed bits to the existing notch mask. **Unnotch** clears every accumulated notch bit.
 
-View Bits
-==========
+**Mute notched bits** prevents changes confined to notched bits from updating the displayed value. This makes new activity easier to see, but the displayed payload is then intentionally incomplete and must not be treated as the exact latest bus value.
 
-This option changes the view very starkly. This is the view shown in the picture associated with this topic. When View Bits is selected the display will change to show each bit within the bytes as separate blocks that each can separately be black when set and unchanged, white when unset and unchanged, red when freshly unset, and green when freshly set. This allows for a very fine grained view. Fade inactive, and never expire still work as usual. This mode might be a bit "busy" and lowers the number of IDs you can see at once. But, the choice is yours. You give up some density in exchange for verbosity.
+**Fade inactive bytes** dims bytes that have not changed recently. **View Bits** replaces each byte display with individual bit cells: stable set bits are dark, stable clear bits are light, newly set bits are green, newly cleared bits are red, and notched bits are grey.
 
-Differential Experiments
-========================
+The notch timer and live refresh timer are separate. A longer notch interval captures slower background changes; a short interval isolates faster changes.
 
-The differential controls retain three labelled sample sets:
+## Differential Experiment
 
-1. Record **Baseline** while the system is idle.
-2. Record **Action** while performing the operation being investigated.
-3. Optionally record **Control** without the operation, under otherwise similar conditions.
-4. Stop recording and select **Analyze**.
+Differential experiments compare three labelled frame sets:
 
-Each recording button replaces the previous sample for that phase. Up to 250,000
-received data frames are retained per phase. The analysis ranks bits whose set
-frequency changes during the action and discounts changes also present in the
-control. Scores are evidence priorities rather than proof of signal meaning.
+1. Press **Baseline** and record the system at rest.
+2. Press **Stop** after a representative sample.
+3. Press **Action**, perform only the operation being investigated, then press **Stop**.
+4. Optionally record **Control** for the same duration and conditions without performing the action.
+5. Press **Analyze**.
 
-Reverse-Engineering Evidence
-============================
+Starting Baseline, Action, or Control replaces the previous recording for that phase. Only received CAN data frames are retained, up to 250,000 frames per phase. The status line identifies the active phase and displays captured frame counts.
 
-The results window provides additional candidate analyses:
+For every CAN ID and bit, analysis compares how often that bit is set in the Action sample against Baseline. When a Control sample exists, changes also seen in Control are subtracted as background. Candidates below a score of 15 are omitted:
 
-- **Counters / checksums** detects byte and nibble counters, XOR checksums,
-  additive checksums and common complements.
-- **Diagnostic correlation** compares observed UDS DID or OBD PID response
-  values with broadcast bytes.
-- **Signal clusters** identifies strongly correlated bytes on different CAN IDs.
-- **Export DBC candidates** writes selected evidence, or every row when nothing
-  is selected, as an editable DBC file.
+```text
+score = max(0, abs(action rate - baseline rate)
+               - abs(control rate - baseline rate)) * 100
+```
 
-Correlation currently compares retained sample sequences. Use captures with
-similar duration and sampling conditions, then validate every candidate through
-repeatable experiments. Generated DBC signals are deliberately named as
-candidates and use raw byte scaling until their actual layout is confirmed.
+The evidence column shows Baseline, Action, and Control set percentages. A high score means the bit changed state distribution during the action; it does not prove meaning, byte order, signedness, scaling, or causation.
+
+Good experiments keep ignition state, bus connections, duration, and unrelated activity consistent. Repeat the same action several times, reverse the action where possible, and use a Control sample when normal background traffic is changing.
+
+## Evidence Window
+
+The **Evidence tools** group is visible directly below **Differential
+experiment** in the Sniffer controls. Its four buttons open or reuse the
+Reverse-engineering evidence table. The same buttons are repeated along the
+bottom of that evidence window.
+
+**Analyze** specifically requires Baseline and Action recordings and replaces
+the differential rows. **Counters / checksums**, **Diagnostic correlation**,
+and **Signal clusters** can use any retained Baseline, Action, or Control
+sample; they do not require all three phases. Columns are manually resizable
+and sortable:
+
+- **Analysis** identifies the detector.
+- **CAN ID** identifies the candidate frame.
+- **Field** identifies a byte or bit.
+- **Score** is detector confidence or correlation strength.
+- **Evidence** explains the measurement behind the candidate.
+
+The additional analysis buttons append their candidates to the current table.
+**Export DBC candidates** becomes useful after at least one detector has
+produced evidence rows.
+
+### Counters And Checksums
+
+**Counters / checksums** examines all retained experiment frames:
+
+- Byte and low-nibble values that increment sequentially in at least 70% of their transitions are proposed as counters.
+- Bytes matching XOR, XOR complement, additive sum, two's-complement sum, or one's-complement sum in at least 70% of frames are proposed as checksums.
+
+These are lightweight candidate tests, not complete CRC inference. Rolling counters, seeded CRCs, message-ID participation, and manufacturer-specific algorithms require further validation.
+
+### Diagnostic Correlation
+
+**Diagnostic correlation** extracts single-frame positive UDS `0x62` and OBD response services `0x41` through `0x4A`. It compares their first returned numeric bytes with broadcast payload bytes.
+
+Candidates with an absolute Pearson correlation of at least 0.85 are shown as positive or inverse correlations. Sequence position is used for comparison; timestamps are not resampled. Similar sample rates and durations therefore matter, and multi-frame diagnostic values are not currently included by this detector.
+
+### Signal Clusters
+
+**Signal clusters** compares byte-value sequences across different broadcast CAN IDs below `0x700`. Absolute correlation of at least 0.92 creates a candidate. This can reveal duplicated values, gateway copies, related wheel speeds, or shared state changes, but counters and coincidental ramps can also correlate strongly.
+
+### DBC Candidate Export
+
+Select evidence rows and choose **Export DBC candidates**. If nothing is selected, every evidence row is considered. Rows containing a byte field become eight-bit, little-endian, unsigned candidate signals with raw scaling.
+
+The generated DBC is deliberately provisional. Rename signals and verify start bit, length, byte order, signedness, factor, offset, range, units, multiplexing, counters, and checksums before relying on it.
+
+## Suggested Workflow
+
+1. Filter to the relevant bus traffic and enable **Never Expire IDs**.
+2. Notch stable background changes.
+3. Record controlled Baseline, Action, and Control samples.
+4. Analyze and sort by score.
+5. Repeat the experiment in both directions.
+6. Check counters/checksums before interpreting candidate data bytes.
+7. Correlate against diagnostic values where available.
+8. Export only repeatable candidates and validate them in the main trace, graphing tools, and DBC editor.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN Scripting"
+  short_description: "Create explicit SavvyCAN JavaScript workflows"
+  default_prompt: "Use @savvycan-scripting to create this explicitly requested SavvyCAN automation."

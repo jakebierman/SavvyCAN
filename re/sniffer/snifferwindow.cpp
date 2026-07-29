@@ -10,6 +10,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QShortcut>
 #include <QSet>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -32,6 +33,12 @@ SnifferWindow::SnifferWindow(QWidget *parent) :
 {
     ui->setupUi(this);
     setWindowFlags(Qt::Window);
+    setProperty("helpPage", QStringLiteral("sniffer.md"));
+    QShortcut *helpShortcut = new QShortcut(QKeySequence::HelpContents, this);
+    helpShortcut->setContext(Qt::WindowShortcut);
+    connect(helpShortcut, &QShortcut::activated, this, []() {
+        HelpWindow::getRef()->showHelp(QStringLiteral("sniffer.md"));
+    });
     ui->treeView->setModel(&mModel);
 
     sniffDel = new SnifferDelegate();
@@ -97,6 +104,18 @@ SnifferWindow::SnifferWindow(QWidget *parent) :
     experimentLayout->addWidget(analyze, 2, 0, 1, 2);
     experimentLayout->addWidget(mExperimentStatus, 3, 0, 1, 2);
     ui->verticalLayout_2->insertWidget(0, experimentBox);
+
+    QGroupBox *evidenceBox = new QGroupBox(tr("Evidence tools"), this);
+    QGridLayout *evidenceLayout = new QGridLayout(evidenceBox);
+    QPushButton *counters = new QPushButton(tr("Counters / checksums"), evidenceBox);
+    QPushButton *diagnostics = new QPushButton(tr("Diagnostic correlation"), evidenceBox);
+    QPushButton *clusters = new QPushButton(tr("Signal clusters"), evidenceBox);
+    QPushButton *dbc = new QPushButton(tr("Export DBC candidates"), evidenceBox);
+    evidenceLayout->addWidget(counters, 0, 0);
+    evidenceLayout->addWidget(diagnostics, 0, 1);
+    evidenceLayout->addWidget(clusters, 1, 0);
+    evidenceLayout->addWidget(dbc, 1, 1);
+    ui->verticalLayout_2->insertWidget(1, evidenceBox);
     connect(baseline, &QPushButton::clicked, this, [this]() { beginExperimentCapture(0); });
     connect(action, &QPushButton::clicked, this, [this]() { beginExperimentCapture(1); });
     connect(control, &QPushButton::clicked, this, [this]() { beginExperimentCapture(2); });
@@ -106,6 +125,10 @@ SnifferWindow::SnifferWindow(QWidget *parent) :
             .arg(mBaselineFrames.size()).arg(mActionFrames.size()).arg(mControlFrames.size()));
     });
     connect(analyze, &QPushButton::clicked, this, &SnifferWindow::analyzeExperiment);
+    connect(counters, &QPushButton::clicked, this, &SnifferWindow::inferCountersAndChecksums);
+    connect(diagnostics, &QPushButton::clicked, this, &SnifferWindow::correlateDiagnostics);
+    connect(clusters, &QPushButton::clicked, this, &SnifferWindow::clusterSignals);
+    connect(dbc, &QPushButton::clicked, this, &SnifferWindow::exportDbcCandidates);
 }
 
 SnifferWindow::~SnifferWindow()
@@ -118,6 +141,63 @@ SnifferWindow::~SnifferWindow()
 QJsonObject SnifferWindow::aiState() const
 {
     return mModel.aiState();
+}
+
+bool SnifferWindow::executeAIRequest(const QString &operation,
+                                     const QJsonObject &arguments, QString *error)
+{
+    Q_UNUSED(arguments);
+    if (operation == QStringLiteral("clear")) {
+        mModel.clear();
+        qDeleteAll(mMap);
+        mMap.clear();
+        ui->listWidget->clear();
+        mFilter = false;
+        return true;
+    }
+    if (operation == QStringLiteral("notch")) {
+        mModel.notch();
+        return true;
+    }
+    if (operation == QStringLiteral("unnotch")) {
+        mModel.unNotch();
+        return true;
+    }
+    if (operation == QStringLiteral("filter_all")) {
+        fltAll();
+        return true;
+    }
+    if (operation == QStringLiteral("filter_none")) {
+        fltNone();
+        return true;
+    }
+    if (operation == QStringLiteral("pause")) {
+        mGUITimer.stop();
+        mNotchTimer.stop();
+        return true;
+    }
+    if (operation == QStringLiteral("resume")) {
+        mGUITimer.start();
+        mNotchTimer.start();
+        return true;
+    }
+    if (operation == QStringLiteral("experiment_baseline")) beginExperimentCapture(0);
+    else if (operation == QStringLiteral("experiment_action")) beginExperimentCapture(1);
+    else if (operation == QStringLiteral("experiment_control")) beginExperimentCapture(2);
+    else if (operation == QStringLiteral("experiment_stop")) {
+        mExperimentPhase = -1;
+        mExperimentStatus->setText(tr("Stopped: B %1, A %2, C %3 frames")
+            .arg(mBaselineFrames.size()).arg(mActionFrames.size()).arg(mControlFrames.size()));
+    }
+    else if (operation == QStringLiteral("experiment_analyze")) analyzeExperiment();
+    else if (operation == QStringLiteral("infer_counters")) inferCountersAndChecksums();
+    else if (operation == QStringLiteral("correlate_diagnostics")) correlateDiagnostics();
+    else if (operation == QStringLiteral("cluster_signals")) clusterSignals();
+    else {
+        if (error) *error = tr("Unknown Sniffer operation.");
+        return false;
+    }
+    return true;
 }
 
 void SnifferWindow::readSettings()
@@ -172,7 +252,6 @@ void SnifferWindow::showEvent(QShowEvent* event)
     mGUITimer.start();
     mNotchTimer.start();
     readSettings();
-    installEventFilter(this);
     qDebug() << "show";
 }
 
@@ -193,7 +272,6 @@ void SnifferWindow::closeEvent(QCloseEvent *event)
     mMap.clear();
     /* reset filtering */
     mFilter = false;
-    removeEventFilter(this);
 }
 
 void SnifferWindow::beginExperimentCapture(int phase)
@@ -266,6 +344,40 @@ void SnifferWindow::addAnalysisRow(const QString &type, quint32 id, const QStrin
     mAnalysisTable->item(row, 3)->setData(Qt::UserRole, score);
 }
 
+void SnifferWindow::ensureAnalysisWindow()
+{
+    if (mAnalysisDialog) return;
+    mAnalysisDialog = new QDialog(this);
+    mAnalysisDialog->setWindowTitle(tr("Reverse-engineering evidence"));
+    mAnalysisDialog->resize(1050, 650);
+    QVBoxLayout *layout = new QVBoxLayout(mAnalysisDialog);
+    mAnalysisTable = new QTableWidget(0, 5, mAnalysisDialog);
+    mAnalysisTable->setHorizontalHeaderLabels(
+        {tr("Analysis"), tr("CAN ID"), tr("Field"), tr("Score"), tr("Evidence")});
+    mAnalysisTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mAnalysisTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    mAnalysisTable->setSortingEnabled(true);
+    mAnalysisTable->resizeColumnsToContents();
+    mAnalysisTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    mAnalysisTable->horizontalHeader()->setStretchLastSection(true);
+    QHBoxLayout *buttons = new QHBoxLayout;
+    QPushButton *counters = new QPushButton(tr("Counters / checksums"), mAnalysisDialog);
+    QPushButton *diagnostics = new QPushButton(tr("Diagnostic correlation"), mAnalysisDialog);
+    QPushButton *clusters = new QPushButton(tr("Signal clusters"), mAnalysisDialog);
+    QPushButton *dbc = new QPushButton(tr("Export DBC candidates"), mAnalysisDialog);
+    buttons->addWidget(counters);
+    buttons->addWidget(diagnostics);
+    buttons->addWidget(clusters);
+    buttons->addStretch();
+    buttons->addWidget(dbc);
+    layout->addWidget(mAnalysisTable);
+    layout->addLayout(buttons);
+    connect(counters, &QPushButton::clicked, this, &SnifferWindow::inferCountersAndChecksums);
+    connect(diagnostics, &QPushButton::clicked, this, &SnifferWindow::correlateDiagnostics);
+    connect(clusters, &QPushButton::clicked, this, &SnifferWindow::clusterSignals);
+    connect(dbc, &QPushButton::clicked, this, &SnifferWindow::exportDbcCandidates);
+}
+
 void SnifferWindow::analyzeExperiment()
 {
     if (mBaselineFrames.isEmpty() || mActionFrames.isEmpty()) {
@@ -273,36 +385,7 @@ void SnifferWindow::analyzeExperiment()
             tr("Record both baseline and action samples first."));
         return;
     }
-    if (!mAnalysisDialog) {
-        mAnalysisDialog = new QDialog(this);
-        mAnalysisDialog->setWindowTitle(tr("Reverse-engineering evidence"));
-        mAnalysisDialog->resize(1050, 650);
-        QVBoxLayout *layout = new QVBoxLayout(mAnalysisDialog);
-        mAnalysisTable = new QTableWidget(0, 5, mAnalysisDialog);
-        mAnalysisTable->setHorizontalHeaderLabels(
-            {tr("Analysis"), tr("CAN ID"), tr("Field"), tr("Score"), tr("Evidence")});
-        mAnalysisTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-        mAnalysisTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
-        mAnalysisTable->setSortingEnabled(true);
-        mAnalysisTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-        mAnalysisTable->horizontalHeader()->setStretchLastSection(true);
-        QHBoxLayout *buttons = new QHBoxLayout;
-        QPushButton *counters = new QPushButton(tr("Counters / checksums"), mAnalysisDialog);
-        QPushButton *diagnostics = new QPushButton(tr("Diagnostic correlation"), mAnalysisDialog);
-        QPushButton *clusters = new QPushButton(tr("Signal clusters"), mAnalysisDialog);
-        QPushButton *dbc = new QPushButton(tr("Export DBC candidates"), mAnalysisDialog);
-        buttons->addWidget(counters);
-        buttons->addWidget(diagnostics);
-        buttons->addWidget(clusters);
-        buttons->addStretch();
-        buttons->addWidget(dbc);
-        layout->addWidget(mAnalysisTable);
-        layout->addLayout(buttons);
-        connect(counters, &QPushButton::clicked, this, &SnifferWindow::inferCountersAndChecksums);
-        connect(diagnostics, &QPushButton::clicked, this, &SnifferWindow::correlateDiagnostics);
-        connect(clusters, &QPushButton::clicked, this, &SnifferWindow::clusterSignals);
-        connect(dbc, &QPushButton::clicked, this, &SnifferWindow::exportDbcCandidates);
-    }
+    ensureAnalysisWindow();
     mAnalysisTable->setSortingEnabled(false);
     mAnalysisTable->setRowCount(0);
 
@@ -355,6 +438,12 @@ void SnifferWindow::analyzeExperiment()
 void SnifferWindow::inferCountersAndChecksums()
 {
     const QVector<CANFrame> all = experimentFrames();
+    if (all.isEmpty()) {
+        QMessageBox::information(this, tr("Counters / checksums"),
+            tr("Record a baseline, action, or control sample first."));
+        return;
+    }
+    ensureAnalysisWindow();
     QHash<quint32, QVector<QByteArray>> samples;
     for (const CANFrame &frame : all)
         if (!frame.payload().isEmpty()) samples[frame.frameId()].append(frame.payload());
@@ -401,11 +490,19 @@ void SnifferWindow::inferCountersAndChecksums()
         }
     }
     mAnalysisTable->setSortingEnabled(true);
+    mAnalysisDialog->show();
+    mAnalysisDialog->raise();
 }
 
 void SnifferWindow::correlateDiagnostics()
 {
     const QVector<CANFrame> all = experimentFrames();
+    if (all.isEmpty()) {
+        QMessageBox::information(this, tr("Diagnostic correlation"),
+            tr("Record experiment traffic containing diagnostics and broadcast frames first."));
+        return;
+    }
+    ensureAnalysisWindow();
     struct Series { QString name; quint32 id; QVector<double> values; };
     QList<Series> diagnostic;
     QHash<QString, Series> broadcast;
@@ -465,11 +562,19 @@ void SnifferWindow::correlateDiagnostics()
         }
     }
     mAnalysisTable->setSortingEnabled(true);
+    mAnalysisDialog->show();
+    mAnalysisDialog->raise();
 }
 
 void SnifferWindow::clusterSignals()
 {
     const QVector<CANFrame> all = experimentFrames();
+    if (all.isEmpty()) {
+        QMessageBox::information(this, tr("Signal clusters"),
+            tr("Record a baseline, action, or control sample first."));
+        return;
+    }
+    ensureAnalysisWindow();
     struct Series { quint32 id; int byte; QVector<double> values; };
     QHash<QString, Series> byField;
     for (const CANFrame &frame : all) {
@@ -497,11 +602,18 @@ void SnifferWindow::clusterSignals()
         }
     }
     mAnalysisTable->setSortingEnabled(true);
+    mAnalysisDialog->show();
+    mAnalysisDialog->raise();
 }
 
 void SnifferWindow::exportDbcCandidates()
 {
-    if (!mAnalysisTable || mAnalysisTable->rowCount() == 0) return;
+    ensureAnalysisWindow();
+    if (mAnalysisTable->rowCount() == 0) {
+        QMessageBox::information(this, tr("Export DBC candidates"),
+            tr("Run an evidence analysis first so there are candidate rows to export."));
+        return;
+    }
     const QString path = QFileDialog::getSaveFileName(this, tr("Export DBC candidates"),
         QString(), tr("DBC files (*.dbc)"));
     if (path.isEmpty()) return;
@@ -536,24 +648,6 @@ void SnifferWindow::exportDbcCandidates()
         output += '\n';
     }
     file.write(output);
-}
-
-bool SnifferWindow::eventFilter(QObject *obj, QEvent *event)
-{
-    if (event->type() == QEvent::KeyRelease) {
-        QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
-        switch (keyEvent->key())
-        {
-        case Qt::Key_F1:
-            HelpWindow::getRef()->showHelp("sniffer.md");
-            break;
-        }
-        return true;
-    } else {
-        // standard event processing
-        return QObject::eventFilter(obj, event);
-    }
-    return false;
 }
 
 void SnifferWindow::update()

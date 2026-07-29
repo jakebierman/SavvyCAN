@@ -1,0 +1,97 @@
+[
+  {
+    "prompt": "send CAN ID 0x123 with data 01 02 once on bus 0",
+    "expected_skill": "raw_can",
+    "expected_capability": "frame.send_once"
+  },
+  {
+    "prompt": "repeat frame 0x321 ten times every 100 ms",
+    "expected_skill": "raw_can",
+    "expected_capability": "frame.send_loop"
+  },
+  {
+    "prompt": "add a compact trace sender row for 0x321 data AA 55 every 250 ms without starting it",
+    "expected_skill": "raw_can",
+    "expected_capability": "trace_sender.add"
+  },
+  {
+    "prompt": "stop trace sender rows 0 and 1",
+    "expected_skill": "raw_can",
+    "expected_capability": "trace_sender.stop"
+  },
+  {
+    "prompt": "copy the selected CAN trace frame into the sender",
+    "expected_skill": "raw_can",
+    "expected_capability": "trace_sender.copy_selected"
+  },
+  {
+    "prompt": "clear the OBD list, add engine rpm and coolant temperature, then poll it",
+    "expected_skill": "obd",
+    "expected_capability": "obd.configure_pids"
+  },
+  {
+    "prompt": "scan for supported OBD PIDs",
+    "expected_skill": "obd",
+    "expected_capability": "obd.scan_pids"
+  },
+  {
+    "prompt": "add DID 200A to the UDS request list",
+    "expected_skill": "uds",
+    "expected_capability": "uds.add_did"
+  },
+  {
+    "prompt": "discover UDS ECUs",
+    "expected_skill": "uds",
+    "expected_capability": "uds.scan_ecus"
+  },
+  {
+    "prompt": "scan CANopen nodes and read the CiA 402 state",
+    "expected_skill": "canopen",
+    "expected_capability": "canopen.scan_nodes"
+  },
+  {
+    "prompt": "open the sniffer and filter CAN ID 0x456",
+    "expected_skill": "savvycan_interface",
+    "expected_capability": "filter.set_id"
+  },
+  {
+    "prompt": "reconnect the SocketCAN interface",
+    "expected_skill": "connections",
+    "expected_capability": "connection.reconnect"
+  },
+  {
+    "prompt": "configure a bounded CAN fuzz test",
+    "expected_skill": "fuzzing",
+    "expected_capability": "fuzz.configure"
+  },
+  {
+    "prompt": "create a JavaScript draft",
+    "expected_skill": "scripting",
+    "expected_capability": "script.create_draft"
+  },
+  {
+    "prompt": "load this capture into playback and replay it forwards",
+    "expected_skill": "capture_playback",
+    "expected_capability": "playback.play"
+  },
+  {
+    "prompt": "add a little endian 16 bit coolant signal to the DBC",
+    "expected_skill": "dbc_signals",
+    "expected_capability": "dbc.add_signal"
+  },
+  {
+    "prompt": "record a differential baseline then an action in the sniffer",
+    "expected_skill": "reverse_engineering",
+    "expected_capability": "sniffer.experiment_baseline"
+  },
+  {
+    "prompt": "request a UDS security seed and start routine 0203",
+    "expected_skill": "uds",
+    "expected_capability": "uds.security_seed"
+  },
+  {
+    "prompt": "import an EDS into the CANopen object dictionary",
+    "expected_skill": "canopen",
+    "expected_capability": "canopen.import_eds"
+  }
+]

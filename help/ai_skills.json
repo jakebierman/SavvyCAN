@@ -1,0 +1,493 @@
+[
+  {
+    "id": "obd",
+    "title": "OBD-II requests and live data",
+    "package": "skills/savvycan-obd",
+    "triggers": [
+      "obd",
+      "obd-ii",
+      "pid",
+      "mode 01",
+      "mode 09",
+      "rpm",
+      "revs",
+      "engine revs",
+      "engine revolutions",
+      "coolant",
+      "coolant temp",
+      "engine temperature",
+      "vehicle speed",
+      "engine speed",
+      "throttle",
+      "fuel trim",
+      "maf",
+      "oxygen sensor",
+      "vin"
+      ,"diagnostic trouble code"
+      ,"dtc"
+      ,"freeze frame"
+      ,"readiness"
+    ],
+    "workspaces": ["obd-ii workbench", "obd workbench"],
+    "capabilities": [
+      "ui.open",
+      "obd.configure_pids",
+      "obd.add_pid",
+      "obd.query_pid",
+      "obd.clear_pids",
+      "obd.connect",
+      "obd.disconnect",
+      "obd.request_enabled",
+      "obd.start_polling",
+      "obd.stop_polling",
+      "obd.scan_modules",
+      "obd.scan_pids",
+      "obd.read_dtcs",
+      "obd.clear_dtcs",
+      "obd.vehicle_info",
+      "obd.freeze_frame",
+      "obd.monitor_results",
+      "obd.edit_pid",
+      "obd.remove_pids",
+      "obd.read_readiness",
+      "obd.dashboard_set",
+      "obd.dashboard_clear",
+      "obd.dashboard_save",
+      "obd.dashboard_load",
+      "obd.execute",
+      "dashboard.add_pid"
+    ],
+    "rules": [
+      "Resolve human PID descriptions through SavvyCAN's built-in PID catalog.",
+      "RPM is Mode 01 PID 0x0C; engine coolant temperature is Mode 01 PID 0x05.",
+      "A PID is an 8-bit service parameter, never a CAN arbitration identifier.",
+      "Use obd.configure_pids for replace/add/start-polling requests so the operation remains one ordered workflow.",
+      "Do not use raw frame tools for a normal OBD request."
+    ],
+    "examples": [
+      {
+        "user": "clear the list, add rpm and coolant temperature, then start polling",
+        "capability": "obd.configure_pids",
+        "arguments": {
+          "pids": ["rpm", "coolant temperature"],
+          "clear_existing": true,
+          "start_polling": true
+        }
+      },
+      {
+        "user": "add vehicle speed",
+        "capability": "obd.add_pid",
+        "arguments": {
+          "pid": "0x0D",
+          "name": "Vehicle speed",
+          "format": "auto"
+        }
+      }
+    ]
+  },
+  {
+    "id": "uds",
+    "title": "UDS diagnostics",
+    "package": "skills/savvycan-uds",
+    "triggers": [
+      "uds",
+      "did",
+      "diagnostic session",
+      "tester present",
+      "security access",
+      "routine control",
+      "ecu discovery",
+      "service discovery",
+      "module discovery",
+      "scan ecu",
+      "scan module",
+      "data identifier"
+    ],
+    "workspaces": ["uds workbench"],
+    "capabilities": [
+      "ui.open",
+      "uds.add_did",
+      "uds.read_did",
+      "uds.clear_dids",
+      "uds.connect",
+      "uds.disconnect",
+      "uds.request_all",
+      "uds.start_polling",
+      "uds.stop_polling",
+      "uds.scan_ecus",
+      "uds.scan_services",
+      "uds.scan_sessions",
+      "uds.read_dtcs",
+      "uds.clear_dtcs",
+      "uds.tester_present",
+      "uds.routine_control",
+      "uds.security_seed",
+      "uds.security_key",
+      "uds.detailed_dtc",
+      "uds.manual_request",
+      "uds.guarded_control",
+      "uds.execute"
+    ],
+    "rules": [
+      "DIDs are 16-bit identifiers and are distinct from CAN request and response identifiers.",
+      "Manufacturer-specific DID names must come from the active profile, discovery results, or an explicit DID supplied by the user; never invent one.",
+      "Use uds.add_did to edit the list and uds.execute only when the user asks to transmit."
+    ],
+    "examples": [
+      {
+        "user": "add DID 0x200A as transmission temperature",
+        "capability": "uds.add_did",
+        "arguments": {
+          "did": "0x200A",
+          "name": "Transmission temperature",
+          "format": "auto",
+          "poll_ms": 0
+        }
+      },
+      {
+        "user": "read DID F190",
+        "capability": "uds.execute",
+        "arguments": {"operation": "read_did", "did": "0xF190"}
+      }
+    ]
+  },
+  {
+    "id": "raw_can",
+    "title": "Raw CAN frames and transmission",
+    "package": "skills/savvycan-raw-can",
+    "triggers": [
+      "can frame",
+      "raw can",
+      "frame",
+      "frames",
+      "packet",
+      "packets",
+      "trace sender",
+      "sender row",
+      "send once",
+      "send repeatedly",
+      "transmit",
+      "arbitration id",
+      "can id",
+      "send data",
+      "send bytes",
+      "loop frame",
+      "repeat frame"
+    ],
+    "workspaces": ["can trace"],
+    "capabilities": [
+      "ui.open",
+      "frame.add_draft",
+      "frame.update_draft",
+      "frame.set_enabled",
+      "frame.remove_rows",
+      "frame.clear",
+      "frame.set_all_enabled",
+      "frame.save_grid",
+      "frame.load_grid",
+      "frame.send",
+      "frame.send_once",
+      "frame.send_loop",
+      "trace_sender.add",
+      "trace_sender.update",
+      "trace_sender.remove",
+      "trace_sender.clear",
+      "trace_sender.stop",
+      "trace_sender.copy_selected",
+      "trace_sender.to_advanced",
+      "trace_sender.save",
+      "trace_sender.load",
+      "trace_sender.start",
+      "trace_sender.send_once"
+    ],
+    "rules": [
+      "Use frame.send_once for an explicitly described one-shot frame.",
+      "Use frame.send_loop for a newly requested bounded repetition so it appears in the compact CAN Trace sender.",
+      "Use trace_sender capabilities for configured compact rows; row indices come from trace_sender_rows application context.",
+      "Use frame draft and grid capabilities only for the advanced Frame Sender with triggers and modifiers.",
+      "Payload is a space-separated hexadecimal byte string and can_id is the arbitration identifier."
+    ],
+    "examples": [
+      {
+        "user": "send 123 01 02 once on bus 0",
+        "capability": "frame.send_once",
+        "arguments": {
+          "bus": 0,
+          "can_id": "0x123",
+          "extended": false,
+          "payload": "01 02"
+        }
+      },
+      {
+        "user": "send that frame ten times every 100 ms",
+        "capability": "frame.send_loop",
+        "arguments": {
+          "bus": 0,
+          "can_id": "0x123",
+          "extended": false,
+          "payload": "01 02",
+          "count": 10,
+          "interval_ms": 100
+        }
+      }
+    ]
+  },
+  {
+    "id": "canopen",
+    "title": "CANopen operations",
+    "package": "skills/savvycan-canopen",
+    "triggers": [
+      "canopen",
+      "can open",
+      "sdo",
+      "pdo",
+      "object dictionary",
+      "object dictionary entry",
+      "od entry",
+      "eds",
+      "dcf",
+      "nmt",
+      "emcy",
+      "cia 402",
+      "heartbeat",
+      "lss"
+    ],
+    "workspaces": ["canopen workbench"],
+    "capabilities": [
+      "ui.open",
+      "canopen.add_object",
+      "canopen.scan_nodes",
+      "canopen.nmt",
+      "canopen.sync",
+      "canopen.time",
+      "canopen.discover_lss",
+      "canopen.read_drive_state",
+      "canopen.remove_object",
+      "canopen.import_eds",
+      "canopen.export_dcf",
+      "canopen.clear_emcy",
+      "canopen.configure_lss",
+      "canopen.remap_pdo",
+      "canopen.upload_objects",
+      "canopen.write_objects",
+      "canopen.execute",
+      "canopen.write"
+    ],
+    "rules": [
+      "An Object Dictionary address consists of node ID, index and subindex.",
+      "Writes require armed full access and confirmation."
+    ],
+    "examples": []
+  },
+  {
+    "id": "fuzzing",
+    "title": "CAN fuzzing",
+    "package": "skills/savvycan-fuzzing",
+    "triggers": ["fuzz", "fuzzing", "brute force"],
+    "workspaces": ["fuzzing"],
+    "capabilities": ["ui.open", "fuzz.configure", "fuzz.start"],
+    "rules": [
+      "Configure the bounded range first and start only when explicitly requested.",
+      "Starting fuzzing requires armed full access."
+    ],
+    "examples": []
+  },
+  {
+    "id": "savvycan_interface",
+    "title": "SavvyCAN interface, trace and analysis tools",
+    "package": "skills/savvycan-interface",
+    "triggers": [
+      "trace",
+      "savvycan",
+      "main window",
+      "workbench",
+      "open tool",
+      "filter",
+      "payload",
+      "format",
+      "overwrite",
+      "raw payload",
+      "dbc",
+      "decode",
+      "bit",
+      "graph",
+      "plot",
+      "sniffer",
+      "notch",
+      "bus diagnostics",
+      "playback",
+      "frame analysis"
+    ],
+    "workspaces": ["can trace"],
+    "capabilities": [
+      "ui.open",
+      "payload.set_format",
+      "trace.set_options",
+      "filter.set_id",
+      "filter.clear",
+      "filter.set_range",
+      "filter.set_mask",
+      "filter.save_profile",
+      "filter.load_profile",
+      "graph.add"
+    ],
+    "rules": [
+      "A display filter or formatter does not transmit traffic.",
+      "Use filter.set_id for a known arbitration ID and payload.set_format for the selected trace payload display."
+    ],
+    "examples": []
+  },
+  {
+    "id": "capture_playback",
+    "title": "Capture playback and transport",
+    "package": "skills/savvycan-capture-playback",
+    "triggers": ["capture", "playback", "replay", "play frames", "reverse playback", "step frame"],
+    "workspaces": ["playback"],
+    "capabilities": [
+      "ui.open",
+      "playback.load_file",
+      "playback.load_live",
+      "playback.configure",
+      "playback.delete_sequence",
+      "playback.pause",
+      "playback.stop",
+      "playback.play",
+      "playback.reverse",
+      "playback.step_forward",
+      "playback.step_back"
+    ],
+    "rules": [
+      "Loading and configuring a sequence does not transmit.",
+      "Play, reverse and step operations transmit and require confirmation."
+    ],
+    "examples": []
+  },
+  {
+    "id": "dbc_signals",
+    "title": "DBC databases, messages and signals",
+    "package": "skills/savvycan-dbc-signals",
+    "triggers": [
+      "dbc", "database", "signal", "message definition", "node", "scaling",
+      "start bit", "bitfield", "byte field", "enum", "status bits",
+      "multiplex", "multiplexor"
+    ],
+    "workspaces": ["dbc"],
+    "capabilities": [
+      "ui.open",
+      "dbc.load",
+      "dbc.create",
+      "dbc.save",
+      "dbc.close",
+      "dbc.assign_bus",
+      "dbc.add_node",
+      "dbc.remove_node",
+      "dbc.add_message",
+      "dbc.update_message",
+      "dbc.remove_message",
+      "dbc.add_signal",
+      "dbc.update_signal",
+      "dbc.remove_signal"
+    ],
+    "rules": [
+      "A DBC CAN ID identifies a message; signal start bits and lengths identify payload fields.",
+      "Use byte_offset and byte_length only for byte-aligned fields; use start_bit and bit_length for arbitrary bitfields.",
+      "Use values for discrete enum/status mappings and multiplex_role, multiplex_values and multiplex_parent for multiplexed messages.",
+      "Combine this skill with reverse_engineering when Sniffer evidence is used to create or update signals.",
+      "Never invent scaling, byte order, signedness or units when evidence is absent."
+    ],
+    "examples": [
+      {
+        "user": "add a little endian unsigned 16 bit coolant field at byte 2 to message 0x321",
+        "capability": "dbc.add_signal",
+        "arguments": {
+          "file_index": 0,
+          "can_id": "0x321",
+          "name": "CoolantTemperature",
+          "byte_offset": 2,
+          "byte_length": 2,
+          "little_endian": true,
+          "value_type": "unsigned",
+          "factor": 0.1,
+          "offset": -40,
+          "unit": "deg C"
+        }
+      }
+    ]
+  },
+  {
+    "id": "reverse_engineering",
+    "title": "CAN reverse-engineering experiments",
+    "package": "skills/savvycan-reverse-engineering",
+    "triggers": ["sniffer", "notch", "differential", "experiment", "counter", "checksum", "correlate", "cluster"],
+    "workspaces": ["can sniffer"],
+    "capabilities": [
+      "ui.open",
+      "sniffer.clear",
+      "sniffer.notch",
+      "sniffer.unnotch",
+      "sniffer.filter_all",
+      "sniffer.filter_none",
+      "sniffer.pause",
+      "sniffer.resume",
+      "sniffer.experiment_baseline",
+      "sniffer.experiment_action",
+      "sniffer.experiment_control",
+      "sniffer.experiment_stop",
+      "sniffer.experiment_analyze",
+      "sniffer.infer_counters",
+      "sniffer.correlate_diagnostics",
+      "sniffer.cluster_signals"
+    ],
+    "rules": [
+      "Record baseline and action phases before differential analysis.",
+      "Treat inferred counters, checksums and signal clusters as candidates requiring validation."
+    ],
+    "examples": []
+  },
+  {
+    "id": "connections",
+    "title": "CAN interfaces and connections",
+    "package": "skills/savvycan-connections",
+    "triggers": [
+      "connect",
+      "connection",
+      "disconnect",
+      "reconnect",
+      "driver",
+      "interface",
+      "socketcan",
+      "socket can",
+      "serial",
+      "gvret",
+      "kvaser",
+      "can adapter",
+      "can interface",
+      "usb can"
+    ],
+    "workspaces": ["connection settings"],
+    "capabilities": [
+      "ui.open",
+      "connection.reconnect",
+      "connection.suspend",
+      "connection.resume",
+      "connection.add"
+    ],
+    "rules": [
+      "Use existing profiles when reconnecting.",
+      "Adding a connection requires explicit interface details and armed access."
+    ],
+    "examples": []
+  },
+  {
+    "id": "scripting",
+    "title": "JavaScript scripting",
+    "package": "skills/savvycan-scripting",
+    "triggers": ["script", "scripting", "javascript"],
+    "workspaces": ["scripting"],
+    "capabilities": ["ui.open", "script.create_draft"],
+    "rules": [
+      "Only expose scripting when the user explicitly asks for a script or JavaScript."
+    ],
+    "examples": []
+  }
+]

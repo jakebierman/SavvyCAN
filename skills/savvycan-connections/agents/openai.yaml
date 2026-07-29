@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN Connections"
+  short_description: "Manage CAN adapters and connection profiles"
+  default_prompt: "Use @savvycan-connections to handle this SavvyCAN connection task."

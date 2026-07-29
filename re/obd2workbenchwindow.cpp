@@ -29,6 +29,7 @@
 #include <QProgressBar>
 #include <QSettings>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
@@ -43,6 +44,7 @@
 #include <functional>
 
 namespace {
+constexpr int DashboardManagedRole = Qt::UserRole + 20;
 struct KnownPid { int pid; const char *name; const char *format; };
 const KnownPid knownPids[] = {
     {0x00, "Supported PIDs 01-20", "u32be"},
@@ -334,15 +336,40 @@ bool OBD2WorkbenchWindow::resolvePidDescription(const QString &description, int 
     return resolveKnownPidDescription(description, pid, name, format, confidence);
 }
 
+QJsonObject OBD2WorkbenchWindow::aiState() const
+{
+    QJsonArray requests;
+    for (int row = 0; row < pidTable->rowCount(); ++row)
+    {
+        requests.append(QJsonObject{
+            {QStringLiteral("enabled"),
+             pidTable->item(row, PidEnabled)->checkState() == Qt::Checked},
+            {QStringLiteral("name"), pidTable->item(row, PidName)->text()},
+            {QStringLiteral("pid"), pidText(row)},
+            {QStringLiteral("format"), pidTable->item(row, PidFormat)->text()}
+        });
+    }
+    return QJsonObject{
+        {QStringLiteral("connected"), connected},
+        {QStringLiteral("bus"), busSpin->value()},
+        {QStringLiteral("request_id"), requestIdEdit->currentText()},
+        {QStringLiteral("polling"), pollCheck->isChecked()},
+        {QStringLiteral("poll_cycle_ms"), pollIntervalSpin->value()},
+        {QStringLiteral("requests"), requests}
+    };
+}
+
 OBD2WorkbenchWindow::OBD2WorkbenchWindow(QWidget *parent) : QDialog(parent), handler(new UDS_HANDLER)
 {
     buildUi();
     loadSettings();
     handler->setProcessAllIDs(true);
+    handler->setFlowCtrl(true);
     responseTimer.setSingleShot(true);
     responseTimer.setInterval(900);
     connect(handler, &UDS_HANDLER::newUDSMessage, this, &OBD2WorkbenchWindow::gotReply);
-    connect(&responseTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::requestFinished);
+    connect(&responseTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::responseTimedOut);
+    pollTimer.setSingleShot(true);
     connect(&pollTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::pollPids);
     tripPlaybackTimer.setSingleShot(true);
     connect(&tripPlaybackTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::advanceTripPlayback);
@@ -439,10 +466,11 @@ void OBD2WorkbenchWindow::buildUi()
     QWidget *livePage = new QWidget(tabs);
     QVBoxLayout *liveLayout = new QVBoxLayout(livePage);
     pidTable = new QTableWidget(0, PidColumnCount, livePage);
-    pidTable->setHorizontalHeaderLabels({tr("Use"), tr("Name"), tr("PID lookup / custom"), tr("Payload format"),
+    pidTable->setHorizontalHeaderLabels({tr("Poll"), tr("Name"), tr("PID lookup / custom"),
+                                         tr("Payload format"), tr("Raw response"),
                                          tr("ECU responses"), tr("Updated")});
-    pidTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    pidTable->horizontalHeader()->setSectionResizeMode(PidResponses, QHeaderView::Stretch);
+    pidTable->resizeColumnsToContents();
+    pidTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     pidTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     pidTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     liveLayout->addWidget(pidTable);
@@ -451,11 +479,16 @@ void OBD2WorkbenchWindow::buildUi()
     QPushButton *removeButton = new QPushButton(tr("Remove"), livePage);
     QPushButton *loadButton = new QPushButton(tr("Load PID list"), livePage);
     QPushButton *saveButton = new QPushButton(tr("Save PID list"), livePage);
-    QPushButton *selectedButton = new QPushButton(tr("Request selected"), livePage);
-    QPushButton *enabledButton = new QPushButton(tr("Request enabled"), livePage);
+    QPushButton *clearValuesButton = new QPushButton(tr("Clear values"), livePage);
+    QPushButton *selectedButton = new QPushButton(tr("Send selected once"), livePage);
+    QPushButton *enabledButton = new QPushButton(tr("Send enabled once"), livePage);
     QPushButton *graphButton = new QPushButton(tr("Live graph"), livePage);
     tripRecordButton = new QPushButton(tr("Start trip log"), livePage);
-    pollCheck = new QCheckBox(tr("Poll"), livePage);
+    pollCheck = new QCheckBox(livePage);
+    pollCheck->hide();
+    liveRequestsCheck = new QCheckBox(tr("Poll live rows"), livePage);
+    liveRequestsCheck->setChecked(true);
+    pollStartButton = new QPushButton(tr("Start polling"), livePage);
     pollIntervalSpin = new QSpinBox(livePage);
     pollIntervalSpin->setRange(200, 60000);
     pollIntervalSpin->setValue(1000);
@@ -464,8 +497,11 @@ void OBD2WorkbenchWindow::buildUi()
     liveButtons->addWidget(removeButton);
     liveButtons->addWidget(loadButton);
     liveButtons->addWidget(saveButton);
+    liveButtons->addWidget(clearValuesButton);
     liveButtons->addStretch();
-    liveButtons->addWidget(pollCheck);
+    liveButtons->addWidget(liveRequestsCheck);
+    liveButtons->addWidget(pollStartButton);
+    liveButtons->addWidget(new QLabel(tr("Cycle interval"), livePage));
     liveButtons->addWidget(pollIntervalSpin);
     liveButtons->addWidget(graphButton);
     liveButtons->addWidget(tripRecordButton);
@@ -476,25 +512,27 @@ void OBD2WorkbenchWindow::buildUi()
     connect(removeButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::removePid);
     connect(loadButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadPidList);
     connect(saveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::savePidList);
+    connect(clearValuesButton, &QPushButton::clicked, this, [this]() {
+        for (int row = 0; row < pidTable->rowCount(); ++row)
+            for (int column : {PidRaw, PidResponses, PidUpdated})
+                if (pidTable->item(row, column)) pidTable->item(row, column)->setText(QString());
+    });
     connect(selectedButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestSelectedPid);
     connect(enabledButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestEnabledPids);
     connect(graphButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::showDiagnosticGraph);
     connect(tripRecordButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::toggleTripRecording);
-    connect(pollCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled) {
-            if (!connected) connectEndpoint();
-            if (connected) pollTimer.start(pollIntervalSpin->value());
-            else pollCheck->setChecked(false);
-        } else pollTimer.stop();
+    connect(pollStartButton, &QPushButton::clicked, this, [this]() {
+        if (pollCheck->isChecked()) stopPolling(); else startPolling();
     });
     connect(pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
-        if (pollTimer.isActive()) pollTimer.start(value);
+        if (pollCheck->isChecked() && pollTimer.isActive()) pollTimer.start(value);
     });
     tabs->addTab(livePage, tr("Live data"));
 
     QWidget *dashboardPage = new QWidget(tabs);
     QVBoxLayout *dashboardLayout = new QVBoxLayout(dashboardPage);
     QHBoxLayout *dashboardControls = new QHBoxLayout;
+    QHBoxLayout *dashboardPollingControls = new QHBoxLayout;
     dashboardPidCombo = new QComboBox(dashboardPage);
     dashboardPidCombo->setEditable(true);
     for (const KnownPid &known : knownPids)
@@ -508,6 +546,16 @@ void OBD2WorkbenchWindow::buildUi()
     dashboardColumnsSpin->setValue(12);
     QPushButton *dashboardLoadButton = new QPushButton(tr("Load layout"), dashboardPage);
     QPushButton *dashboardSaveButton = new QPushButton(tr("Save layout"), dashboardPage);
+    dashboardRequestsCheck = new QCheckBox(tr("Poll dashboard widgets"), dashboardPage);
+    dashboardRequestsCheck->setChecked(true);
+    QPushButton *dashboardSendOnceButton =
+        new QPushButton(tr("Send enabled once"), dashboardPage);
+    dashboardPollStartButton = new QPushButton(tr("Start polling"), dashboardPage);
+    dashboardPollStartButton->setEnabled(false);
+    dashboardPollIntervalSpin = new QSpinBox(dashboardPage);
+    dashboardPollIntervalSpin->setRange(200, 60000);
+    dashboardPollIntervalSpin->setSuffix(tr(" ms"));
+    dashboardPollIntervalSpin->setValue(pollIntervalSpin->value());
     dashboardControls->addWidget(new QLabel(tr("PID"), dashboardPage));
     dashboardControls->addWidget(dashboardPidCombo, 1);
     dashboardControls->addWidget(dashboardAddButton);
@@ -518,6 +566,13 @@ void OBD2WorkbenchWindow::buildUi()
     dashboardControls->addWidget(dashboardLoadButton);
     dashboardControls->addWidget(dashboardSaveButton);
     dashboardLayout->addLayout(dashboardControls);
+    dashboardPollingControls->addWidget(dashboardRequestsCheck);
+    dashboardPollingControls->addWidget(dashboardSendOnceButton);
+    dashboardPollingControls->addWidget(dashboardPollStartButton);
+    dashboardPollingControls->addWidget(new QLabel(tr("Cycle interval"), dashboardPage));
+    dashboardPollingControls->addWidget(dashboardPollIntervalSpin);
+    dashboardPollingControls->addStretch();
+    dashboardLayout->addLayout(dashboardPollingControls);
     QScrollArea *dashboardScroll = new QScrollArea(dashboardPage);
     dashboardScroll->setWidgetResizable(true);
     widgetDashboardCanvas = new OBDDashboardCanvas(dashboardScroll);
@@ -527,6 +582,26 @@ void OBD2WorkbenchWindow::buildUi()
     connect(dashboardRemoveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::removeDashboardPid);
     connect(dashboardLoadButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDashboardLayout);
     connect(dashboardSaveButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::saveDashboardLayout);
+    connect(dashboardSendOnceButton, &QPushButton::clicked,
+            this, &OBD2WorkbenchWindow::requestEnabledPids);
+    connect(dashboardPollStartButton, &QPushButton::clicked, this, [this]() {
+        if (pollCheck->isChecked()) stopPolling(); else startPolling();
+    });
+    connect(dashboardRequestsCheck, &QCheckBox::toggled, this, [this]() {
+        syncDashboardPidRows();
+        if (pollCheck->isChecked() && !responseTimer.isActive())
+        {
+            pollTimer.stop();
+            pollPids();
+        }
+    });
+    connect(pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        const QSignalBlocker blocker(dashboardPollIntervalSpin);
+        dashboardPollIntervalSpin->setValue(value);
+    });
+    connect(dashboardPollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        pollIntervalSpin->setValue(value);
+    });
     connect(dashboardColumnsSpin, qOverload<int>(&QSpinBox::valueChanged), this,
             [this](int value) { widgetDashboardCanvas->setColumns(value); });
     connect(dashboardEditMode, &QCheckBox::toggled, widgetDashboardCanvas, &OBDDashboardCanvas::setEditMode);
@@ -539,9 +614,11 @@ void OBD2WorkbenchWindow::buildUi()
     QVBoxLayout *playbackLayout = new QVBoxLayout(playbackPage);
     QHBoxLayout *playbackControls = new QHBoxLayout;
     QPushButton *tripLoadButton = new QPushButton(tr("Load trip log"), playbackPage);
+    QPushButton *tripClearButton = new QPushButton(tr("Clear"), playbackPage);
     tripPlaybackButton = new QPushButton(tr("Play"), playbackPage);
     tripPlaybackButton->setEnabled(false);
     playbackControls->addWidget(tripLoadButton);
+    playbackControls->addWidget(tripClearButton);
     playbackControls->addWidget(tripPlaybackButton);
     playbackControls->addStretch();
     playbackLayout->addLayout(playbackControls);
@@ -551,12 +628,20 @@ void OBD2WorkbenchWindow::buildUi()
     tripPlaybackTable = new QTableWidget(0, 7, playbackPage);
     tripPlaybackTable->setHorizontalHeaderLabels(
         {tr("Timestamp"), tr("Bus"), tr("ECU"), tr("PID"), tr("Name"), tr("Raw"), tr("Decoded")});
-    tripPlaybackTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    tripPlaybackTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    tripPlaybackTable->resizeColumnsToContents();
+    tripPlaybackTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     tripPlaybackTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     tripPlaybackTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     playbackLayout->addWidget(tripPlaybackTable, 1);
     connect(tripLoadButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadTripPlayback);
+    connect(tripClearButton, &QPushButton::clicked, this, [this]() {
+        tripPlaybackTimer.stop();
+        tripPlaybackButton->setText(tr("Play"));
+        tripPlaybackButton->setEnabled(false);
+        tripPlaybackTable->setRowCount(0);
+        tripPlaybackTimes.clear();
+        tripPlaybackSlider->setRange(0, 0);
+    });
     connect(tripPlaybackButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::toggleTripPlayback);
     connect(tripPlaybackSlider, &QSlider::valueChanged, this, &OBD2WorkbenchWindow::setTripPlaybackRow);
     tabs->addTab(playbackPage, tr("Trip playback"));
@@ -568,11 +653,13 @@ void OBD2WorkbenchWindow::buildUi()
     QPushButton *pidScanButton = new QPushButton(tr("Scan available PIDs"), discoveryPage);
     QPushButton *loadDiscoveryButton = new QPushButton(tr("Load results"), discoveryPage);
     QPushButton *saveDiscoveryButton = new QPushButton(tr("Save results"), discoveryPage);
+    QPushButton *clearDiscoveryButton = new QPushButton(tr("Clear results"), discoveryPage);
     QPushButton *addScannedButton = new QPushButton(tr("Add selected to Live data"), discoveryPage);
     discoveryButtons->addWidget(moduleScanButton);
     discoveryButtons->addWidget(pidScanButton);
     discoveryButtons->addWidget(loadDiscoveryButton);
     discoveryButtons->addWidget(saveDiscoveryButton);
+    discoveryButtons->addWidget(clearDiscoveryButton);
     discoveryButtons->addStretch();
     discoveryButtons->addWidget(addScannedButton);
     discoveryLayout->addLayout(discoveryButtons);
@@ -580,6 +667,12 @@ void OBD2WorkbenchWindow::buildUi()
     discoveryOutput->setReadOnly(true);
     discoveryOutput->setMaximumHeight(180);
     discoveryLayout->addWidget(discoveryOutput);
+    QHBoxLayout *discoveryFilter = new QHBoxLayout;
+    discoveryEcuCombo = new QComboBox(discoveryPage);
+    discoveryEcuCombo->addItem(tr("All ECUs"), QStringLiteral("all"));
+    discoveryFilter->addWidget(new QLabel(tr("Show supported PIDs for"), discoveryPage));
+    discoveryFilter->addWidget(discoveryEcuCombo, 1);
+    discoveryLayout->addLayout(discoveryFilter);
     discoveryPidList = new QListWidget(discoveryPage);
     discoveryPidList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     discoveryLayout->addWidget(discoveryPidList, 1);
@@ -587,6 +680,16 @@ void OBD2WorkbenchWindow::buildUi()
     connect(pidScanButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::scanSupportedPids);
     connect(loadDiscoveryButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDiscoveryResults);
     connect(saveDiscoveryButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::saveDiscoveryResults);
+    connect(discoveryEcuCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this](int) { refreshDiscoveryPidList(); });
+    connect(clearDiscoveryButton, &QPushButton::clicked, this, [this]() {
+        discoveryOutput->clear();
+        discoveryPidList->clear();
+        supportedPidsByEcu.clear();
+        discoveryEcuCombo->clear();
+        discoveryEcuCombo->addItem(tr("All ECUs"), QStringLiteral("all"));
+        refreshEcuTargets();
+    });
     connect(addScannedButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::addSelectedScannedPids);
     tabs->addTab(discoveryPage, tr("Discovery"));
 
@@ -599,11 +702,13 @@ void OBD2WorkbenchWindow::buildUi()
     QPushButton *clearButton = new QPushButton(tr("Clear DTCs (04)"), dtcPage);
     QPushButton *loadDtcButton = new QPushButton(tr("Load DTC database"), dtcPage);
     QPushButton *reportButton = new QPushButton(tr("Export report"), dtcPage);
+    QPushButton *clearDtcOutputButton = new QPushButton(tr("Clear output"), dtcPage);
     dtcButtons->addWidget(storedButton);
     dtcButtons->addWidget(pendingButton);
     dtcButtons->addWidget(permanentButton);
     dtcButtons->addWidget(loadDtcButton);
     dtcButtons->addWidget(reportButton);
+    dtcButtons->addWidget(clearDtcOutputButton);
     dtcButtons->addStretch();
     dtcButtons->addWidget(clearButton);
     dtcLayout->addLayout(dtcButtons);
@@ -618,6 +723,7 @@ void OBD2WorkbenchWindow::buildUi()
     connect(clearButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::clearDtcs);
     connect(loadDtcButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadDtcDatabase);
     connect(reportButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::exportDiagnosticReport);
+    connect(clearDtcOutputButton, &QPushButton::clicked, dtcOutput, &QTextEdit::clear);
     tabs->addTab(dtcPage, tr("DTCs"));
 
     QWidget *freezePage = new QWidget(tabs);
@@ -628,12 +734,14 @@ void OBD2WorkbenchWindow::buildUi()
     freezeFrameSpin->setRange(0, 255);
     QPushButton *freezeButton = new QPushButton(tr("Request freeze frame"), freezePage);
     QPushButton *freezeScanButton = new QPushButton(tr("Scan frame PIDs"), freezePage);
+    QPushButton *freezeClearButton = new QPushButton(tr("Clear output"), freezePage);
     freezeControls->addWidget(new QLabel(tr("PID"), freezePage));
     freezeControls->addWidget(freezePidEdit);
     freezeControls->addWidget(new QLabel(tr("Frame"), freezePage));
     freezeControls->addWidget(freezeFrameSpin);
     freezeControls->addWidget(freezeButton);
     freezeControls->addWidget(freezeScanButton);
+    freezeControls->addWidget(freezeClearButton);
     freezeControls->addStretch();
     freezeLayout->addLayout(freezeControls);
     freezeOutput = new QTextEdit(freezePage);
@@ -641,6 +749,7 @@ void OBD2WorkbenchWindow::buildUi()
     freezeLayout->addWidget(freezeOutput);
     connect(freezeButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestFreezeFrame);
     connect(freezeScanButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::scanFreezeFramePids);
+    connect(freezeClearButton, &QPushButton::clicked, freezeOutput, &QTextEdit::clear);
     tabs->addTab(freezePage, tr("Freeze frames"));
 
     QWidget *monitorPage = new QWidget(tabs);
@@ -649,10 +758,12 @@ void OBD2WorkbenchWindow::buildUi()
     monitorMidEdit = new QLineEdit(QStringLiteral("0x00"), monitorPage);
     QPushButton *monitorButton = new QPushButton(tr("Request monitor results"), monitorPage);
     QPushButton *monitorScalingButton = new QPushButton(tr("Load UAS table"), monitorPage);
+    QPushButton *monitorClearButton = new QPushButton(tr("Clear output"), monitorPage);
     monitorControls->addWidget(new QLabel(tr("Monitor ID"), monitorPage));
     monitorControls->addWidget(monitorMidEdit);
     monitorControls->addWidget(monitorButton);
     monitorControls->addWidget(monitorScalingButton);
+    monitorControls->addWidget(monitorClearButton);
     monitorControls->addStretch();
     monitorLayout->addLayout(monitorControls);
     monitorScalingStatus = new QLabel(tr("Raw Mode 06 values (no UAS conversion table loaded)"), monitorPage);
@@ -662,6 +773,7 @@ void OBD2WorkbenchWindow::buildUi()
     monitorLayout->addWidget(monitorOutput);
     connect(monitorButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestMonitorResults);
     connect(monitorScalingButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::loadMode06Scalings);
+    connect(monitorClearButton, &QPushButton::clicked, monitorOutput, &QTextEdit::clear);
     tabs->addTab(monitorPage, tr("Monitor tests"));
 
     QWidget *infoPage = new QWidget(tabs);
@@ -682,17 +794,22 @@ void OBD2WorkbenchWindow::buildUi()
     vehiclePidEdit->addItem(tr("0x0A - ECU name"), 0x0A);
     vehiclePidEdit->setCurrentIndex(2);
     QPushButton *infoButton = new QPushButton(tr("Request Mode 09"), infoPage);
+    QPushButton *infoClearButton = new QPushButton(tr("Clear output"), infoPage);
     infoControls->addWidget(new QLabel(tr("Information PID"), infoPage));
     infoControls->addWidget(vehiclePidEdit);
     infoControls->addWidget(infoButton);
+    infoControls->addWidget(infoClearButton);
     infoControls->addStretch();
     infoLayout->addLayout(infoControls);
     vehicleOutput = new QTextEdit(infoPage);
     vehicleOutput->setReadOnly(true);
     infoLayout->addWidget(vehicleOutput);
     connect(infoButton, &QPushButton::clicked, this, &OBD2WorkbenchWindow::requestVehicleInfo);
+    connect(infoClearButton, &QPushButton::clicked, vehicleOutput, &QTextEdit::clear);
     tabs->addTab(infoPage, tr("Vehicle information"));
-    requestControls = {selectedButton, enabledButton, pollCheck, moduleScanButton, pidScanButton,
+    requestControls = {selectedButton, enabledButton, pollStartButton, pollIntervalSpin,
+        dashboardSendOnceButton,
+        moduleScanButton, pidScanButton,
         storedButton, pendingButton, permanentButton, clearButton, freezeButton, freezeScanButton,
         monitorButton, infoButton};
     for (QWidget *control : requestControls) control->setEnabled(false);
@@ -702,6 +819,9 @@ void OBD2WorkbenchWindow::buildUi()
     eventLog->setReadOnly(true);
     eventLog->setMaximumHeight(120);
     root->addWidget(eventLog);
+    QPushButton *clearLogButton = new QPushButton(tr("Clear log"), this);
+    root->addWidget(clearLogButton, 0, Qt::AlignRight);
+    connect(clearLogButton, &QPushButton::clicked, eventLog, &QTextEdit::clear);
 }
 
 void OBD2WorkbenchWindow::addDashboardPid()
@@ -719,11 +839,13 @@ void OBD2WorkbenchWindow::addDashboardPid()
         bottom = qMax(bottom, existing.y + existing.height);
     config.y = bottom;
     widgetDashboardCanvas->addWidgetConfig(config);
+    syncDashboardPidRows();
 }
 
 void OBD2WorkbenchWindow::removeDashboardPid()
 {
     widgetDashboardCanvas->removeSelected();
+    syncDashboardPidRows();
 }
 
 void OBD2WorkbenchWindow::editDashboardWidget()
@@ -733,11 +855,75 @@ void OBD2WorkbenchWindow::editDashboardWidget()
     if (!configureDashboardWidget(this, config)) return;
     const QVector<OBDDashboardCanvas::WidgetConfig> configs = widgetDashboardCanvas->configs();
     widgetDashboardCanvas->setConfigs(configs);
+    syncDashboardPidRows();
 }
 
 void OBD2WorkbenchWindow::rebuildDashboard()
 {
     if (widgetDashboardCanvas) widgetDashboardCanvas->setColumns(dashboardColumnsSpin->value());
+}
+
+void OBD2WorkbenchWindow::syncDashboardPidRows()
+{
+    QSet<int> dashboardPids;
+    for (const OBDDashboardCanvas::WidgetConfig &config : widgetDashboardCanvas->configs())
+        dashboardPids.insert(config.pid);
+
+    for (int row = pidTable->rowCount() - 1; row >= 0; --row)
+    {
+        bool ok = false;
+        const int pid = parseNumber(pidText(row), &ok);
+        const bool managed = pidTable->item(row, PidEnabled)->data(DashboardManagedRole).toBool();
+        if (managed && (!ok || !dashboardPids.contains(pid)))
+            pidTable->removeRow(row);
+    }
+
+    for (int pid : dashboardPids)
+    {
+        bool found = false;
+        for (int row = 0; row < pidTable->rowCount(); ++row)
+        {
+            bool ok = false;
+            if (parseNumber(pidText(row), &ok) == uint32_t(pid) && ok)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
+        addPid();
+        const int row = pidTable->rowCount() - 1;
+        setPidText(row, QStringLiteral("0x%1").arg(pid, 2, 16, QLatin1Char('0')).toUpper());
+        pidTable->item(row, PidName)->setText(knownPidName(pid));
+        pidTable->item(row, PidFormat)->setText(knownPidFormat(pid));
+        pidTable->item(row, PidEnabled)->setCheckState(Qt::Unchecked);
+        pidTable->item(row, PidEnabled)->setData(DashboardManagedRole, true);
+    }
+}
+
+QList<int> OBD2WorkbenchWindow::combinedPidRows() const
+{
+    QList<int> rows;
+    QSet<int> includedPids;
+    QSet<int> dashboardPids;
+    if (dashboardRequestsCheck->isChecked())
+        for (const OBDDashboardCanvas::WidgetConfig &config : widgetDashboardCanvas->configs())
+            dashboardPids.insert(config.pid);
+
+    for (int row = 0; row < pidTable->rowCount(); ++row)
+    {
+        bool ok = false;
+        const int pid = parseNumber(pidText(row), &ok);
+        if (!ok || includedPids.contains(pid)) continue;
+        const bool liveEnabled = liveRequestsCheck->isChecked() &&
+            pidTable->item(row, PidEnabled)->checkState() == Qt::Checked;
+        if (liveEnabled || dashboardPids.contains(pid))
+        {
+            rows.append(row);
+            includedPids.insert(pid);
+        }
+    }
+    return rows;
 }
 
 QPair<QString, double> OBD2WorkbenchWindow::dashboardDisplayValue(const QString &name, double value) const
@@ -838,6 +1024,7 @@ void OBD2WorkbenchWindow::loadDashboardJson(const QJsonArray &items)
         if (config.pid >= 0 && config.pid <= 0xFF) configs.append(config);
     }
     widgetDashboardCanvas->setConfigs(configs);
+    syncDashboardPidRows();
 }
 
 void OBD2WorkbenchWindow::saveDashboardLayout()
@@ -1101,10 +1288,12 @@ void OBD2WorkbenchWindow::connectEndpoint()
     handler->clearAllFilters();
     for (const auto &rule : rules)
         handler->addFilter(busSpin->value(), rule.first, rule.second);
+    handler->setFlowCtrl(true);
     handler->setReception(true);
     connected = true;
     connectButton->setText(tr("Disable OBD"));
     for (QWidget *control : requestControls) control->setEnabled(true);
+    dashboardPollStartButton->setEnabled(true);
     connectionStatus->setText(tr("Ready - awaiting ECU response"));
     eventLog->append(tr("Listening for OBD-II ECU responses"));
     Q_UNUSED(requestId)
@@ -1144,10 +1333,8 @@ void OBD2WorkbenchWindow::refreshEcuTargets()
 
 void OBD2WorkbenchWindow::disconnectEndpoint()
 {
-    pollTimer.stop();
+    stopPolling();
     responseTimer.stop();
-    if (pollCheck->isChecked()) pollCheck->setChecked(false);
-    pidQueue.clear();
     activePidRow = -1;
     activeMode = -1;
     context = None;
@@ -1156,6 +1343,7 @@ void OBD2WorkbenchWindow::disconnectEndpoint()
     connected = false;
     connectButton->setText(tr("Enable OBD"));
     for (QWidget *control : requestControls) control->setEnabled(false);
+    dashboardPollStartButton->setEnabled(false);
     connectionStatus->setText(tr("Disconnected"));
     eventLog->append(tr("Stopped OBD-II requests and response listening"));
 }
@@ -1176,6 +1364,7 @@ void OBD2WorkbenchWindow::addPid()
     pidTable->setCellWidget(row, PidNumber, pidCombo);
     setPidText(row, QStringLiteral("0x0C"));
     pidTable->setItem(row, PidFormat, new QTableWidgetItem(knownPidFormat(0x0C)));
+    pidTable->setItem(row, PidRaw, new QTableWidgetItem);
     pidTable->setItem(row, PidResponses, new QTableWidgetItem);
     pidTable->setItem(row, PidUpdated, new QTableWidgetItem);
     connect(pidCombo, qOverload<int>(&QComboBox::activated), this, [this, pidCombo](int index) {
@@ -1214,6 +1403,90 @@ bool OBD2WorkbenchWindow::addPidRequest(const QString &name, const QString &pid,
 bool OBD2WorkbenchWindow::executeAIRequest(const QString &operation,
                                            const QJsonObject &arguments, QString *error)
 {
+    if (operation == QStringLiteral("connect")) {
+        connectEndpoint();
+        return connected;
+    }
+    if (operation == QStringLiteral("disconnect")) {
+        disconnectEndpoint();
+        return !connected;
+    }
+    if (operation == QStringLiteral("stop_polling")) {
+        stopPolling();
+        return !pollCheck->isChecked();
+    }
+    if (operation == QStringLiteral("edit_pid")) {
+        bool requestedOk = false;
+        const uint32_t requested = parseNumber(
+            arguments.value("pid").toVariant().toString(), &requestedOk);
+        for (int row = 0; requestedOk && row < pidTable->rowCount(); ++row) {
+            bool rowOk = false;
+            if (parseNumber(pidTable->item(row, PidNumber)->text(), &rowOk) != requested || !rowOk)
+                continue;
+            if (arguments.contains("name")) pidTable->item(row, PidName)->setText(arguments.value("name").toString());
+            if (arguments.contains("format")) pidTable->item(row, PidFormat)->setText(arguments.value("format").toString());
+            if (arguments.contains("enabled")) pidTable->item(row, PidEnabled)->setCheckState(
+                arguments.value("enabled").toBool() ? Qt::Checked : Qt::Unchecked);
+            syncDashboardPidRows();
+            return true;
+        }
+        if (error) *error = tr("The requested PID is not in the OBD-II list.");
+        return false;
+    }
+    if (operation == QStringLiteral("remove_pids")) {
+        QSet<int> requested;
+        for (const QJsonValue &value : arguments.value("pids").toArray()) {
+            bool ok = false;
+            const int pid = parseNumber(value.toVariant().toString(), &ok);
+            if (ok && pid >= 0 && pid <= 0xFF) requested.insert(pid);
+        }
+        int removed = 0;
+        for (int row = pidTable->rowCount() - 1; row >= 0; --row) {
+            bool ok = false;
+            const int pid = parseNumber(pidTable->item(row, PidNumber)->text(), &ok);
+            if (ok && requested.contains(pid)) {
+                pidTable->removeRow(row);
+                ++removed;
+            }
+        }
+        syncDashboardPidRows();
+        if (error) *error = tr("Removed %1 PID request(s)").arg(removed);
+        return true;
+    }
+    if (operation == QStringLiteral("dashboard_set")) {
+        if (arguments.contains("columns"))
+            dashboardColumnsSpin->setValue(arguments.value("columns").toInt(12));
+        loadDashboardJson(arguments.value("widgets").toArray());
+        return true;
+    }
+    if (operation == QStringLiteral("dashboard_clear")) {
+        loadDashboardJson(QJsonArray());
+        return true;
+    }
+    if (operation == QStringLiteral("dashboard_save")) {
+        QJsonObject root{{"version", 2}, {"columns", dashboardColumnsSpin->value()},
+                         {"widgets", dashboardToJson()}};
+        QSaveFile file(arguments.value("path").toString());
+        const bool ok = file.open(QIODevice::WriteOnly)
+            && file.write(QJsonDocument(root).toJson()) >= 0 && file.commit();
+        if (!ok && error) *error = tr("Could not save the dashboard layout.");
+        return ok;
+    }
+    if (operation == QStringLiteral("dashboard_load")) {
+        QFile file(arguments.value("path").toString());
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error) *error = tr("Could not open the dashboard layout.");
+            return false;
+        }
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+        if (!document.isObject() || !document.object().value("widgets").isArray()) {
+            if (error) *error = tr("Dashboard layout is invalid.");
+            return false;
+        }
+        dashboardColumnsSpin->setValue(document.object().value("columns").toInt(12));
+        loadDashboardJson(document.object().value("widgets").toArray());
+        return true;
+    }
     if (!connected || responseTimer.isActive()) {
         if (error) *error = tr("Connect the OBD-II endpoint and wait for any active request.");
         return false;
@@ -1236,6 +1509,55 @@ bool OBD2WorkbenchWindow::executeAIRequest(const QString &operation,
     if (operation == QStringLiteral("scan_pids")) { scanSupportedPids(); return responseTimer.isActive(); }
     if (operation == QStringLiteral("request_enabled")) {
         requestEnabledPids();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("start_polling")) {
+        startPolling();
+        if (!pollCheck->isChecked() && error)
+            *error = tr("Polling could not start; connect OBD and enable at least one request.");
+        return pollCheck->isChecked();
+    }
+    if (operation == QStringLiteral("read_dtcs")) {
+        const QString kind = arguments.value("kind").toString().toLower();
+        if (kind == QStringLiteral("pending")) readPendingDtcs();
+        else if (kind == QStringLiteral("permanent")) readPermanentDtcs();
+        else readStoredDtcs();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("clear_dtcs")) {
+        sendRequest(4, {}, ClearDtc);
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("vehicle_info")) {
+        vehiclePidEdit->setCurrentText(arguments.value("pid").toVariant().toString());
+        requestVehicleInfo();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("freeze_frame")) {
+        freezePidEdit->setText(arguments.value("pid").toVariant().toString());
+        freezeFrameSpin->setValue(arguments.value("frame").toInt(0));
+        requestFreezeFrame();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("monitor_results")) {
+        monitorMidEdit->setText(arguments.value("mid").toVariant().toString());
+        requestMonitorResults();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("read_readiness")) {
+        for (int row = 0; row < pidTable->rowCount(); ++row) {
+            bool ok = false;
+            if (parseNumber(pidTable->item(row, PidNumber)->text(), &ok) == 0x01 && ok) {
+                pidTable->setCurrentCell(row, PidNumber);
+                requestSelectedPid();
+                return responseTimer.isActive();
+            }
+        }
+        if (!addPidRequest(tr("Monitor status since DTCs cleared"), QStringLiteral("0x01"),
+                           QStringLiteral("auto"), error))
+            return false;
+        pidTable->setCurrentCell(pidTable->rowCount() - 1, PidNumber);
+        requestSelectedPid();
         return responseTimer.isActive();
     }
     if (error) *error = tr("Unsupported OBD-II AI operation: %1").arg(operation);
@@ -1292,6 +1614,7 @@ void OBD2WorkbenchWindow::loadPidList()
     busSpin->setValue(profile["bus"].toInt(busSpin->value()));
     requestIdEdit->setCurrentText(profile["requestId"].toString(requestIdEdit->currentText()));
     loadPidRows(profile["pids"].toArray());
+    syncDashboardPidRows();
     connected = false;
     connectionStatus->setText(tr("Reconnect imported endpoint"));
     eventLog->append(tr("Loaded %1 PIDs from %2").arg(pidTable->rowCount()).arg(fileName));
@@ -1327,13 +1650,61 @@ void OBD2WorkbenchWindow::requestSelectedPid()
 void OBD2WorkbenchWindow::requestEnabledPids()
 {
     if (responseTimer.isActive()) return;
-    pidQueue.clear();
-    for (int row = 0; row < pidTable->rowCount(); ++row)
-        if (pidTable->item(row, PidEnabled)->checkState() == Qt::Checked) pidQueue.append(row);
+    syncDashboardPidRows();
+    pidQueue = combinedPidRows();
     requestFinished();
 }
 
 void OBD2WorkbenchWindow::pollPids() { if (connected && !responseTimer.isActive() && pidQueue.isEmpty()) requestEnabledPids(); }
+
+void OBD2WorkbenchWindow::startPolling()
+{
+    if (!connected)
+    {
+        connectionStatus->setText(tr("Enable OBD before starting polling"));
+        return;
+    }
+    syncDashboardPidRows();
+    if (combinedPidRows().isEmpty())
+    {
+        connectionStatus->setText(tr("Enable a Live Data row or Dashboard widget before starting polling"));
+        return;
+    }
+    pollCheck->setChecked(true);
+    pollStartButton->setText(tr("Stop polling"));
+    pollStartButton->setEnabled(true);
+    dashboardPollStartButton->setText(tr("Stop polling"));
+    dashboardPollStartButton->setEnabled(true);
+    connectionStatus->setText(tr("Polling enabled PIDs; %1 ms between cycles").arg(pollIntervalSpin->value()));
+    eventLog->append(tr("Started PID polling"));
+    pollPids();
+}
+
+void OBD2WorkbenchWindow::stopPolling()
+{
+    const bool wasActive = pollCheck->isChecked();
+    pollTimer.stop();
+    pollCheck->setChecked(false);
+    pidQueue.clear();
+    pollStartButton->setText(tr("Start polling"));
+    pollStartButton->setEnabled(connected);
+    dashboardPollStartButton->setText(tr("Start polling"));
+    dashboardPollStartButton->setEnabled(connected);
+    if (wasActive) eventLog->append(tr("Stopped PID polling"));
+}
+
+void OBD2WorkbenchWindow::responseTimedOut()
+{
+    if (context == LivePid && activePidRow >= 0 && activePidRow < pidTable->rowCount()
+        && !activePidHadResponse)
+    {
+        pidTable->item(activePidRow, PidResponses)->setText(
+            tr("No complete response (timeout; check ISO-TP consecutive frames)"));
+        pidTable->item(activePidRow, PidUpdated)->setText(
+            QDateTime::currentDateTime().toString("HH:mm:ss.zzz"));
+    }
+    requestFinished();
+}
 
 void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context nextContext)
 {
@@ -1355,8 +1726,7 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
         connected = false;
         connectButton->setText(tr("Enable OBD"));
         for (QWidget *control : requestControls) control->setEnabled(false);
-        pollTimer.stop();
-        if (pollCheck->isChecked()) pollCheck->setChecked(false);
+        stopPolling();
         connectionStatus->setText(tr("Transmit failed on bus %1").arg(message.bus));
         eventLog->append(tr("OBD-II transmit failed: bus %1, ID 0x%2")
                          .arg(message.bus).arg(requestId, 0, 16).toUpper());
@@ -1373,7 +1743,7 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
                      .arg(requestId, 0, 16)
                      .arg(mode, 2, 16, QLatin1Char('0'))
                      .arg(QString::fromLatin1(data.toHex(' '))).toUpper());
-    responseTimer.start();
+    responseTimer.start(900);
 }
 
 void OBD2WorkbenchWindow::readStoredDtcs() { dtcOutput->clear(); sendRequest(3, {}, StoredDtc); }
@@ -1405,6 +1775,8 @@ void OBD2WorkbenchWindow::scanModules()
     discoveryOutput->clear();
     discoveryPidList->clear();
     supportedPidsByEcu.clear();
+    discoveryEcuCombo->clear();
+    discoveryEcuCombo->addItem(tr("All ECUs"), QStringLiteral("all"));
     discoveryOutput->setText(tr("Sending functional Mode 01 PID 00 request..."));
     activePid = 0;
     sendRequest(1, QByteArray(1, char(0x00)), ModuleScan);
@@ -1416,6 +1788,8 @@ void OBD2WorkbenchWindow::scanSupportedPids()
     discoveryOutput->setText(tr("Scanning standard Mode 01 support pages..."));
     discoveryPidList->clear();
     supportedPidsByEcu.clear();
+    discoveryEcuCombo->clear();
+    discoveryEcuCombo->addItem(tr("All ECUs"), QStringLiteral("all"));
     scanPidBases = {0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0};
     activePid = scanPidBases.takeFirst();
     sendRequest(1, QByteArray(1, char(activePid)), SupportedPidScan);
@@ -1439,25 +1813,56 @@ void OBD2WorkbenchWindow::finishSupportedPidScan()
 {
     discoveryOutput->append(QString());
     discoveryOutput->append(tr("Scan complete. Select PIDs below to add them to Live data."));
-    QSet<int> allSupported;
-    for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
-        allSupported.unite(iterator.value());
-    QList<int> sortedPids = allSupported.values();
+    refreshDiscoveryPidList();
+    refreshEcuTargets();
+}
+
+void OBD2WorkbenchWindow::refreshDiscoveryPidList()
+{
+    const QString previousSelection = discoveryEcuCombo->currentData().toString();
+    {
+        const QSignalBlocker blocker(discoveryEcuCombo);
+        discoveryEcuCombo->clear();
+        discoveryEcuCombo->addItem(tr("All ECUs"), QStringLiteral("all"));
+        QList<uint32_t> ecuIds = supportedPidsByEcu.keys();
+        std::sort(ecuIds.begin(), ecuIds.end());
+        for (uint32_t ecuId : ecuIds)
+            discoveryEcuCombo->addItem(
+                tr("ECU 0x%1 (%2 PIDs)").arg(ecuId, 0, 16)
+                    .arg(supportedPidsByEcu.value(ecuId).size()).toUpper(),
+                QStringLiteral("0x%1").arg(ecuId, 0, 16).toUpper());
+        const int previousIndex = discoveryEcuCombo->findData(previousSelection);
+        discoveryEcuCombo->setCurrentIndex(previousIndex >= 0 ? previousIndex : 0);
+    }
+
+    QSet<int> visiblePids;
+    bool selectedOk = false;
+    const uint32_t selectedEcu = parseNumber(discoveryEcuCombo->currentData().toString(), &selectedOk);
+    if (selectedOk)
+        visiblePids = supportedPidsByEcu.value(selectedEcu);
+    else
+        for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
+            visiblePids.unite(iterator.value());
+
+    discoveryPidList->clear();
+    QList<int> sortedPids = visiblePids.values();
     std::sort(sortedPids.begin(), sortedPids.end());
     for (int pid : sortedPids)
     {
         if (pid % 0x20 == 0) continue;
         QStringList ecus;
-        for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
-            if (iterator.value().contains(pid))
-                ecus << QStringLiteral("0x%1").arg(iterator.key(), 3, 16, QLatin1Char('0')).toUpper();
+        if (!selectedOk)
+            for (auto iterator = supportedPidsByEcu.constBegin(); iterator != supportedPidsByEcu.constEnd(); ++iterator)
+                if (iterator.value().contains(pid))
+                    ecus << QStringLiteral("0x%1").arg(iterator.key(), 3, 16, QLatin1Char('0')).toUpper();
         const QString name = knownPidName(pid);
         QListWidgetItem *item = new QListWidgetItem(
-            QStringLiteral("0x%1  %2  [%3]").arg(pid, 2, 16, QLatin1Char('0')).arg(name, ecus.join(", ")),
+            selectedOk
+                ? QStringLiteral("0x%1  %2").arg(pid, 2, 16, QLatin1Char('0')).arg(name)
+                : QStringLiteral("0x%1  %2  [%3]").arg(pid, 2, 16, QLatin1Char('0')).arg(name, ecus.join(", ")),
             discoveryPidList);
         item->setData(Qt::UserRole, pid);
     }
-    refreshEcuTargets();
 }
 
 void OBD2WorkbenchWindow::addSelectedScannedPids()
@@ -1866,17 +2271,63 @@ QString OBD2WorkbenchWindow::decodeMonitorResults(const QByteArray &data) const
 
 void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
 {
-    if (message.bus != busSpin->value() || !responseMatches(message.frameId()) ||
-        message.service != activeMode + 0x40) return;
-    connectionStatus->setText(tr("ECU responding"));
-    responseTimer.start();
-    QByteArray payload = message.payload();
+    if (message.bus != busSpin->value() || !responseMatches(message.frameId())) return;
     const QString ecu = QStringLiteral("0x%1").arg(message.frameId(), 3, 16, QLatin1Char('0')).toUpper();
+    if (message.isErrorReply && message.service == activeMode)
+    {
+        const int responseCode = message.subFunc;
+        const QString detail = handler->getNegativeResponseLong(responseCode);
+        if (responseCode == 0x78)
+        {
+            connectionStatus->setText(tr("%1: response pending").arg(ecu));
+            responseTimer.start(5000);
+            if (context == VehicleInfo)
+                vehicleOutput->setPlainText(tr("%1: response pending...").arg(ecu));
+            return;
+        }
+
+        const QString error = tr("%1: negative response 0x%2 - %3")
+            .arg(ecu).arg(responseCode, 2, 16, QLatin1Char('0')).arg(detail).toUpper();
+        connectionStatus->setText(error);
+        eventLog->append(error);
+        responseTimer.start(900);
+        if (context == LivePid && activePidRow >= 0 && activePidRow < pidTable->rowCount())
+        {
+            activePidHadResponse = true;
+            pidTable->item(activePidRow, PidRaw)->setText(
+                ecu + QStringLiteral(": 7F ") +
+                QStringLiteral("%1 %2").arg(activeMode, 2, 16, QLatin1Char('0'))
+                                         .arg(responseCode, 2, 16, QLatin1Char('0')).toUpper());
+            pidTable->item(activePidRow, PidResponses)->setText(error);
+            pidTable->item(activePidRow, PidUpdated)->setText(
+                QDateTime::currentDateTime().toString("HH:mm:ss.zzz"));
+        }
+        else if (context == VehicleInfo)
+            vehicleOutput->append(error);
+        else if (context == StoredDtc || context == PendingDtc || context == PermanentDtc || context == ClearDtc)
+            dtcOutput->append(error);
+        else if (context == FreezeFrame || context == FreezeSupportScan)
+            freezeOutput->append(error);
+        else if (context == MonitorResults)
+            monitorOutput->append(error);
+        else if (context == ModuleScan || context == SupportedPidScan)
+            discoveryOutput->append(error);
+        return;
+    }
+    if (message.service != activeMode + 0x40) return;
+    connectionStatus->setText(tr("ECU responding"));
+    responseTimer.start(900);
+    QByteArray payload = message.payload();
     if (context == LivePid)
     {
         if (payload.isEmpty() || quint8(payload[0]) != activePid) return;
         payload.remove(0, 1);
-        QString current = pidTable->item(activePidRow, PidResponses)->text();
+        QString current;
+        if (activePidHadResponse)
+            current = pidTable->item(activePidRow, PidResponses)->text();
+        activePidHadResponse = true;
+        pidTable->item(activePidRow, PidRaw)->setText(
+            ecu + QStringLiteral(": ") + QString::fromLatin1(payload.toHex(' ').toUpper()));
         if (!current.isEmpty()) current += QStringLiteral(" | ");
         const QString rowFormat = pidTable->item(activePidRow, PidFormat)->text().trimmed();
         QString decoded;
@@ -1932,6 +2383,8 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
     else if (context == VehicleInfo && !payload.isEmpty() && quint8(payload[0]) == activePid)
     {
         payload.remove(0, 1);
+        if (vehicleOutput->toPlainText().contains(tr("response pending...")))
+            vehicleOutput->clear();
         vehicleOutput->append(ecu + QStringLiteral(": ") + decodeVehicleInfo(activePid, payload));
     }
     else if (context == FreezeFrame && payload.size() >= 2 && quint8(payload[0]) == activePid)
@@ -1985,7 +2438,11 @@ void OBD2WorkbenchWindow::requestFinished()
     const Context finishedContext = context;
     context = None;
     activeMode = -1;
-    if (finishedContext == ModuleScan) refreshEcuTargets();
+    if (finishedContext == ModuleScan)
+    {
+        refreshEcuTargets();
+        refreshDiscoveryPidList();
+    }
     if (finishedContext == SupportedPidScan)
     {
         if (scanPidBases.isEmpty()) { finishSupportedPidScan(); return; }
@@ -1993,12 +2450,20 @@ void OBD2WorkbenchWindow::requestFinished()
         sendRequest(1, QByteArray(1, char(activePid)), SupportedPidScan);
         return;
     }
-    if (pidQueue.isEmpty()) { activePidRow = -1; return; }
+    if (pidQueue.isEmpty())
+    {
+        activePidRow = -1;
+        if (pollCheck->isChecked() && connected)
+            pollTimer.start(pollIntervalSpin->value());
+        return;
+    }
     activePidRow = pidQueue.takeFirst();
     bool ok = false;
     activePid = parseNumber(pidText(activePidRow), &ok);
     if (!ok || activePid > 0xFF) { pidTable->item(activePidRow, PidResponses)->setText(tr("Invalid PID")); requestFinished(); return; }
-    pidTable->item(activePidRow, PidResponses)->setText(QString());
+    activePidHadResponse = false;
+    pidTable->item(activePidRow, PidRaw)->setText(QString());
+    pidTable->item(activePidRow, PidResponses)->setText(tr("Waiting for response..."));
     sendRequest(1, QByteArray(1, char(activePid)), LivePid);
 }
 
@@ -2027,6 +2492,8 @@ void OBD2WorkbenchWindow::loadSettings()
     }
     responseMaskEdit->setText(settings.value("OBD2Workbench/ResponseMask", "0x7F8").toString());
     pollIntervalSpin->setValue(settings.value("OBD2Workbench/PollInterval", 1000).toInt());
+    liveRequestsCheck->setChecked(settings.value("OBD2Workbench/LiveRequestSource", true).toBool());
+    dashboardRequestsCheck->setChecked(settings.value("OBD2Workbench/DashboardRequestSource", true).toBool());
     const QJsonArray rows = QJsonDocument::fromJson(settings.value("OBD2Workbench/Pids").toByteArray()).array();
     loadPidRows(rows);
     dashboardColumnsSpin->setValue(settings.value("OBD2Workbench/DashboardColumns", 12).toInt());
@@ -2057,6 +2524,8 @@ void OBD2WorkbenchWindow::loadPidRows(const QJsonArray &rows)
         pidTable->item(row, PidName)->setText(item["name"].toString());
         setPidText(row, item["pid"].toString());
         pidTable->item(row, PidFormat)->setText(item["format"].toString("auto"));
+        pidTable->item(row, PidEnabled)->setData(
+            DashboardManagedRole, item["dashboardManaged"].toBool(false));
     }
 }
 
@@ -2070,6 +2539,8 @@ void OBD2WorkbenchWindow::saveSettings() const
     settings.setValue("OBD2Workbench/ResponseSpec", responseIdEdit->text());
     settings.setValue("OBD2Workbench/ResponseMask", responseMaskEdit->text());
     settings.setValue("OBD2Workbench/PollInterval", pollIntervalSpin->value());
+    settings.setValue("OBD2Workbench/LiveRequestSource", liveRequestsCheck->isChecked());
+    settings.setValue("OBD2Workbench/DashboardRequestSource", dashboardRequestsCheck->isChecked());
     settings.setValue("OBD2Workbench/Pids", QJsonDocument(pidRowsToJson()).toJson(QJsonDocument::Compact));
     settings.setValue("OBD2Workbench/DashboardColumns", dashboardColumnsSpin->value());
     settings.setValue("OBD2Workbench/DashboardPids",
@@ -2088,6 +2559,8 @@ QJsonArray OBD2WorkbenchWindow::pidRowsToJson() const
         item["name"] = pidTable->item(row, PidName)->text();
         item["pid"] = pidText(row);
         item["format"] = pidTable->item(row, PidFormat)->text();
+        item["dashboardManaged"] =
+            pidTable->item(row, PidEnabled)->data(DashboardManagedRole).toBool();
         rows.append(item);
     }
     return rows;

@@ -4,13 +4,21 @@ Open **Send Frames > OBD-II Workbench**, select the CAN bus, and connect. The de
 
 ## Live data
 
-Add Mode 01 PIDs to the table, or use the initial RPM, speed, coolant-temperature, and throttle rows. The editable lookup covers defined standardized Mode 01 PIDs through `0xA6`; select one or type a custom hexadecimal PID. Reserved and manufacturer-specific values remain available through custom entry. Enabled PIDs can be requested once or polled repeatedly.
+Add Mode 01 PIDs to the table, or use the initial RPM, speed, coolant-temperature, and throttle rows. The editable lookup covers defined standardized Mode 01 PIDs through `0xA6`; select one or type a custom hexadecimal PID. Reserved and manufacturer-specific values remain available through custom entry. The **Poll** checkbox includes a row in enabled operations. Use **Send selected once** for highlighted rows, **Send enabled once** for one pass through checked sources, and the single **Start polling** / **Stop polling** button for repeated cycles. Each cycle requests enabled PIDs sequentially, advancing as each ECU response or timeout completes. The configured delay begins only after the complete list cycle finishes.
 
 Known PIDs populate the visible payload-format expression with their standard calculation. Every row can override that expression using the same formatter as the main frame list, for example `u16be/4[rpm]{1}`, `regen:u8&1{0:Inactive,1:Active}`, or a multi-field custom layout. Enter `auto` to use the built-in decoder, or leave an unknown PID on `auto` to display its response bytes as hexadecimal.
+
+The **Raw response** column shows the reassembled bytes after the returned mode and PID, while **ECU responses** shows the decoded result. Multi-frame replies are reassembled through ISO-TP and the workbench automatically sends flow control. For a functional `0x7DF` request and a reply on `0x7E8` through `0x7EF`, flow control is sent to the corresponding physical request ID `0x7E0` through `0x7E7`. An incomplete reply now displays a timeout instead of leaving the result blank.
+
+PID `0x8B` (diesel aftertreatment status) is a compound, normally multi-frame result. Automatic formatting decodes its availability and status flags, DPF regeneration trigger, average regeneration interval, and average regeneration distance once all seven PID data bytes have arrived.
+
+Supported-PID discovery reports the ECU's Mode 01 support bitmaps. Support means the ECU recognizes the PID, but it does not guarantee a value in every operating state. The workbench displays negative-response codes for unavailable or rejected requests rather than leaving the row empty. A `0x78` response-pending reply extends the request timeout while the ECU prepares the final response.
 
 See [Payload Formatter Reference](./payload_formatter.md) for the complete custom grammar and the distinction between custom expressions and OBD `auto` decoding.
 
 Use **Save PID list** and **Load PID list** to share or restore the endpoint and complete row definitions as a JSON profile. Custom names, PIDs, enabled states, and format expressions are preserved.
+
+Use **Clear values** to clear live raw/decoded PID results without deleting configured requests. Discovery, DTC, freeze-frame, monitor, vehicle-information, trip-playback, and event-log views each have an independent clear control.
 
 The live graph plots each numeric value produced by the built-in decoder or shared formatter and can export the visible plot as a high-resolution PNG.
 
@@ -33,11 +41,17 @@ Right-click a widget to edit its PID, widget name, type, formatter, and range in
 
 The custom calculation field uses the shared payload formatter. Expressions such as `rpm:u16be/4[rpm]{1}`, enums, masks, and `asciiN` strings therefore behave the same way as the main trace and diagnostic request tables. The first formatted field drives numeric gauges and levels; text widgets can display formatted strings or the automatic PID decoder.
 
-Dashboard PIDs must also be present and actively requested on the Live data tab.
+Dashboard values update from the shared OBD polling engine.
+
+Polling is shared between the Live data and Dashboard tabs. **Poll live rows** includes checked Live data rows, while **Poll dashboard widgets** includes every PID currently used by a dashboard widget. The polling cycle uses the deduplicated union of the enabled sources, so a PID used in both places is sent only once. **Send enabled once**, the stateful polling button, and the cycle interval are available from both tabs and remain synchronized.
+
+When a dashboard widget uses a PID that is not already in Live data, the workbench creates an unchecked dashboard-managed row so raw and decoded responses remain inspectable. Removing the final widget for that PID removes only a dashboard-managed row; a row created or loaded by the user is preserved. Disabling **Poll dashboard widgets** removes those PIDs from polling without deleting the widgets or request definitions.
 
 ## Discovery
 
 **Scan modules** sends a functional Mode 01 PID 00 request and lists every ECU responding from `0x7E8` through `0x7EF`. **Scan available PIDs** checks the standard support bitmap pages from `0x00` through `0xC0` and reports support separately for each ECU. Multi-select results and choose **Add selected to Live data**; recognized PIDs receive their known name and format, while unknown PIDs are added as editable raw/custom rows.
+
+The discovery ECU selector shows either the union from **All ECUs** or the supported PID set reported by one response ID. The selector works with live scans and loaded discovery files. **Add selected to Live data** uses the currently visible ECU-filtered list.
 
 Discovered standard-address ECUs are added to the endpoint target selector. **All ECUs** uses functional request ID `0x7DF`; choosing an ECU derives its physical request ID from the response ID and narrows the response filter. The editable request ID remains available for custom addressing.
 

@@ -1,5 +1,6 @@
 #include "framesenderobject.h"
 #include "mainwindow.h"
+#include <QMutexLocker>
 
 FrameSenderObject::FrameSenderObject(const QVector<CANFrame> *frames)
 {
@@ -96,7 +97,7 @@ void FrameSenderObject::stopSending()
 {
     /* make sure we execute in mThread context */
     if( mThread_p && (mThread_p != QThread::currentThread()) ) {
-        QMetaObject::invokeMethod(this, "stopPlayback",
+        QMetaObject::invokeMethod(this, "stopSending",
                                   Qt::BlockingQueuedConnection);
         return;
     }
@@ -114,7 +115,10 @@ void FrameSenderObject::addSendRecord(FrameSendData record)
                                   Q_ARG(FrameSendData, record));
         return;
     }
+    QMutexLocker locker(&mutex);
     sendingData.append(record);
+    if (record.enabled && sendingTimer && sendingTimer->interval() > 1)
+        sendingTimer->setInterval(1);
 }
 
 void FrameSenderObject::removeSendRecord(int idx)
@@ -126,7 +130,45 @@ void FrameSenderObject::removeSendRecord(int idx)
                                   Q_ARG(int, idx));
         return;
     }
-    sendingData.removeAt(idx);
+    QMutexLocker locker(&mutex);
+    if (idx >= 0 && idx < sendingData.size()) sendingData.removeAt(idx);
+}
+
+void FrameSenderObject::setRecordEnabled(int idx, bool enabled)
+{
+    if (mThread_p && (mThread_p != QThread::currentThread())) {
+        QMetaObject::invokeMethod(this, "setRecordEnabled",
+                                  Qt::BlockingQueuedConnection,
+                                  Q_ARG(int, idx), Q_ARG(bool, enabled));
+        return;
+    }
+    QMutexLocker locker(&mutex);
+    if (idx < 0 || idx >= sendingData.size()) return;
+    sendingData[idx].enabled = enabled;
+    if (enabled)
+    {
+        for (Trigger &trigger : sendingData[idx].triggers)
+        {
+            trigger.currCount = 0;
+            trigger.msCounter = 0;
+        }
+        if (sendingTimer) sendingTimer->setInterval(1);
+    }
+}
+
+void FrameSenderObject::resetRecordCount(int idx)
+{
+    if (mThread_p && (mThread_p != QThread::currentThread())) {
+        QMetaObject::invokeMethod(this, "resetRecordCount",
+                                  Qt::BlockingQueuedConnection,
+                                  Q_ARG(int, idx));
+        return;
+    }
+    QMutexLocker locker(&mutex);
+    if (idx < 0 || idx >= sendingData.size()) return;
+    sendingData[idx].count = 0;
+    for (Trigger &trigger : sendingData[idx].triggers)
+        trigger.currCount = 0;
 }
 
 /*
@@ -152,6 +194,7 @@ void FrameSenderObject::timerTriggered()
     Trigger *trigger;
 
     sendingList.clear();
+    int nextIntervalMs = idleTimerIntervalMs;
     if(mutex.tryLock())
     {
         /*
@@ -179,6 +222,7 @@ void FrameSenderObject::timerTriggered()
                 }
                 continue; //abort any processing on this if it is not enabled.
             }
+            nextIntervalMs = qMin(nextIntervalMs, 10);
             if (sendData->triggers.count() == 0)
             {
                 //qDebug() << "No triggers to process";
@@ -193,6 +237,14 @@ void FrameSenderObject::timerTriggered()
                     continue;
                 }
                 if (!trigger->readyCount) continue; //don't tick if not ready to tick
+                if (trigger->milliseconds > 0)
+                {
+                    const qint64 remainingUs =
+                        qMax<qint64>(1000, qint64(trigger->milliseconds) * 1000
+                                              - trigger->msCounter);
+                    nextIntervalMs = qMin(nextIntervalMs,
+                                          int(qBound<qint64>(1, remainingUs / 1000, 10)));
+                }
                 //is it time to fire?
                 trigger->msCounter += elapsed; //gives proper tracking even if timer doesn't fire as fast as it should
                 //qDebug() << trigger->msCounter;
@@ -214,6 +266,8 @@ void FrameSenderObject::timerTriggered()
         //if we have any frames to send after the above then send as a batch
         if (sendingList.count() > 0) CANConManager::getInstance()->sendFrames(sendingList);
         mutex.unlock();
+        if (sendingTimer && sendingTimer->interval() != nextIntervalMs)
+            sendingTimer->setInterval(nextIntervalMs);
     }
     else
     {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN Interface"
+  short_description: "Operate SavvyCAN trace and analysis tools"
+  default_prompt: "Use @savvycan-interface to help with this SavvyCAN interface or analysis task."

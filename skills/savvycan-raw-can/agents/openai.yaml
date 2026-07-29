@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN Raw CAN"
+  short_description: "Prepare and operate raw CAN frames"
+  default_prompt: "Use @savvycan-raw-can to handle this raw CAN frame task safely."

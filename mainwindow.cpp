@@ -3,6 +3,7 @@
 #include "can_structs.h"
 #include <QDateTime>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QtSerialPort/QSerialPortInfo>
 #include "connections/canconmanager.h"
 #include "connections/connectionwindow.h"
@@ -28,8 +29,16 @@
 #include <QCheckBox>
 #include <QHeaderView>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QKeyEvent>
+#include <QMenu>
+#include <QSplitter>
+#include <QToolButton>
+#include <QStyle>
+#include <QSaveFile>
 #include <QTimer>
+#include <algorithm>
+#include <functional>
 
 /*
 Some notes on things I'd like to put into the program but haven't put on github (yet)
@@ -40,6 +49,31 @@ allow scripts to load DBC files in support of the script - maybe the graphing sy
 
 QString MainWindow::loadedFileName = "";
 MainWindow *MainWindow::selfRef = nullptr;
+
+static uint parseSenderNumber(const QString &input, bool plainHex, bool *ok)
+{
+    QString text = input.trimmed();
+    int base = 10;
+    if (text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+    {
+        text.remove(0, 2);
+        base = 16;
+    }
+    else if (text.startsWith(QStringLiteral("0b"), Qt::CaseInsensitive))
+    {
+        text.remove(0, 2);
+        base = 2;
+    }
+    else
+    {
+        bool hasHexLetter = false;
+        for (const QChar character : text)
+            hasHexLetter |= (character.toUpper() >= QLatin1Char('A')
+                             && character.toUpper() <= QLatin1Char('F'));
+        if (plainHex || hasHexLetter) base = 16;
+    }
+    return text.toUInt(ok, base);
+}
 
 MainWindow *MainWindow::getReference()
 {
@@ -416,28 +450,158 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->actionMotorControlConfig->setVisible(false);
     ui->actionSingle_Multi_State_2->setVisible(false);
 
-    QStringList headers;
-    headers << "En" << "Bus" << "ID" << "Ext" << "Rem" << "Data"
-            << "Interval" << "Count";
-    ui->tableSimpleSender->setColumnCount(8);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_EN, 70);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_BUS, 70);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_ID, 70);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_EXT, 70);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_REM, 70);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_DATA, 300);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_INTERVAL, 100);
-    ui->tableSimpleSender->setColumnWidth(SIMP_COL::SC_COL_COUNT, 100);
-    ui->tableSimpleSender->setHorizontalHeaderLabels(headers);
-
-    createSenderRow();
-
     frameSender = new FrameSenderObject(model->getListReference());
-
     frameSender->initialize(); //creates the thread and sets things up
     frameSender->startSending(); //start the timer in the object so enabled things can send
+    setupTraceSenderPanel();
 
     installEventFilter(this);
+}
+
+void MainWindow::setupTraceSenderPanel()
+{
+    traceSenderSplitter = new QSplitter(Qt::Vertical, traceWorkspace);
+    traceSenderSplitter->setObjectName(QStringLiteral("traceSenderSplitter"));
+    traceSenderSplitter->setChildrenCollapsible(false);
+
+    QLayoutItem *framesItem = ui->verticalLayout_3->takeAt(0);
+    QLayoutItem *senderItem = ui->verticalLayout_3->takeAt(0);
+    delete framesItem;
+    delete senderItem;
+    ui->canFramesView->setParent(traceSenderSplitter);
+    traceSenderSplitter->addWidget(ui->canFramesView);
+
+    traceSenderPanel = new QWidget(traceSenderSplitter);
+    traceSenderPanel->setObjectName(QStringLiteral("traceSenderPanel"));
+    QVBoxLayout *panelLayout = new QVBoxLayout(traceSenderPanel);
+    panelLayout->setContentsMargins(0, 2, 0, 0);
+    panelLayout->setSpacing(2);
+    QHBoxLayout *toolbar = new QHBoxLayout;
+    toolbar->setContentsMargins(0, 0, 0, 0);
+
+    auto tool = [this, toolbar](const QString &text, QStyle::StandardPixmap icon,
+                                const QString &tip, const std::function<void()> &handler) {
+        QToolButton *button = new QToolButton(traceSenderPanel);
+        button->setText(text);
+        button->setIcon(style()->standardIcon(icon));
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setAutoRaise(true);
+        button->setToolTip(tip);
+        connect(button, &QToolButton::clicked, this, handler);
+        toolbar->addWidget(button);
+        return button;
+    };
+
+    tool(tr("Add"), QStyle::SP_FileDialogNewFolder,
+         tr("Add a blank CAN frame"), [this]() { createSenderRow(); });
+    tool(tr("Send once"), QStyle::SP_MediaPlay,
+         tr("Transmit the selected rows once"), [this]() {
+             sendSenderRowsOnce(selectedSenderRows());
+         });
+    tool(tr("Start"), QStyle::SP_MediaSeekForward,
+         tr("Start periodic transmission for selected rows"), [this]() {
+             setSenderRowsEnabled(selectedSenderRows(), true);
+         });
+    tool(tr("Stop"), QStyle::SP_MediaPause,
+         tr("Stop selected rows"), [this]() {
+             setSenderRowsEnabled(selectedSenderRows(), false);
+         });
+    tool(tr("Stop all"), QStyle::SP_MediaStop,
+         tr("Immediately stop every Trace sender row"), [this]() {
+             QList<int> rows;
+             for (int row = 0; row < ui->tableSimpleSender->rowCount(); ++row)
+                 rows.append(row);
+             setSenderRowsEnabled(rows, false);
+         });
+    tool(tr("Delete"), QStyle::SP_TrashIcon,
+         tr("Delete selected rows"), [this]() {
+             deleteSenderRows(selectedSenderRows());
+         });
+
+    QToolButton *more = new QToolButton(traceSenderPanel);
+    more->setText(tr("More"));
+    more->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    more->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    more->setPopupMode(QToolButton::InstantPopup);
+    more->setAutoRaise(true);
+    QMenu *moreMenu = new QMenu(more);
+    moreMenu->addAction(tr("Copy selected trace frame"), this,
+                        &MainWindow::copySelectedTraceToSender);
+    moreMenu->addAction(tr("Duplicate selected rows"), this, [this]() {
+        duplicateSenderRows(selectedSenderRows());
+    });
+    moreMenu->addAction(tr("Open selected in advanced sender"), this, [this]() {
+        moveSenderRowsToAdvanced(selectedSenderRows());
+    });
+    moreMenu->addSeparator();
+    moreMenu->addAction(tr("Save sender list..."), this,
+                        &MainWindow::saveTraceSenderList);
+    moreMenu->addAction(tr("Load sender list..."), this,
+                        &MainWindow::loadTraceSenderList);
+    more->setMenu(moreMenu);
+    toolbar->addWidget(more);
+    toolbar->addStretch();
+
+    traceSenderCollapseButton = new QToolButton(traceSenderPanel);
+    traceSenderCollapseButton->setCheckable(true);
+    traceSenderCollapseButton->setAutoRaise(true);
+    traceSenderCollapseButton->setToolTip(tr("Collapse or expand the sender"));
+    connect(traceSenderCollapseButton, &QToolButton::toggled,
+            this, &MainWindow::setTraceSenderCollapsed);
+    toolbar->addWidget(traceSenderCollapseButton);
+    panelLayout->addLayout(toolbar);
+
+    ui->tableSimpleSender->setParent(traceSenderPanel);
+    panelLayout->addWidget(ui->tableSimpleSender, 1);
+    traceSenderSplitter->addWidget(traceSenderPanel);
+    ui->verticalLayout_3->addWidget(traceSenderSplitter);
+
+    QStringList headers;
+    headers << tr("Run") << tr("Bus") << tr("ID") << tr("Ext") << tr("RTR")
+            << tr("Data") << tr("Interval (ms)") << tr("Limit")
+            << tr("Sent") << tr("Status");
+    ui->tableSimpleSender->setColumnCount(headers.size());
+    ui->tableSimpleSender->setHorizontalHeaderLabels(headers);
+    ui->tableSimpleSender->setAlternatingRowColors(true);
+    ui->tableSimpleSender->setSelectionBehavior(QAbstractItemView::SelectRows);
+    ui->tableSimpleSender->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    ui->tableSimpleSender->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->tableSimpleSender, &QWidget::customContextMenuRequested,
+            this, &MainWindow::showSenderContextMenu);
+    QHeaderView *header = ui->tableSimpleSender->horizontalHeader();
+    header->setSectionsMovable(true);
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    header->setStretchLastSection(true);
+    header->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(header, &QWidget::customContextMenuRequested,
+            this, &MainWindow::showSenderHeaderMenu);
+
+    ui->tableSimpleSender->setColumnWidth(SC_COL_EN, 54);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_BUS, 52);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_ID, 90);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_EXT, 48);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_REM, 48);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_DATA, 260);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_INTERVAL, 100);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_LIMIT, 75);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_COUNT, 75);
+    ui->tableSimpleSender->setColumnWidth(SC_COL_STATUS, 120);
+    ui->tableSimpleSender->setColumnHidden(SC_COL_EXT, true);
+    ui->tableSimpleSender->setColumnHidden(SC_COL_REM, true);
+
+    QSettings settings;
+    const QByteArray headerState =
+        settings.value(QStringLiteral("Main/TraceSenderHeader")).toByteArray();
+    if (!headerState.isEmpty()) header->restoreState(headerState);
+    const QByteArray splitterState =
+        settings.value(QStringLiteral("Main/TraceSenderSplitter")).toByteArray();
+    if (!splitterState.isEmpty())
+        traceSenderSplitter->restoreState(splitterState);
+    else
+        traceSenderSplitter->setSizes({520, 165});
+    createSenderRow();
+    setTraceSenderCollapsed(settings.value(
+        QStringLiteral("Main/TraceSenderCollapsed"), false).toBool());
 }
 
 void MainWindow::setupWorkspaceTabs()
@@ -491,6 +655,29 @@ QJsonObject MainWindow::aiApplicationContext() const
     context.insert(QStringLiteral("payload_format"), ui->linePayloadFormat->text());
     context.insert(QStringLiteral("enabled_id_filters"), ui->listFilters->count());
     context.insert(QStringLiteral("connected_buses"), CANConManager::getInstance()->getNumBuses());
+    QJsonArray traceSenderRows;
+    for (int row = 0; row < ui->tableSimpleSender->rowCount(); ++row)
+    {
+        traceSenderRows.append(QJsonObject{
+            {QStringLiteral("row"), row},
+            {QStringLiteral("bus"), ui->tableSimpleSender->item(row, SC_COL_BUS)->text().toInt()},
+            {QStringLiteral("can_id"), ui->tableSimpleSender->item(row, SC_COL_ID)->text()},
+            {QStringLiteral("extended"),
+             ui->tableSimpleSender->item(row, SC_COL_EXT)->checkState() == Qt::Checked},
+            {QStringLiteral("remote"),
+             ui->tableSimpleSender->item(row, SC_COL_REM)->checkState() == Qt::Checked},
+            {QStringLiteral("payload"), ui->tableSimpleSender->item(row, SC_COL_DATA)->text()},
+            {QStringLiteral("interval_ms"),
+             ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->text().toInt()},
+            {QStringLiteral("limit"),
+             ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt()},
+            {QStringLiteral("sent"),
+             ui->tableSimpleSender->item(row, SC_COL_COUNT)->text().toInt()},
+            {QStringLiteral("status"),
+             ui->tableSimpleSender->item(row, SC_COL_STATUS)->text()}
+        });
+    }
+    context.insert(QStringLiteral("trace_sender_rows"), traceSenderRows);
     QJsonArray connections;
     for (CANConnection *connection : CANConManager::getInstance()->getConnections())
     {
@@ -525,6 +712,10 @@ QJsonObject MainWindow::aiApplicationContext() const
     }
     context.insert(QStringLiteral("main_filter_ids"), enabledFilters);
     if (snifferWindow) context.insert(QStringLiteral("sniffer"), snifferWindow->aiState());
+    if (obd2WorkbenchWindow)
+        context.insert(QStringLiteral("obd"), obd2WorkbenchWindow->aiState());
+    if (udsWorkbenchWindow)
+        context.insert(QStringLiteral("uds"), udsWorkbenchWindow->aiState());
 
     const int row = selectedPayloadSourceRow();
     if (row >= 0)
@@ -537,12 +728,104 @@ QJsonObject MainWindow::aiApplicationContext() const
             {QStringLiteral("payload"), QString::fromLatin1(frame.payload().toHex(' ').toUpper())}
         });
     }
+    QJsonArray dbcFiles;
+    int remainingMessages = 128;
+    int remainingSignals = 512;
+    for (int fileIndex = 0; dbcHandler && fileIndex < dbcHandler->getFileCount(); ++fileIndex)
+    {
+        DBCFile *file = dbcHandler->getFileByIdx(fileIndex);
+        if (!file) continue;
+        QJsonArray messages;
+        for (int messageIndex = 0;
+             messageIndex < file->messageHandler->getCount() && remainingMessages > 0;
+             ++messageIndex, --remainingMessages)
+        {
+            DBC_MESSAGE *message = file->messageHandler->findMsgByIdx(messageIndex);
+            QJsonArray signalDefinitions;
+            for (int signalIndex = 0;
+                 signalIndex < message->sigHandler->getCount() && remainingSignals > 0;
+                 ++signalIndex, --remainingSignals)
+            {
+                DBC_SIGNAL *signal = message->sigHandler->findSignalByIdx(signalIndex);
+                QJsonArray values;
+                for (const DBC_VAL_ENUM_ENTRY &entry : signal->valList)
+                    values.append(QJsonObject{{QStringLiteral("value"), entry.value},
+                                              {QStringLiteral("label"), entry.descript}});
+                QString valueType = QStringLiteral("unsigned");
+                if (signal->valType == SIGNED_INT) valueType = QStringLiteral("signed");
+                else if (signal->valType == SP_FLOAT) valueType = QStringLiteral("float32");
+                else if (signal->valType == DP_FLOAT) valueType = QStringLiteral("float64");
+                else if (signal->valType == STRING) valueType = QStringLiteral("string");
+                signalDefinitions.append(QJsonObject{
+                    {QStringLiteral("name"), signal->name},
+                    {QStringLiteral("start_bit"), signal->startBit},
+                    {QStringLiteral("bit_length"), signal->signalSize},
+                    {QStringLiteral("little_endian"), signal->intelByteOrder},
+                    {QStringLiteral("value_type"), valueType},
+                    {QStringLiteral("factor"), signal->factor},
+                    {QStringLiteral("offset"), signal->bias},
+                    {QStringLiteral("minimum"), signal->min},
+                    {QStringLiteral("maximum"), signal->max},
+                    {QStringLiteral("unit"), signal->unitName},
+                    {QStringLiteral("receiver"), signal->receiver ? signal->receiver->name : QString()},
+                    {QStringLiteral("multiplexor"), signal->isMultiplexor},
+                    {QStringLiteral("multiplexed"), signal->isMultiplexed},
+                    {QStringLiteral("multiplex_values"), signal->multiplexDbcString(DBC_SIGNAL::MuxStringFormat_UI)},
+                    {QStringLiteral("multiplex_parent"), signal->multiplexParent
+                         ? signal->multiplexParent->name : QString()},
+                    {QStringLiteral("values"), values}
+                });
+            }
+            messages.append(QJsonObject{
+                {QStringLiteral("can_id"), QStringLiteral("0x%1").arg(message->ID, 0, 16).toUpper()},
+                {QStringLiteral("extended"), message->extendedID},
+                {QStringLiteral("name"), message->name},
+                {QStringLiteral("length"), int(message->len)},
+                {QStringLiteral("sender"), message->sender ? message->sender->name : QString()},
+                {QStringLiteral("signal_count"), message->sigHandler->getCount()},
+                {QStringLiteral("signals_truncated"),
+                 signalDefinitions.size() < message->sigHandler->getCount()},
+                {QStringLiteral("signals"), signalDefinitions}
+            });
+        }
+        QJsonArray nodes;
+        for (const DBC_NODE &node : file->dbc_nodes) nodes.append(node.name);
+        dbcFiles.append(QJsonObject{
+            {QStringLiteral("file_index"), fileIndex},
+            {QStringLiteral("filename"), file->getFullFilename()},
+            {QStringLiteral("bus"), file->getAssocBus()},
+            {QStringLiteral("dirty"), file->getDirtyFlag()},
+            {QStringLiteral("nodes"), nodes},
+            {QStringLiteral("message_count"), file->messageHandler->getCount()},
+            {QStringLiteral("messages"), messages},
+            {QStringLiteral("messages_truncated"),
+             messages.size() < file->messageHandler->getCount()}
+        });
+    }
+    context.insert(QStringLiteral("dbc_files"), dbcFiles);
     return context;
 }
 
 void MainWindow::handleAIActions(const QJsonArray &actions)
 {
     if (actions.isEmpty()) return;
+    if (aiWorkbenchWindow->previewActionsOnly())
+    {
+        for (const QJsonValue &value : actions)
+        {
+            const QJsonObject action = value.toObject();
+            QString validationError;
+            if (!AIActionRegistry::validate(action, &validationError))
+            {
+                aiWorkbenchWindow->recordActionResult(
+                    action.value(QStringLiteral("capability")).toString(),
+                    false, tr("Preview validation failed: %1").arg(validationError));
+                return;
+            }
+        }
+        aiWorkbenchWindow->recordActionPreview(actions);
+        return;
+    }
     QStringList summary;
     bool includesTransmission = false;
     for (const QJsonValue &value : actions)
@@ -574,7 +857,9 @@ void MainWindow::handleAIActions(const QJsonArray &actions)
         return;
     }
     setProperty("aiBatchApproved", true);
+    aiWorkbenchWindow->beginActionBatch(actions.size());
     for (const QJsonValue &value : actions) handleAIAction(value.toObject());
+    aiWorkbenchWindow->endActionBatch();
     setProperty("aiBatchApproved", false);
 }
 
@@ -608,6 +893,12 @@ void MainWindow::handleAIAction(const QJsonObject &action)
         const QString value = text(key);
         return value.isEmpty() ? fallback : Utility::ParseStringToNum(value);
     };
+    auto rowList = [&arguments]() {
+        QList<int> rows;
+        for (const QJsonValue &value : arguments.value(QStringLiteral("rows")).toArray())
+            rows.append(value.toInt(-1));
+        return rows;
+    };
 
     const AIActionRegistry::Risk risk = AIActionRegistry::risk(definition);
     if (risk == AIActionRegistry::ConfirmSend || risk == AIActionRegistry::ArmedConfirmSend)
@@ -633,29 +924,59 @@ void MainWindow::handleAIAction(const QJsonObject &action)
         const QString target = definition.value(QStringLiteral("ui")).toString();
         QString executionError;
         bool executed = false;
+        QString operation = arguments.value(QStringLiteral("operation")).toString();
+        if (operation.isEmpty()) operation = capability.section(QLatin1Char('.'), 1);
         if (target.contains(QStringLiteral("UDS"))) {
             showUDSWorkbenchWindow();
             executed = udsWorkbenchWindow->executeAIRequest(
-                arguments.value(QStringLiteral("operation")).toString(), arguments, &executionError);
+                operation, arguments, &executionError);
         }
         else if (target.contains(QStringLiteral("OBD"))) {
             showOBD2WorkbenchWindow();
             executed = obd2WorkbenchWindow->executeAIRequest(
-                arguments.value(QStringLiteral("operation")).toString(), arguments, &executionError);
+                operation, arguments, &executionError);
         }
         else if (target.contains(QStringLiteral("CANopen"))) {
             showCANopenWorkbenchWindow();
-            const QString operation = capability == QStringLiteral("canopen.write")
-                ? QStringLiteral("write") : arguments.value(QStringLiteral("operation")).toString();
-            executed = canopenWorkbenchWindow->executeAIRequest(operation, arguments, &executionError);
+            const QString canopenOperation = capability == QStringLiteral("canopen.write")
+                ? QStringLiteral("write")
+                : (arguments.value(QStringLiteral("operation")).toString().isEmpty()
+                    ? capability.section(QLatin1Char('.'), 1)
+                    : arguments.value(QStringLiteral("operation")).toString());
+            executed = canopenWorkbenchWindow->executeAIRequest(
+                canopenOperation, arguments, &executionError);
         }
         else if (target.contains(QStringLiteral("Fuzz"))) {
             showFuzzingWindow();
             executed = fuzzingWindow->startForDuration(
                 arguments.value(QStringLiteral("duration_ms")).toInt(1000), &executionError);
         }
+        else if (target.contains(QStringLiteral("Playback"))) {
+            showPlaybackWindow();
+            executed = playbackWindow->executeAIRequest(operation, arguments, &executionError);
+        }
+        else if (target.contains(QStringLiteral("Trace Sender"))) {
+            activateWorkspace(traceWorkspace, tr("CAN Trace"));
+            const QList<int> rows = rowList();
+            if (capability == QStringLiteral("trace_sender.start"))
+                executed = setSenderRowsEnabled(rows, true, &executionError);
+            else if (capability == QStringLiteral("trace_sender.send_once"))
+                executed = sendSenderRowsOnce(rows, &executionError);
+        }
         else if (target.contains(QStringLiteral("Frame"))) {
-            if (capability == QStringLiteral("frame.send_once")
+            if (capability == QStringLiteral("frame.set_enabled")) {
+                showFrameSenderWindow();
+                executed = frameSenderWindow->setDraftRowEnabled(
+                    arguments.value(QStringLiteral("row")).toInt(-1),
+                    arguments.value(QStringLiteral("enabled")).toBool(), &executionError);
+            }
+            else if (capability == QStringLiteral("frame.set_all_enabled")) {
+                showFrameSenderWindow();
+                frameSenderWindow->setAllDraftRowsEnabled(
+                    arguments.value(QStringLiteral("enabled")).toBool());
+                executed = true;
+            }
+            else if (capability == QStringLiteral("frame.send_once")
                 || capability == QStringLiteral("frame.send_loop"))
             {
                 QByteArray payload;
@@ -733,17 +1054,26 @@ void MainWindow::handleAIAction(const QJsonObject &action)
         else if (target == QStringLiteral("obd")) showOBD2WorkbenchWindow();
         else if (target == QStringLiteral("canopen")) showCANopenWorkbenchWindow();
         else if (target == QStringLiteral("bus_diagnostics")) showBusDiagnosticsWindow();
+        else if (target == QStringLiteral("diagnostic_simulator")) showDiagnosticSimulatorWindow();
         else if (target == QStringLiteral("ai")) showAIWorkbenchWindow();
         else if (target == QStringLiteral("fuzzing")) showFuzzingWindow();
         else if (target == QStringLiteral("frame_sender")) showFrameSenderWindow();
         else if (target == QStringLiteral("scripting")) showScriptingWindow();
         else if (target == QStringLiteral("sniffer")) showSnifferWindow();
         else if (target == QStringLiteral("graphing")) showGraphingWindow();
+        else if (target == QStringLiteral("temporal_graph")) showTemporalGraphWindow();
         else if (target == QStringLiteral("playback")) showPlaybackWindow();
         else if (target == QStringLiteral("dbc")) showDBCFileWindow();
+        else if (target == QStringLiteral("dbc_compare")) showDBCComparisonWindow();
         else if (target == QStringLiteral("connection")) showConnectionSettingsWindow();
         else if (target == QStringLiteral("isotp")) showISOInterpreterWindow();
         else if (target == QStringLiteral("bridge")) showCANBridgeWindow();
+        else if (target == QStringLiteral("uds_scanner")) showUDSScanWindow();
+        else if (target == QStringLiteral("uds_firmware")) showUDSFirmwareUploaderWindow();
+        else if (target == QStringLiteral("signal_viewer")) showSignalViewer();
+        else if (target == QStringLiteral("flow_view")) showFlowViewWindow();
+        else if (target == QStringLiteral("range")) showRangeWindow();
+        else if (target == QStringLiteral("bisect")) showBisectWindow();
         else QMessageBox::warning(this, tr("AI action rejected"), tr("Unknown tool target: %1").arg(target));
         aiWorkbenchWindow->recordActionResult(capability, true, tr("Tool opened"));
         return;
@@ -779,6 +1109,18 @@ void MainWindow::handleAIAction(const QJsonObject &action)
         showOBD2WorkbenchWindow();
         applied = true;
     }
+    else if (capability.startsWith(QStringLiteral("uds.")))
+    {
+        applied = udsWorkbenchWindow->executeAIRequest(
+            capability.section(QLatin1Char('.'), 1), arguments, &error);
+        showUDSWorkbenchWindow();
+    }
+    else if (capability.startsWith(QStringLiteral("obd.")))
+    {
+        applied = obd2WorkbenchWindow->executeAIRequest(
+            capability.section(QLatin1Char('.'), 1), arguments, &error);
+        showOBD2WorkbenchWindow();
+    }
     else if (capability == QStringLiteral("canopen.add_object"))
     {
         applied = canopenWorkbenchWindow->addObjectDefinition(
@@ -787,6 +1129,12 @@ void MainWindow::handleAIAction(const QJsonObject &action)
             text(QStringLiteral("data_type")), text(QStringLiteral("access"), QStringLiteral("rw")),
             text(QStringLiteral("value")), &error);
         if (applied) showCANopenWorkbenchWindow();
+    }
+    else if (capability.startsWith(QStringLiteral("canopen.")))
+    {
+        applied = canopenWorkbenchWindow->executeAIRequest(
+            capability.section(QLatin1Char('.'), 1), arguments, &error);
+        showCANopenWorkbenchWindow();
     }
     else if (capability == QStringLiteral("fuzz.configure"))
     {
@@ -816,6 +1164,113 @@ void MainWindow::handleAIAction(const QJsonObject &action)
                 number(QStringLiteral("bus")), number(QStringLiteral("can_id")),
                 arguments.value(QStringLiteral("extended")).toBool(false), payload, &error);
         }
+    }
+    else if (capability == QStringLiteral("frame.update_draft"))
+    {
+        showFrameSenderWindow();
+        applied = frameSenderWindow->updateDraftRow(
+            number(QStringLiteral("row"), -1), arguments, &error);
+    }
+    else if (capability == QStringLiteral("frame.set_enabled"))
+    {
+        showFrameSenderWindow();
+        applied = frameSenderWindow->setDraftRowEnabled(
+            number(QStringLiteral("row"), -1),
+            arguments.value(QStringLiteral("enabled")).toBool(), &error);
+    }
+    else if (capability == QStringLiteral("frame.remove_rows"))
+    {
+        QList<int> rows;
+        for (const QJsonValue &value : arguments.value(QStringLiteral("rows")).toArray())
+            rows.append(value.toInt(-1));
+        showFrameSenderWindow();
+        applied = frameSenderWindow->removeDraftRows(rows, &error);
+    }
+    else if (capability == QStringLiteral("frame.clear"))
+    {
+        showFrameSenderWindow();
+        error = tr("Removed %1 Frame Sender row(s)").arg(frameSenderWindow->clearDraftRows());
+        applied = true;
+    }
+    else if (capability == QStringLiteral("frame.set_all_enabled"))
+    {
+        showFrameSenderWindow();
+        frameSenderWindow->setAllDraftRowsEnabled(
+            arguments.value(QStringLiteral("enabled")).toBool());
+        applied = true;
+    }
+    else if (capability == QStringLiteral("frame.save_grid"))
+    {
+        showFrameSenderWindow();
+        applied = frameSenderWindow->saveDraftGrid(text(QStringLiteral("path")), &error);
+    }
+    else if (capability == QStringLiteral("frame.load_grid"))
+    {
+        showFrameSenderWindow();
+        applied = frameSenderWindow->loadDraftGrid(text(QStringLiteral("path")), &error);
+    }
+    else if (capability == QStringLiteral("trace_sender.add"))
+    {
+        const int row = createSenderRow();
+        QJsonObject values = arguments;
+        if (!values.contains(QStringLiteral("interval_ms")))
+            values.insert(QStringLiteral("interval_ms"), 100);
+        if (!values.contains(QStringLiteral("limit")))
+            values.insert(QStringLiteral("limit"), 0);
+        applied = updateTraceSenderRow(row, values, &error);
+        if (!applied) deleteSenderRows({row});
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.update"))
+    {
+        applied = updateTraceSenderRow(number(QStringLiteral("row"), -1),
+                                       arguments, &error);
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.remove"))
+    {
+        const QList<int> rows = rowList();
+        applied = !rows.isEmpty();
+        if (applied) deleteSenderRows(rows);
+        else error = tr("Select at least one Trace sender row.");
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.clear"))
+    {
+        QList<int> rows;
+        for (int row = 0; row < ui->tableSimpleSender->rowCount(); ++row)
+            rows.append(row);
+        deleteSenderRows(rows);
+        applied = true;
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.stop"))
+    {
+        applied = setSenderRowsEnabled(rowList(), false, &error);
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.copy_selected"))
+    {
+        applied = ui->canFramesView->currentIndex().isValid();
+        if (applied) copySelectedTraceToSender();
+        else error = tr("Select a CAN Trace row first.");
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.to_advanced"))
+    {
+        const QList<int> rows = rowList();
+        applied = !rows.isEmpty();
+        if (applied) moveSenderRowsToAdvanced(rows);
+        else error = tr("Select at least one Trace sender row.");
+    }
+    else if (capability == QStringLiteral("trace_sender.save"))
+    {
+        applied = saveTraceSenderListToPath(text(QStringLiteral("path")), &error);
+    }
+    else if (capability == QStringLiteral("trace_sender.load"))
+    {
+        applied = loadTraceSenderListFromPath(text(QStringLiteral("path")), &error);
+        if (applied) activateWorkspace(traceWorkspace, tr("CAN Trace"));
     }
     else if (capability == QStringLiteral("connection.reconnect"))
     {
@@ -869,6 +1324,321 @@ void MainWindow::handleAIAction(const QJsonObject &action)
             activateWorkspace(traceWorkspace, tr("CAN Trace"));
             applied = true;
         }
+    }
+    else if (capability == QStringLiteral("filter.clear"))
+    {
+        model->setAllFilters(false);
+        updateFilterList();
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+        applied = true;
+    }
+    else if (capability == QStringLiteral("filter.set_range")
+             || capability == QStringLiteral("filter.set_mask"))
+    {
+        const int start = number(QStringLiteral("start_id"), -1);
+        const int end = number(QStringLiteral("end_id"), -1);
+        const int filter = number(QStringLiteral("filter"), -1);
+        const int mask = number(QStringLiteral("mask"), -1);
+        const bool enabled = arguments.value(QStringLiteral("enabled")).toBool(true);
+        const bool rangeMode = capability.endsWith(QStringLiteral("set_range"));
+        if ((rangeMode && (start < 0 || end < start || end > 0x1FFFFFFF))
+            || (!rangeMode && (filter < 0 || mask < 0 || filter > 0x1FFFFFFF
+                               || mask > 0x1FFFFFFF))) {
+            error = tr("Invalid CAN filter range or mask.");
+        } else {
+            const QMap<int, bool> filters = *model->getFiltersReference();
+            int changed = 0;
+            for (auto it = filters.constBegin(); it != filters.constEnd(); ++it) {
+                const bool match = rangeMode
+                    ? (it.key() >= start && it.key() <= end)
+                    : ((it.key() & mask) == (filter & mask));
+                if (match) {
+                    model->setFilterState(it.key(), enabled);
+                    ++changed;
+                }
+            }
+            error = tr("Updated %1 known CAN-ID filter(s)").arg(changed);
+            updateFilterList();
+            activateWorkspace(traceWorkspace, tr("CAN Trace"));
+            applied = true;
+        }
+    }
+    else if (capability == QStringLiteral("filter.save_profile"))
+    {
+        const QString path = text(QStringLiteral("path"));
+        model->saveFilterFile(path);
+        applied = QFileInfo(path).exists();
+        if (!applied) error = tr("Could not save the filter profile.");
+    }
+    else if (capability == QStringLiteral("filter.load_profile"))
+    {
+        const QString path = text(QStringLiteral("path"));
+        if (!QFileInfo::exists(path)) error = tr("Filter profile does not exist.");
+        else {
+            model->loadFilterFile(path);
+            updateFilterList();
+            activateWorkspace(traceWorkspace, tr("CAN Trace"));
+            applied = true;
+        }
+    }
+    else if (capability.startsWith(QStringLiteral("playback.")))
+    {
+        showPlaybackWindow();
+        applied = playbackWindow->executeAIRequest(
+            capability.section(QLatin1Char('.'), 1), arguments, &error);
+    }
+    else if (capability.startsWith(QStringLiteral("sniffer.")))
+    {
+        showSnifferWindow();
+        applied = snifferWindow->executeAIRequest(
+            capability.section(QLatin1Char('.'), 1), arguments, &error);
+    }
+    else if (capability.startsWith(QStringLiteral("dbc.")))
+    {
+        const QString operation = capability.section(QLatin1Char('.'), 1);
+        const int fileIndex = number(QStringLiteral("file_index"), dbcHandler->getFileCount() - 1);
+        DBCFile *file = dbcHandler->getFileByIdx(fileIndex);
+        if (operation == QStringLiteral("load")) {
+            file = dbcHandler->loadDBCFile(text(QStringLiteral("path")));
+            applied = file != nullptr;
+            if (applied && arguments.contains(QStringLiteral("bus")))
+                file->setAssocBus(number(QStringLiteral("bus"), -1));
+        }
+        else if (operation == QStringLiteral("create")) {
+            const int count = dbcHandler->createBlankFile();
+            file = dbcHandler->getFileByIdx(count - 1);
+            if (file && arguments.contains(QStringLiteral("bus")))
+                file->setAssocBus(number(QStringLiteral("bus"), -1));
+            applied = file != nullptr;
+        }
+        else if (!file) error = tr("DBC file index does not exist.");
+        else if (operation == QStringLiteral("save")) {
+            applied = file->saveFile(text(QStringLiteral("path")));
+        }
+        else if (operation == QStringLiteral("close")) {
+            dbcHandler->removeDBCFile(fileIndex);
+            applied = true;
+        }
+        else if (operation == QStringLiteral("assign_bus")) {
+            file->setAssocBus(number(QStringLiteral("bus"), -1));
+            file->setDirtyFlag();
+            applied = true;
+        }
+        else if (operation == QStringLiteral("add_node")) {
+            const QString name = text(QStringLiteral("name")).trimmed();
+            if (name.isEmpty() || file->findNodeByName(name))
+                error = tr("DBC node name is empty or already exists.");
+            else {
+                DBC_NODE node;
+                node.name = name;
+                node.comment = text(QStringLiteral("comment"));
+                file->dbc_nodes.append(node);
+                file->setDirtyFlag();
+                applied = true;
+            }
+        }
+        else if (operation == QStringLiteral("remove_node")) {
+            DBC_NODE *node = file->findNodeByName(text(QStringLiteral("name")));
+            bool referenced = node && !file->messageHandler->findMsgsByNode(node).isEmpty();
+            for (int i = 0; node && !referenced && i < file->messageHandler->getCount(); ++i) {
+                DBC_MESSAGE *message = file->messageHandler->findMsgByIdx(i);
+                for (int s = 0; s < message->sigHandler->getCount(); ++s)
+                    referenced = referenced
+                        || message->sigHandler->findSignalByIdx(s)->receiver == node;
+            }
+            if (!node) error = tr("DBC node was not found.");
+            else if (referenced) error = tr("DBC node is still referenced by a message or signal.");
+            else {
+                for (int i = 0; i < file->dbc_nodes.size(); ++i)
+                    if (&file->dbc_nodes[i] == node) { file->dbc_nodes.removeAt(i); break; }
+                file->setDirtyFlag();
+                applied = true;
+            }
+        }
+        else {
+            const quint32 canId = quint32(number(QStringLiteral("can_id"), -1));
+            DBC_MESSAGE *message = file->messageHandler->findMsgByID(canId);
+            if (operation == QStringLiteral("add_message")) {
+                if (message) error = tr("A DBC message already uses that CAN ID.");
+                else {
+                    DBC_MESSAGE created;
+                    created.ID = canId;
+                    created.extendedID = arguments.value(QStringLiteral("extended")).toBool(canId > 0x7FF);
+                    created.name = text(QStringLiteral("name"));
+                    created.comment = text(QStringLiteral("comment"));
+                    created.len = qBound(0, int(number(QStringLiteral("length"), 8)), 64);
+                    created.sender = file->findNodeByName(text(QStringLiteral("sender")));
+                    if (!created.sender && !file->dbc_nodes.isEmpty())
+                        created.sender = &file->dbc_nodes[0];
+                    applied = file->messageHandler->addMessage(created);
+                }
+            }
+            else if (!message) error = tr("DBC message was not found.");
+            else if (operation == QStringLiteral("remove_message")) {
+                applied = file->messageHandler->removeMessage(canId);
+            }
+            else if (operation == QStringLiteral("update_message")) {
+                if (arguments.contains(QStringLiteral("new_can_id")))
+                    message->ID = quint32(number(QStringLiteral("new_can_id")));
+                if (arguments.contains(QStringLiteral("extended")))
+                    message->extendedID = arguments.value(QStringLiteral("extended")).toBool();
+                if (arguments.contains(QStringLiteral("name")))
+                    message->name = text(QStringLiteral("name"));
+                if (arguments.contains(QStringLiteral("comment")))
+                    message->comment = text(QStringLiteral("comment"));
+                if (arguments.contains(QStringLiteral("length")))
+                    message->len = qBound(0, int(number(QStringLiteral("length"))), 64);
+                if (arguments.contains(QStringLiteral("sender"))) {
+                    DBC_NODE *sender = file->findNodeByName(text(QStringLiteral("sender")));
+                    if (sender) message->sender = sender;
+                    else error = tr("DBC sender node was not found.");
+                }
+                applied = error.isEmpty();
+            }
+            else {
+                const QString signalName = operation == QStringLiteral("add_signal")
+                    ? text(QStringLiteral("name")) : text(QStringLiteral("signal"));
+                DBC_SIGNAL *signal = message->sigHandler->findSignalByName(signalName);
+                if (operation == QStringLiteral("remove_signal")) {
+                    if (!signal) error = tr("DBC signal was not found.");
+                    else {
+                        if (signal->multiplexParent)
+                            signal->multiplexParent->multiplexedChildren.removeAll(signal);
+                        for (int index = 0; index < signal->multiplexedChildren.size(); ++index)
+                            signal->multiplexedChildren[index]->multiplexParent = nullptr;
+                        if (message->multiplexorSignal == signal)
+                            message->multiplexorSignal = nullptr;
+                        applied = message->sigHandler->removeSignal(signalName);
+                    }
+                }
+                else if (operation == QStringLiteral("add_signal") && signal)
+                    error = tr("DBC signal name already exists in the message.");
+                else {
+                    DBC_SIGNAL created;
+                    DBC_SIGNAL *target = signal;
+                    if (operation == QStringLiteral("add_signal")) {
+                        created.name = text(QStringLiteral("name"));
+                        created.parentMessage = message;
+                        target = &created;
+                    } else if (!target) {
+                        error = tr("DBC signal was not found.");
+                    }
+                    if (target) {
+                        if (arguments.contains(QStringLiteral("name"))) target->name = text(QStringLiteral("name"));
+                        if (arguments.contains(QStringLiteral("byte_offset")))
+                            target->startBit = qMax(0, int(number(QStringLiteral("byte_offset")))) * 8;
+                        else if (arguments.contains(QStringLiteral("start_bit")))
+                            target->startBit = number(QStringLiteral("start_bit"));
+                        if (arguments.contains(QStringLiteral("byte_length")))
+                            target->signalSize = qBound(1,
+                                int(number(QStringLiteral("byte_length"))) * 8, 64);
+                        else if (arguments.contains(QStringLiteral("bit_length")))
+                            target->signalSize = qBound(1, int(number(QStringLiteral("bit_length"))), 64);
+                        if (arguments.contains(QStringLiteral("little_endian"))) target->intelByteOrder = arguments.value(QStringLiteral("little_endian")).toBool();
+                        if (arguments.contains(QStringLiteral("value_type"))) {
+                            const QString type = text(QStringLiteral("value_type")).toLower();
+                            const QMap<QString, DBC_SIG_VAL_TYPE> types = {
+                                {QStringLiteral("unsigned"), UNSIGNED_INT},
+                                {QStringLiteral("signed"), SIGNED_INT},
+                                {QStringLiteral("float32"), SP_FLOAT},
+                                {QStringLiteral("float64"), DP_FLOAT},
+                                {QStringLiteral("string"), STRING}
+                            };
+                            if (types.contains(type)) target->valType = types.value(type);
+                            else error = tr("Unsupported DBC signal value type.");
+                        } else if (arguments.contains(QStringLiteral("signed"))) {
+                            target->valType = arguments.value(QStringLiteral("signed")).toBool()
+                                ? SIGNED_INT : UNSIGNED_INT;
+                        }
+                        if (arguments.contains(QStringLiteral("factor"))) target->factor = arguments.value(QStringLiteral("factor")).toDouble();
+                        if (arguments.contains(QStringLiteral("offset"))) target->bias = arguments.value(QStringLiteral("offset")).toDouble();
+                        if (arguments.contains(QStringLiteral("minimum"))) target->min = arguments.value(QStringLiteral("minimum")).toDouble();
+                        if (arguments.contains(QStringLiteral("maximum"))) target->max = arguments.value(QStringLiteral("maximum")).toDouble();
+                        if (arguments.contains(QStringLiteral("unit"))) target->unitName = text(QStringLiteral("unit"));
+                        if (arguments.contains(QStringLiteral("comment"))) target->comment = text(QStringLiteral("comment"));
+                        if (arguments.contains(QStringLiteral("receiver"))) {
+                            DBC_NODE *receiver = file->findNodeByName(text(QStringLiteral("receiver")));
+                            if (receiver) target->receiver = receiver;
+                            else error = tr("DBC receiver node was not found.");
+                        }
+                        if (arguments.contains(QStringLiteral("values"))) {
+                            target->valList.clear();
+                            for (const QJsonValue &value :
+                                 arguments.value(QStringLiteral("values")).toArray()) {
+                                const QJsonObject item = value.toObject();
+                                if (!item.contains(QStringLiteral("value"))
+                                    || !item.contains(QStringLiteral("label"))) {
+                                    error = tr("Every DBC enum entry needs value and label.");
+                                    break;
+                                }
+                                DBC_VAL_ENUM_ENTRY entry;
+                                entry.value = item.value(QStringLiteral("value")).toInt();
+                                entry.descript = item.value(QStringLiteral("label")).toString();
+                                target->valList.append(entry);
+                            }
+                        }
+                        DBC_SIGNAL *multiplexParent = nullptr;
+                        if (arguments.contains(QStringLiteral("multiplex_parent"))) {
+                            multiplexParent = message->sigHandler->findSignalByName(
+                                text(QStringLiteral("multiplex_parent")));
+                            if (!multiplexParent || !multiplexParent->isMultiplexor)
+                                error = tr("Multiplex parent must name a multiplexor signal in the same message.");
+                        }
+                        if (arguments.contains(QStringLiteral("multiplex_role"))) {
+                            const QString role = text(QStringLiteral("multiplex_role")).toLower();
+                            if (role == QStringLiteral("none")) {
+                                target->isMultiplexor = false;
+                                target->isMultiplexed = false;
+                            } else if (role == QStringLiteral("multiplexor")) {
+                                target->isMultiplexor = true;
+                                target->isMultiplexed = false;
+                            } else if (role == QStringLiteral("multiplexed")) {
+                                target->isMultiplexor = false;
+                                target->isMultiplexed = true;
+                            } else if (role == QStringLiteral("both")) {
+                                target->isMultiplexor = true;
+                                target->isMultiplexed = true;
+                            } else error = tr("Invalid DBC multiplex role.");
+                        }
+                        if (arguments.contains(QStringLiteral("multiplex_values"))) {
+                            QString multiplexError;
+                            if (!target->parseDbcMultiplexUiString(
+                                    text(QStringLiteral("multiplex_values")), multiplexError))
+                                error = multiplexError;
+                        }
+                        if (target->isMultiplexed && !multiplexParent
+                            && !arguments.contains(QStringLiteral("multiplex_parent"))
+                            && operation != QStringLiteral("add_signal"))
+                            multiplexParent = target->multiplexParent;
+                        if (target->isMultiplexed && !multiplexParent)
+                            error = tr("A multiplexed signal requires multiplex_parent.");
+
+                        if (operation == QStringLiteral("add_signal") && error.isEmpty()) {
+                            applied = message->sigHandler->addSignal(created);
+                            if (applied) target = message->sigHandler->findSignalByName(created.name);
+                        } else applied = error.isEmpty();
+                        if (applied && target) {
+                            if (target->multiplexParent
+                                && target->multiplexParent != multiplexParent)
+                                target->multiplexParent->multiplexedChildren.removeAll(target);
+                            target->multiplexParent = target->isMultiplexed
+                                ? multiplexParent : nullptr;
+                            if (target->multiplexParent
+                                && !target->multiplexParent->multiplexedChildren.contains(target))
+                                target->multiplexParent->multiplexedChildren.append(target);
+                            if (target->isMultiplexor) message->multiplexorSignal = target;
+                            else if (message->multiplexorSignal == target)
+                                message->multiplexorSignal = nullptr;
+                        }
+                    }
+                }
+            }
+            if (applied) file->setDirtyFlag();
+        }
+        if (applied) {
+            model->sendRefresh();
+            showDBCFileWindow();
+        } else if (error.isEmpty()) error = tr("DBC operation could not be applied.");
     }
     else if (capability == QStringLiteral("graph.add"))
     {
@@ -1536,7 +2306,8 @@ void MainWindow::editPayloadFormatVisually()
         tr("Factor"), tr("Divisor"), tr("Bias"), tr("Unit"), tr("Precision")};
     table->setColumnCount(headers.size());
     table->setHorizontalHeaderLabels(headers);
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    table->resizeColumnsToContents();
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table->horizontalHeader()->setStretchLastSection(true);
     dialogLayout->addWidget(table);
 
@@ -1691,6 +2462,12 @@ void MainWindow::writeSettings()
     QSettings settings;
     settings.setValue("Main/PayloadDockState", saveState());
     settings.setValue("Main/PayloadDockArea", static_cast<int>(dockWidgetArea(payloadDock)));
+    if (ui->tableSimpleSender && ui->tableSimpleSender->horizontalHeader())
+        settings.setValue(QStringLiteral("Main/TraceSenderHeader"),
+                          ui->tableSimpleSender->horizontalHeader()->saveState());
+    if (traceSenderSplitter)
+        settings.setValue(QStringLiteral("Main/TraceSenderSplitter"),
+                          traceSenderSplitter->saveState());
 
     if (settings.value("Main/SaveRestorePositions", false).toBool())
     {
@@ -1711,18 +2488,12 @@ void MainWindow::writeSettings()
 void MainWindow::onSenderCellChanged(int row, int col)
 {
     if (inhibitSenderChanged) return;
-    qDebug() << "onCellChanged";
-    if (row == ui->tableSimpleSender->rowCount() - 1)
-    {
-        createSenderRow();
-    }
-
     processSenderCellChange(row, col);
+    updateSenderRowStatus(row);
 }
 
 void MainWindow::processSenderCellChange(int line, int col)
 {
-    qDebug() << "processSenderCellChange";
     FrameSendData *tempData;
     QStringList tokens;
     int tempVal;
@@ -1734,7 +2505,6 @@ void MainWindow::processSenderCellChange(int line, int col)
 
     if (!tempData)
     {
-        qDebug() << "Need to set up a new entry in senders";
         FrameSendData dat;
         dat.enabled = false;
         dat.count = 0;
@@ -1746,39 +2516,33 @@ void MainWindow::processSenderCellChange(int line, int col)
 
     if (!tempData)
     {
-        qDebug() << "No data to modify in processSenderCellChange. This is a bug!";
         return;
     }
 
     switch (col)
     {
     case SIMP_COL::SC_COL_EN: //Enable check box
-        if (ui->tableSimpleSender->item(line, 0)->checkState() == Qt::Checked)
-        {
-            tempData->enabled = true;
-        }
-        else tempData->enabled = false;
-        qDebug() << "Setting enabled to " << tempData->enabled;
+        frameSender->setRecordEnabled(
+            line, ui->tableSimpleSender->item(line, SC_COL_EN)->checkState() == Qt::Checked);
         break;
     case SIMP_COL::SC_COL_BUS: //Bus designation
         tempVal = Utility::ParseStringToNum(ui->tableSimpleSender->item(line, SIMP_COL::SC_COL_BUS)->text());
         if (tempVal < -1) tempVal = -1;
         if (tempVal >= numBuses) tempVal = numBuses - 1;
         tempData->bus = tempVal;
-        qDebug() << "Setting bus to " << tempVal;
         break;
     case SIMP_COL::SC_COL_ID: //ID field
-        tempVal = Utility::ParseStringToNum(ui->tableSimpleSender->item(line, SIMP_COL::SC_COL_ID)->text());
+        tempVal = parseSenderNumber(
+            ui->tableSimpleSender->item(line, SC_COL_ID)->text(), false, nullptr);
         if (tempVal < 0) tempVal = 0;
         if (tempVal > 0x7FFFFFFF) tempVal = 0x7FFFFFFF;
         tempData->setFrameId(tempVal);
         if (tempData->frameId() > 0x7FF) {
             tempData->setExtendedFrameFormat(true);
             ui->tableSimpleSender->blockSignals(true);
-            ui->tableSimpleSender->item(line, ST_COLS::SENDTAB_COL_EXT)->setCheckState(Qt::Checked);
+            ui->tableSimpleSender->item(line, SC_COL_EXT)->setCheckState(Qt::Checked);
             ui->tableSimpleSender->blockSignals(false);
         }
-        qDebug() << "setting ID to " << tempVal;
         break;
     case SIMP_COL::SC_COL_EXT:
         if (ui->tableSimpleSender->item(line, SIMP_COL::SC_COL_EXT)->checkState() == Qt::Checked) {
@@ -1795,8 +2559,6 @@ void MainWindow::processSenderCellChange(int line, int col)
         }
         break;
     case SIMP_COL::SC_COL_DATA: //Data bytes
-        for (int i = 0; i < 8; i++) tempData->payload().data()[i] = 0;
-
 #if QT_VERSION >= QT_VERSION_CHECK( 5, 14, 0 )
         tokens = ui->tableSimpleSender->item(line, SIMP_COL::SC_COL_DATA)->text().split(" ", Qt::SkipEmptyParts);
 #else
@@ -1806,71 +2568,572 @@ void MainWindow::processSenderCellChange(int line, int col)
         arr.reserve(tokens.count());
         for (int j = 0; j < tokens.count(); j++)
         {
-            arr.append((uint8_t)Utility::ParseStringToNum(tokens[j]));
+            arr.append(uint8_t(parseSenderNumber(tokens[j], true, nullptr)));
         }
         tempData->setPayload(arr);
         break;
     case SIMP_COL::SC_COL_INTERVAL: //interval in ms
-
-        QString trigger = ui->tableSimpleSender->item(line, SIMP_COL::SC_COL_INTERVAL)->text().toUpper();
-
-        Trigger thisTrigger;
-        thisTrigger.bus = -1; //-1 means we don't care which
-        thisTrigger.ID = -1; //the rest of these being -1 means nothing has changed it
-        thisTrigger.maxCount = -1;
-        thisTrigger.milliseconds = -1;
-        thisTrigger.currCount = 0;
-        thisTrigger.msCounter = 0;
-        thisTrigger.triggerMask = 0;
-        thisTrigger.readyCount = true;
-
-        tempData->triggers.clear();
-        tempData->triggers.reserve(1);
-
-        if (trigger != "")
-        {
-            thisTrigger.milliseconds = Utility::ParseStringToNum(trigger);
-            thisTrigger.triggerMask |= TriggerMask::TRG_MS;
-        }
-
-        if (thisTrigger.milliseconds < 1) thisTrigger.milliseconds = 1;
-
-        tempData->triggers.append(thisTrigger);
-
+    case SIMP_COL::SC_COL_LIMIT:
+        rebuildSenderTrigger(line);
+        break;
+    case SIMP_COL::SC_COL_COUNT:
+    case SIMP_COL::SC_COL_STATUS:
         break;
     }
 }
 
-void MainWindow::createSenderRow()
+int MainWindow::createSenderRow()
 {
     int row = ui->tableSimpleSender->rowCount();
     ui->tableSimpleSender->insertRow(row);
 
     QTableWidgetItem *item = new QTableWidgetItem();
-    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setFlags((item->flags() | Qt::ItemIsUserCheckable)
+                   & ~Qt::ItemIsEditable & ~Qt::ItemIsUserCheckable);
     item->setCheckState(Qt::Unchecked);
     inhibitSenderChanged = true;
-    ui->tableSimpleSender->setItem(row, SIMP_COL::SC_COL_EN, item);
+    ui->tableSimpleSender->setItem(row, SC_COL_EN, item);
 
     item = new QTableWidgetItem();
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setCheckState(Qt::Unchecked);
-    ui->tableSimpleSender->setItem(row, SIMP_COL::SC_COL_EXT, item);
+    ui->tableSimpleSender->setItem(row, SC_COL_EXT, item);
 
     item = new QTableWidgetItem();
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setCheckState(Qt::Unchecked);
-    ui->tableSimpleSender->setItem(row, SIMP_COL::SC_COL_REM, item);
+    ui->tableSimpleSender->setItem(row, SC_COL_REM, item);
 
-    for (int i = 1; i <= SIMP_COL::SC_COL_COUNT; i++)
+    for (int i = 1; i <= SC_COL_STATUS; i++)
     {
-        if (i != SIMP_COL::SC_COL_EXT && i != SIMP_COL::SC_COL_REM) {
+        if (i != SC_COL_EXT && i != SC_COL_REM) {
             item = new QTableWidgetItem("");
+            if (i == SC_COL_COUNT || i == SC_COL_STATUS)
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
             ui->tableSimpleSender->setItem(row, i, item);
         }
     }
+    ui->tableSimpleSender->item(row, SC_COL_BUS)->setText(QStringLiteral("0"));
+    ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->setText(QStringLiteral("100"));
+    ui->tableSimpleSender->item(row, SC_COL_LIMIT)->setText(QStringLiteral("0"));
+    ui->tableSimpleSender->item(row, SC_COL_COUNT)->setText(QStringLiteral("0"));
+    ui->tableSimpleSender->item(row, SC_COL_STATUS)->setText(tr("Draft"));
 
     inhibitSenderChanged = false;
+    FrameSendData dat;
+    dat.enabled = false;
+    dat.count = 0;
+    dat.frameCount = 0;
+    dat.bus = 0;
+    frameSender->addSendRecord(dat);
+    rebuildSenderTrigger(row);
+    ui->tableSimpleSender->selectRow(row);
+    ui->tableSimpleSender->scrollToItem(ui->tableSimpleSender->item(row, SC_COL_ID));
+    return row;
+}
+
+QList<int> MainWindow::selectedSenderRows() const
+{
+    QList<int> rows;
+    if (ui->tableSimpleSender->selectionModel())
+    {
+        const QModelIndexList selected =
+            ui->tableSimpleSender->selectionModel()->selectedRows();
+        for (const QModelIndex &index : selected) rows.append(index.row());
+    }
+    if (rows.isEmpty() && ui->tableSimpleSender->currentRow() >= 0)
+        rows.append(ui->tableSimpleSender->currentRow());
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
+}
+
+bool MainWindow::validateSenderRow(int row, QString *error) const
+{
+    if (row < 0 || row >= ui->tableSimpleSender->rowCount())
+    {
+        if (error) *error = tr("Select at least one sender row.");
+        return false;
+    }
+    bool ok = false;
+    const QString idText = ui->tableSimpleSender->item(row, SC_COL_ID)->text().trimmed();
+    const quint32 id = parseSenderNumber(idText, false, &ok);
+    const bool extended =
+        ui->tableSimpleSender->item(row, SC_COL_EXT)->checkState() == Qt::Checked;
+    if (!ok || idText.isEmpty() || id > 0x1FFFFFFF || (!extended && id > 0x7FF))
+    {
+        if (error) *error = tr("Row %1 has an invalid %2 CAN ID.")
+                                .arg(row + 1).arg(extended ? tr("extended") : tr("standard"));
+        return false;
+    }
+    const int bus = ui->tableSimpleSender->item(row, SC_COL_BUS)->text().toInt(&ok);
+    const int busCount = CANConManager::getInstance()->getNumBuses();
+    if (!ok || bus < 0 || (busCount > 0 && bus >= busCount))
+    {
+        if (error) *error = tr("Row %1 has an invalid bus number.").arg(row + 1);
+        return false;
+    }
+    const QStringList bytes = ui->tableSimpleSender->item(row, SC_COL_DATA)
+                                  ->text().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (bytes.size() > 8)
+    {
+        if (error) *error = tr("Row %1 exceeds the 8-byte Classic CAN limit.").arg(row + 1);
+        return false;
+    }
+    for (const QString &byteText : bytes)
+    {
+        bool byteOk = false;
+        const uint byte = parseSenderNumber(byteText, true, &byteOk);
+        if (!byteOk || byte > 0xFF)
+        {
+            if (error) *error = tr("Row %1 contains an invalid data byte: %2")
+                                    .arg(row + 1).arg(byteText);
+            return false;
+        }
+    }
+    const int interval = ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->text().toInt(&ok);
+    if (!ok || interval < 1 || interval > 3600000)
+    {
+        if (error) *error = tr("Row %1 interval must be 1-3600000 ms.").arg(row + 1);
+        return false;
+    }
+    const int limit = ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt(&ok);
+    if (!ok || limit < 0 || limit > 1000000)
+    {
+        if (error) *error = tr("Row %1 limit must be 0-1000000; 0 means unlimited.")
+                                .arg(row + 1);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::rebuildSenderTrigger(int row)
+{
+    FrameSendData *record = frameSender->getSendRecordRef(row);
+    if (!record) return;
+    Trigger trigger;
+    trigger.bus = -1;
+    trigger.ID = -1;
+    trigger.maxCount = -1;
+    trigger.milliseconds = qBound(
+        1, ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->text().toInt(), 3600000);
+    trigger.currCount = 0;
+    trigger.msCounter = 0;
+    trigger.triggerMask = TriggerMask::TRG_MS;
+    trigger.readyCount = true;
+    trigger.sigValueInt = 0;
+    trigger.sigValueDbl = 0.0;
+    const int limit = ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt();
+    if (limit > 0) trigger.maxCount = limit;
+    record->triggers.clear();
+    record->triggers.append(trigger);
+}
+
+void MainWindow::updateSenderRowStatus(int row)
+{
+    if (row < 0 || row >= ui->tableSimpleSender->rowCount()) return;
+    QString status;
+    QString error;
+    FrameSendData *record = frameSender->getSendRecordRef(row);
+    if (ui->tableSimpleSender->item(row, SC_COL_ID)->text().trimmed().isEmpty())
+        status = tr("Draft");
+    else if (!validateSenderRow(row, &error))
+        status = tr("Invalid");
+    else if (CANConManager::getInstance()->getNumBuses() == 0)
+        status = tr("Unavailable");
+    else if (record && record->enabled)
+        status = tr("Running");
+    else
+    {
+        const int limit = ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt();
+        status = record && limit > 0 && record->count >= limit ? tr("Complete") : tr("Stopped");
+    }
+    QTableWidgetItem *item = ui->tableSimpleSender->item(row, SC_COL_STATUS);
+    if (item->text() != status) item->setText(status);
+    item->setToolTip(error);
+}
+
+bool MainWindow::setSenderRowsEnabled(const QList<int> &rows, bool enabled,
+                                      QString *error)
+{
+    QStringList errors;
+    if (rows.isEmpty()) errors.append(tr("Select at least one sender row."));
+    for (int row : rows)
+    {
+        QString error;
+        if (row < 0 || row >= ui->tableSimpleSender->rowCount())
+        {
+            errors.append(tr("Trace sender row %1 is outside the configured list.")
+                              .arg(row));
+            continue;
+        }
+        if (enabled && !validateSenderRow(row, &error))
+        {
+            errors.append(error);
+            updateSenderRowStatus(row);
+            continue;
+        }
+        if (enabled && CANConManager::getInstance()->getNumBuses() == 0)
+        {
+            errors.append(tr("Connect a CAN bus before starting sender rows."));
+            break;
+        }
+        if (enabled) frameSender->resetRecordCount(row);
+        frameSender->setRecordEnabled(row, enabled);
+        const QSignalBlocker blocker(ui->tableSimpleSender);
+        ui->tableSimpleSender->item(row, SC_COL_EN)->setCheckState(
+            enabled ? Qt::Checked : Qt::Unchecked);
+        if (enabled) ui->tableSimpleSender->item(row, SC_COL_COUNT)->setText(QStringLiteral("0"));
+        updateSenderRowStatus(row);
+    }
+    if (!errors.isEmpty())
+    {
+        errors.removeDuplicates();
+        const QString message = errors.join('\n');
+        if (error) *error = message;
+        else QMessageBox::warning(this, tr("CAN sender"), message);
+    }
+    return errors.isEmpty();
+}
+
+bool MainWindow::sendSenderRowsOnce(const QList<int> &rows, QString *error)
+{
+    if (CANConManager::getInstance()->getNumBuses() == 0)
+    {
+        const QString message = tr("Connect a CAN bus before sending.");
+        if (error) *error = message;
+        else QMessageBox::warning(this, tr("CAN sender"), message);
+        return false;
+    }
+    QStringList errors;
+    if (rows.isEmpty()) errors.append(tr("Select at least one sender row."));
+    int sent = 0;
+    for (int row : rows)
+    {
+        QString error;
+        if (!validateSenderRow(row, &error))
+        {
+            errors.append(error);
+            continue;
+        }
+        FrameSendData *record = frameSender->getSendRecordRef(row);
+        if (record && CANConManager::getInstance()->sendFrame(*record))
+        {
+            ++record->count;
+            ++sent;
+        }
+    }
+    if (!errors.isEmpty())
+    {
+        const QString message = errors.join('\n');
+        if (error) *error = message;
+        else QMessageBox::warning(this, tr("CAN sender"), message);
+    }
+    statusBar()->showMessage(tr("Sent %1 CAN frame(s)").arg(sent), 3000);
+    return errors.isEmpty() && sent == rows.size();
+}
+
+void MainWindow::deleteSenderRows(const QList<int> &rows)
+{
+    QList<int> sorted = rows;
+    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
+    for (int row : sorted)
+    {
+        if (row < 0 || row >= ui->tableSimpleSender->rowCount()) continue;
+        frameSender->setRecordEnabled(row, false);
+        frameSender->removeSendRecord(row);
+        ui->tableSimpleSender->removeRow(row);
+    }
+}
+
+void MainWindow::duplicateSenderRows(const QList<int> &rows)
+{
+    for (int source : rows)
+    {
+        if (source < 0 || source >= ui->tableSimpleSender->rowCount()) continue;
+        const int target = createSenderRow();
+        const QSignalBlocker blocker(ui->tableSimpleSender);
+        for (int col = SC_COL_BUS; col <= SC_COL_LIMIT; ++col)
+        {
+            if (col == SC_COL_EXT || col == SC_COL_REM)
+                ui->tableSimpleSender->item(target, col)->setCheckState(
+                    ui->tableSimpleSender->item(source, col)->checkState());
+            else
+                ui->tableSimpleSender->item(target, col)->setText(
+                    ui->tableSimpleSender->item(source, col)->text());
+        }
+        for (int col = SC_COL_BUS; col <= SC_COL_LIMIT; ++col)
+            processSenderCellChange(target, col);
+        updateSenderRowStatus(target);
+    }
+}
+
+bool MainWindow::updateTraceSenderRow(int row, const QJsonObject &values,
+                                      QString *error)
+{
+    if (row < 0 || row >= ui->tableSimpleSender->rowCount())
+    {
+        if (error) *error = tr("Trace sender row is outside the configured list.");
+        return false;
+    }
+    const QSignalBlocker blocker(ui->tableSimpleSender);
+    auto setText = [this, row, &values](const QString &key, int column) {
+        if (!values.contains(key)) return;
+        const QJsonValue value = values.value(key);
+        ui->tableSimpleSender->item(row, column)->setText(
+            value.isString() ? value.toString()
+                             : QString::number(value.toInt()));
+    };
+    setText(QStringLiteral("bus"), SC_COL_BUS);
+    setText(QStringLiteral("can_id"), SC_COL_ID);
+    setText(QStringLiteral("payload"), SC_COL_DATA);
+    setText(QStringLiteral("interval_ms"), SC_COL_INTERVAL);
+    setText(QStringLiteral("limit"), SC_COL_LIMIT);
+    if (values.contains(QStringLiteral("extended")))
+        ui->tableSimpleSender->item(row, SC_COL_EXT)->setCheckState(
+            values.value(QStringLiteral("extended")).toBool()
+                ? Qt::Checked : Qt::Unchecked);
+    if (values.contains(QStringLiteral("remote")))
+        ui->tableSimpleSender->item(row, SC_COL_REM)->setCheckState(
+            values.value(QStringLiteral("remote")).toBool()
+                ? Qt::Checked : Qt::Unchecked);
+    for (int column = SC_COL_BUS; column <= SC_COL_LIMIT; ++column)
+        processSenderCellChange(row, column);
+    updateSenderRowStatus(row);
+    return validateSenderRow(row, error);
+}
+
+void MainWindow::copySelectedTraceToSender()
+{
+    const QModelIndex proxyIndex = ui->canFramesView->currentIndex();
+    if (!proxyIndex.isValid())
+    {
+        QMessageBox::information(this, tr("CAN sender"), tr("Select a CAN Trace row first."));
+        return;
+    }
+    const QModelIndex sourceIndex = proxyModel->mapToSource(proxyIndex);
+    const CANFrame frame = model->frameAtFilteredRow(sourceIndex.row());
+    const int row = createSenderRow();
+    const QSignalBlocker blocker(ui->tableSimpleSender);
+    ui->tableSimpleSender->item(row, SC_COL_BUS)->setText(QString::number(frame.bus));
+    ui->tableSimpleSender->item(row, SC_COL_ID)->setText(
+        QStringLiteral("0x%1").arg(frame.frameId(), 0, 16).toUpper());
+    ui->tableSimpleSender->item(row, SC_COL_EXT)->setCheckState(
+        frame.hasExtendedFrameFormat() ? Qt::Checked : Qt::Unchecked);
+    ui->tableSimpleSender->item(row, SC_COL_REM)->setCheckState(
+        frame.frameType() == QCanBusFrame::RemoteRequestFrame ? Qt::Checked : Qt::Unchecked);
+    QStringList bytes;
+    for (unsigned char byte : frame.payload())
+        bytes << QStringLiteral("0x%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper();
+    ui->tableSimpleSender->item(row, SC_COL_DATA)->setText(bytes.join(QLatin1Char(' ')));
+    for (int col = SC_COL_BUS; col <= SC_COL_DATA; ++col)
+        processSenderCellChange(row, col);
+    updateSenderRowStatus(row);
+}
+
+void MainWindow::moveSenderRowsToAdvanced(const QList<int> &rows)
+{
+    showFrameSenderWindow();
+    QStringList errors;
+    for (int row : rows)
+    {
+        QString error;
+        if (!validateSenderRow(row, &error))
+        {
+            errors.append(error);
+            continue;
+        }
+        FrameSendData *record = frameSender->getSendRecordRef(row);
+        const int limit = ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt();
+        const int interval = ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->text().toInt();
+        const bool remote =
+            ui->tableSimpleSender->item(row, SC_COL_REM)->checkState() == Qt::Checked;
+        const bool added = limit > 0
+            ? frameSenderWindow->addFrameLoopDraftWithFlags(
+                  record->bus, record->frameId(), record->hasExtendedFrameFormat(),
+                  remote, record->payload(), limit, interval, &error)
+            : frameSenderWindow->addFrameDraftWithFlags(
+                  record->bus, record->frameId(), record->hasExtendedFrameFormat(),
+                  remote, record->payload(), &error);
+        if (!added) errors.append(error);
+    }
+    if (!errors.isEmpty())
+        QMessageBox::warning(this, tr("Advanced sender"), errors.join('\n'));
+}
+
+void MainWindow::showSenderContextMenu(const QPoint &pos)
+{
+    const QList<int> rows = selectedSenderRows();
+    QMenu menu(this);
+    menu.addAction(tr("Send once"), this, [this, rows]() { sendSenderRowsOnce(rows); });
+    menu.addAction(tr("Start"), this, [this, rows]() { setSenderRowsEnabled(rows, true); });
+    menu.addAction(tr("Stop"), this, [this, rows]() { setSenderRowsEnabled(rows, false); });
+    menu.addSeparator();
+    menu.addAction(tr("Duplicate"), this, [this, rows]() { duplicateSenderRows(rows); });
+    menu.addAction(tr("Delete"), this, [this, rows]() { deleteSenderRows(rows); });
+    menu.addAction(tr("Copy selected trace frame"), this,
+                   &MainWindow::copySelectedTraceToSender);
+    menu.addAction(tr("Open in advanced sender"), this,
+                   [this, rows]() { moveSenderRowsToAdvanced(rows); });
+    menu.exec(ui->tableSimpleSender->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::showSenderHeaderMenu(const QPoint &pos)
+{
+    QMenu menu(this);
+    for (int col = 0; col < ui->tableSimpleSender->columnCount(); ++col)
+    {
+        QAction *action = menu.addAction(
+            ui->tableSimpleSender->horizontalHeaderItem(col)->text());
+        action->setCheckable(true);
+        action->setChecked(!ui->tableSimpleSender->isColumnHidden(col));
+        connect(action, &QAction::toggled, this, [this, col](bool shown) {
+            ui->tableSimpleSender->setColumnHidden(col, !shown);
+        });
+    }
+    menu.addSeparator();
+    menu.addAction(tr("Restore default columns"), this, [this]() {
+        ui->tableSimpleSender->horizontalHeader()->reset();
+        ui->tableSimpleSender->setColumnHidden(SC_COL_EXT, true);
+        ui->tableSimpleSender->setColumnHidden(SC_COL_REM, true);
+    });
+    menu.exec(ui->tableSimpleSender->horizontalHeader()->mapToGlobal(pos));
+}
+
+void MainWindow::setTraceSenderCollapsed(bool collapsed)
+{
+    if (!traceSenderPanel || !traceSenderCollapseButton) return;
+    const QSignalBlocker blocker(traceSenderCollapseButton);
+    traceSenderCollapseButton->setChecked(collapsed);
+    traceSenderCollapseButton->setArrowType(collapsed ? Qt::UpArrow : Qt::DownArrow);
+    ui->tableSimpleSender->setVisible(!collapsed);
+    traceSenderPanel->setMaximumHeight(collapsed ? 32 : QWIDGETSIZE_MAX);
+    if (!collapsed && traceSenderSplitter)
+        traceSenderSplitter->setSizes({qMax(300, height() - 190), 165});
+    QSettings().setValue(QStringLiteral("Main/TraceSenderCollapsed"), collapsed);
+}
+
+void MainWindow::saveTraceSenderList()
+{
+    QSettings settings;
+    const QString filename = QFileDialog::getSaveFileName(
+        this, tr("Save Trace sender list"),
+        settings.value(QStringLiteral("Main/TraceSenderDirectory")).toString(),
+        tr("Trace sender list (*.json)"));
+    if (filename.isEmpty()) return;
+    QString error;
+    if (!saveTraceSenderListToPath(filename, &error))
+        QMessageBox::warning(this, tr("Trace sender"), error);
+}
+
+bool MainWindow::saveTraceSenderListToPath(const QString &path, QString *error)
+{
+    QJsonArray rows;
+    for (int row = 0; row < ui->tableSimpleSender->rowCount(); ++row)
+    {
+        QJsonObject object;
+        object.insert(QStringLiteral("bus"),
+                      ui->tableSimpleSender->item(row, SC_COL_BUS)->text().toInt());
+        object.insert(QStringLiteral("id"),
+                      ui->tableSimpleSender->item(row, SC_COL_ID)->text());
+        object.insert(QStringLiteral("extended"),
+                      ui->tableSimpleSender->item(row, SC_COL_EXT)->checkState() == Qt::Checked);
+        object.insert(QStringLiteral("remote"),
+                      ui->tableSimpleSender->item(row, SC_COL_REM)->checkState() == Qt::Checked);
+        object.insert(QStringLiteral("data"),
+                      ui->tableSimpleSender->item(row, SC_COL_DATA)->text());
+        object.insert(QStringLiteral("interval_ms"),
+                      ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->text().toInt());
+        object.insert(QStringLiteral("limit"),
+                      ui->tableSimpleSender->item(row, SC_COL_LIMIT)->text().toInt());
+        rows.append(object);
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), QStringLiteral("savvycan-trace-sender"));
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("rows"), rows);
+    QString outputName = path;
+    if (!outputName.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
+        outputName += QStringLiteral(".json");
+    QSaveFile file(outputName);
+    if (!file.open(QIODevice::WriteOnly)
+        || file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0
+        || !file.commit())
+    {
+        if (error) *error = tr("Could not save %1.").arg(outputName);
+        return false;
+    }
+    QSettings().setValue(QStringLiteral("Main/TraceSenderDirectory"),
+                         QFileInfo(outputName).absolutePath());
+    return true;
+}
+
+void MainWindow::loadTraceSenderList()
+{
+    QSettings settings;
+    const QString filename = QFileDialog::getOpenFileName(
+        this, tr("Load Trace sender list"),
+        settings.value(QStringLiteral("Main/TraceSenderDirectory")).toString(),
+        tr("Trace sender list (*.json)"));
+    if (filename.isEmpty()) return;
+    QString error;
+    if (!loadTraceSenderListFromPath(filename, &error))
+        QMessageBox::warning(this, tr("Trace sender"), error);
+}
+
+bool MainWindow::loadTraceSenderListFromPath(const QString &path, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error) *error = tr("Could not open %1.").arg(path);
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonObject root = document.object();
+    if (parseError.error != QJsonParseError::NoError
+        || root.value(QStringLiteral("format")).toString()
+               != QStringLiteral("savvycan-trace-sender")
+        || !root.value(QStringLiteral("rows")).isArray())
+    {
+        if (error) *error = tr("This is not a valid Trace sender list.");
+        return false;
+    }
+
+    QList<int> existing;
+    for (int row = 0; row < ui->tableSimpleSender->rowCount(); ++row)
+        existing.append(row);
+    deleteSenderRows(existing);
+    const QJsonArray rows = root.value(QStringLiteral("rows")).toArray();
+    for (const QJsonValue &value : rows)
+    {
+        const QJsonObject object = value.toObject();
+        const int row = createSenderRow();
+        const QSignalBlocker blocker(ui->tableSimpleSender);
+        ui->tableSimpleSender->item(row, SC_COL_BUS)
+            ->setText(QString::number(object.value(QStringLiteral("bus")).toInt()));
+        ui->tableSimpleSender->item(row, SC_COL_ID)
+            ->setText(object.value(QStringLiteral("id")).toString());
+        ui->tableSimpleSender->item(row, SC_COL_EXT)->setCheckState(
+            object.value(QStringLiteral("extended")).toBool()
+                ? Qt::Checked : Qt::Unchecked);
+        ui->tableSimpleSender->item(row, SC_COL_REM)->setCheckState(
+            object.value(QStringLiteral("remote")).toBool()
+                ? Qt::Checked : Qt::Unchecked);
+        ui->tableSimpleSender->item(row, SC_COL_DATA)
+            ->setText(object.value(QStringLiteral("data")).toString());
+        ui->tableSimpleSender->item(row, SC_COL_INTERVAL)
+            ->setText(QString::number(object.value(QStringLiteral("interval_ms")).toInt(100)));
+        ui->tableSimpleSender->item(row, SC_COL_LIMIT)
+            ->setText(QString::number(object.value(QStringLiteral("limit")).toInt()));
+        for (int col = SC_COL_BUS; col <= SC_COL_LIMIT; ++col)
+            processSenderCellChange(row, col);
+        updateSenderRowStatus(row);
+    }
+    QSettings().setValue(QStringLiteral("Main/TraceSenderDirectory"),
+                         QFileInfo(path).absolutePath());
+    return true;
 }
 
 bool MainWindow::addTraceSenderLoop(int bus, quint32 canId, bool extended,
@@ -1882,7 +3145,8 @@ bool MainWindow::addTraceSenderLoop(int bus, quint32 canId, bool extended,
         if (error) *error = tr("Loop count must be 1-1000 and interval 1-60000 ms.");
         return false;
     }
-    const int row = ui->tableSimpleSender->rowCount() - 1;
+    const int row = createSenderRow();
+    const QSignalBlocker blocker(ui->tableSimpleSender);
     ui->tableSimpleSender->item(row, SC_COL_BUS)->setText(QString::number(bus));
     ui->tableSimpleSender->item(row, SC_COL_ID)->setText(
         QStringLiteral("0x%1").arg(canId, 0, 16).toUpper());
@@ -1893,14 +3157,16 @@ bool MainWindow::addTraceSenderLoop(int bus, quint32 canId, bool extended,
         bytes << QStringLiteral("0x%1").arg(quint8(byte), 2, 16, QLatin1Char('0')).toUpper();
     ui->tableSimpleSender->item(row, SC_COL_DATA)->setText(bytes.join(QLatin1Char(' ')));
     ui->tableSimpleSender->item(row, SC_COL_INTERVAL)->setText(QString::number(intervalMs));
+    ui->tableSimpleSender->item(row, SC_COL_LIMIT)->setText(QString::number(count));
+    for (int col = SC_COL_BUS; col <= SC_COL_LIMIT; ++col)
+        processSenderCellChange(row, col);
     FrameSendData *record = frameSender->getSendRecordRef(row);
     if (!record || record->triggers.isEmpty())
     {
         if (error) *error = tr("Could not create the CAN Trace sender entry.");
         return false;
     }
-    record->triggers.first().maxCount = count;
-    ui->tableSimpleSender->item(row, SC_COL_EN)->setCheckState(Qt::Checked);
+    setSenderRowsEnabled({row}, true);
     activateWorkspace(traceWorkspace, tr("CAN Trace"));
     return true;
 }
@@ -2382,15 +3648,20 @@ void MainWindow::tickGUIUpdate()
             tempData = frameSender->getSendRecordRef(i);
             if (tempData)
             {
-                ui->tableSimpleSender->item(i, SIMP_COL::SC_COL_COUNT)->setText(QString::number( tempData->count ));
+                QTableWidgetItem *countItem =
+                    ui->tableSimpleSender->item(i, SC_COL_COUNT);
+                const QString count = QString::number(tempData->count);
+                if (countItem && countItem->text() != count)
+                    countItem->setText(count);
                 if (!tempData->enabled
-                    && ui->tableSimpleSender->item(i, SIMP_COL::SC_COL_EN)->checkState() == Qt::Checked)
+                    && ui->tableSimpleSender->item(i, SC_COL_EN)->checkState() == Qt::Checked)
                 {
                     ui->tableSimpleSender->blockSignals(true);
-                    ui->tableSimpleSender->item(i, SIMP_COL::SC_COL_EN)
+                    ui->tableSimpleSender->item(i, SC_COL_EN)
                         ->setCheckState(Qt::Unchecked);
                     ui->tableSimpleSender->blockSignals(false);
                 }
+                updateSenderRowStatus(i);
             }
         }
 

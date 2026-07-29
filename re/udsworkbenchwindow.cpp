@@ -45,10 +45,11 @@ UDSWorkbenchWindow::UDSWorkbenchWindow(QWidget *parent) : QDialog(parent)
     udsHandler = new UDS_HANDLER;
     buildUi();
     loadSettings();
+    udsHandler->setFlowCtrl(true);
     responseTimer.setSingleShot(true);
     responseTimer.setInterval(1500);
     testerTimer.setInterval(2000);
-    pollingTimer.setSingleShot(false);
+    pollingTimer.setSingleShot(true);
     connect(udsHandler, &UDS_HANDLER::newUDSMessage, this, &UDSWorkbenchWindow::gotUDSReply);
     connect(&responseTimer, &QTimer::timeout, this, &UDSWorkbenchWindow::requestTimedOut);
     connect(&testerTimer, &QTimer::timeout, this, &UDSWorkbenchWindow::sendTesterPresent);
@@ -79,6 +80,7 @@ void UDSWorkbenchWindow::buildUi()
     addressPresetCombo->addItem(tr("11-bit functional"), QStringLiteral("11functional"));
     addressPresetCombo->addItem(tr("29-bit normal fixed"), QStringLiteral("29fixed"));
     addressPresetCombo->addItem(tr("Custom"), QStringLiteral("custom"));
+    QPushButton *applyAddressDefaultsButton = new QPushButton(tr("Apply defaults"), endpoint);
     requestIdEdit = new QLineEdit(QStringLiteral("0x7E0"), endpoint);
     responseAddressModeCombo = new QComboBox(endpoint);
     responseAddressModeCombo->addItem(tr("Response ID"), QStringLiteral("id"));
@@ -103,6 +105,7 @@ void UDSWorkbenchWindow::buildUi()
     endpointLayout->addWidget(new QLabel(tr("Bus"), endpoint));
     endpointLayout->addWidget(busSpin);
     endpointLayout->addWidget(addressPresetCombo);
+    endpointLayout->addWidget(applyAddressDefaultsButton);
     endpointLayout->addWidget(new QLabel(tr("Request ID"), endpoint));
     endpointLayout->addWidget(requestIdEdit);
     endpointLayout->addWidget(new QLabel(tr("Response"), endpoint));
@@ -126,7 +129,7 @@ void UDSWorkbenchWindow::buildUi()
             this, &UDSWorkbenchWindow::updateResponseIdFromMode);
     connect(responseOffsetEdit, &QLineEdit::editingFinished,
             this, &UDSWorkbenchWindow::updateResponseIdFromMode);
-    connect(addressPresetCombo, qOverload<int>(&QComboBox::activated),
+    connect(applyAddressDefaultsButton, &QPushButton::clicked,
             this, &UDSWorkbenchWindow::applyAddressPreset);
 
     QTabWidget *tabs = new QTabWidget(this);
@@ -213,9 +216,11 @@ void UDSWorkbenchWindow::buildUi()
     QPushButton *passiveEcuButton = new QPushButton(tr("Infer from capture"), ecuDiscoveryPage);
     QPushButton *verifyEcuButton = new QPushButton(tr("Verify physically"), ecuDiscoveryPage);
     QPushButton *editEcuButton = new QPushButton(tr("Name / notes"), ecuDiscoveryPage);
+    QPushButton *clearEcuScanButton = new QPushButton(tr("Clear results"), ecuDiscoveryPage);
     ecuResultControls->addWidget(passiveEcuButton);
     ecuResultControls->addWidget(loadEcuScanButton);
     ecuResultControls->addWidget(saveEcuScanButton);
+    ecuResultControls->addWidget(clearEcuScanButton);
     ecuResultControls->addStretch();
     ecuResultControls->addWidget(useEcuButton);
     ecuResultControls->addWidget(verifyEcuButton);
@@ -229,16 +234,17 @@ void UDSWorkbenchWindow::buildUi()
     connect(passiveEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::inferPassiveEndpoints);
     connect(verifyEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::verifySelectedEcu);
     connect(editEcuButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::editSelectedEcuDetails);
+    connect(clearEcuScanButton, &QPushButton::clicked, ecuScanResults, &QListWidget::clear);
     connect(ecuAnyResponseCheck, &QCheckBox::toggled, ecuResponseSpecEdit, &QWidget::setDisabled);
     tabs->addTab(ecuDiscoveryPage, tr("ECU discovery"));
 
     QWidget *didPage = new QWidget(tabs);
     QVBoxLayout *didLayout = new QVBoxLayout(didPage);
     didTable = new QTableWidget(0, DidColumnCount, didPage);
-    didTable->setHorizontalHeaderLabels({tr("Use"), tr("Name"), tr("DID"), tr("Payload format"), tr("Poll ms"),
+    didTable->setHorizontalHeaderLabels({tr("Poll"), tr("Name"), tr("DID"), tr("Payload format"), tr("Poll ms"),
                                          tr("Raw response"), tr("Decoded"), tr("Status"), tr("Updated")});
-    didTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    didTable->horizontalHeader()->setSectionResizeMode(DidDecoded, QHeaderView::Stretch);
+    didTable->resizeColumnsToContents();
+    didTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     didTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     didTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     didLayout->addWidget(didTable);
@@ -247,11 +253,13 @@ void UDSWorkbenchWindow::buildUi()
     QPushButton *removeButton = new QPushButton(tr("Remove"), didPage);
     QPushButton *importButton = new QPushButton(tr("Load DID list"), didPage);
     QPushButton *exportButton = new QPushButton(tr("Save DID list"), didPage);
-    QPushButton *selectedButton = new QPushButton(tr("Request selected"), didPage);
-    QPushButton *allButton = new QPushButton(tr("Request enabled"), didPage);
+    QPushButton *selectedButton = new QPushButton(tr("Send selected once"), didPage);
+    QPushButton *allButton = new QPushButton(tr("Send enabled once"), didPage);
     QPushButton *graphButton = new QPushButton(tr("Live graph"), didPage);
     csvLogButton = new QPushButton(tr("Start CSV log"), didPage);
-    pollingCheck = new QCheckBox(tr("Poll"), didPage);
+    pollingCheck = new QCheckBox(didPage);
+    pollingCheck->hide();
+    pollingButton = new QPushButton(tr("Start polling"), didPage);
     pollIntervalSpin = new QSpinBox(didPage);
     pollIntervalSpin->setRange(100, 60000);
     pollIntervalSpin->setSingleStep(100);
@@ -262,7 +270,8 @@ void UDSWorkbenchWindow::buildUi()
     didButtons->addWidget(importButton);
     didButtons->addWidget(exportButton);
     didButtons->addStretch();
-    didButtons->addWidget(pollingCheck);
+    didButtons->addWidget(pollingButton);
+    didButtons->addWidget(new QLabel(tr("Cycle interval"), didPage));
     didButtons->addWidget(pollIntervalSpin);
     didButtons->addWidget(csvLogButton);
     didButtons->addWidget(graphButton);
@@ -277,8 +286,16 @@ void UDSWorkbenchWindow::buildUi()
     connect(allButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::requestAllDids);
     connect(csvLogButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::toggleCsvLogging);
     connect(graphButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::showDiagnosticGraph);
+    connect(pollingButton, &QPushButton::clicked, this, [this]() {
+        pollingCheck->setChecked(!pollingCheck->isChecked());
+    });
     connect(pollingCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled) pollingTimer.start(100); else pollingTimer.stop();
+        pollingTimer.stop();
+        pollingButton->setText(enabled ? tr("Stop polling") : tr("Start polling"));
+        if (enabled) pollEnabledDids();
+    });
+    connect(pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        if (pollingCheck->isChecked() && pollingTimer.isActive()) pollingTimer.start(value);
     });
     tabs->addTab(didPage, tr("DID requests"));
 
@@ -289,7 +306,7 @@ void UDSWorkbenchWindow::buildUi()
     scanEndEdit = new QLineEdit(QStringLiteral("0xF1FF"), discoveryPage);
     scanTimeoutSpin = new QSpinBox(discoveryPage);
     scanTimeoutSpin->setRange(20, 5000);
-    scanTimeoutSpin->setValue(100);
+    scanTimeoutSpin->setValue(300);
     scanTimeoutSpin->setSuffix(tr(" ms"));
     scanStartButton = new QPushButton(tr("Scan DIDs"), discoveryPage);
     scanResumeButton = new QPushButton(tr("Resume"), discoveryPage);
@@ -315,9 +332,11 @@ void UDSWorkbenchWindow::buildUi()
     QHBoxLayout *scanResultButtons = new QHBoxLayout;
     QPushButton *loadScanButton = new QPushButton(tr("Load results"), discoveryPage);
     QPushButton *saveScanButton = new QPushButton(tr("Save results"), discoveryPage);
+    QPushButton *clearScanButton = new QPushButton(tr("Clear results"), discoveryPage);
     QPushButton *addScannedButton = new QPushButton(tr("Add selected to DID requests"), discoveryPage);
     scanResultButtons->addWidget(loadScanButton);
     scanResultButtons->addWidget(saveScanButton);
+    scanResultButtons->addWidget(clearScanButton);
     scanResultButtons->addStretch();
     scanResultButtons->addWidget(addScannedButton);
     discoveryLayout->addLayout(scanResultButtons);
@@ -326,6 +345,7 @@ void UDSWorkbenchWindow::buildUi()
     connect(scanStopButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::stopDidScan);
     connect(loadScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::loadDidScan);
     connect(saveScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveDidScan);
+    connect(clearScanButton, &QPushButton::clicked, scanResults, &QListWidget::clear);
     connect(addScannedButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::addSelectedScannedDids);
     tabs->addTab(discoveryPage, tr("DID discovery"));
 
@@ -344,9 +364,11 @@ void UDSWorkbenchWindow::buildUi()
     serviceScanStopButton = new QPushButton(tr("Stop"), serviceDiscoveryPage);
     QPushButton *loadServiceScanButton = new QPushButton(tr("Load results"), serviceDiscoveryPage);
     QPushButton *saveServiceScanButton = new QPushButton(tr("Save results"), serviceDiscoveryPage);
+    QPushButton *clearServiceScanButton = new QPushButton(tr("Clear results"), serviceDiscoveryPage);
     serviceScanStopButton->setEnabled(false);
     serviceScanButtons->addWidget(loadServiceScanButton);
     serviceScanButtons->addWidget(saveServiceScanButton);
+    serviceScanButtons->addWidget(clearServiceScanButton);
     serviceScanButtons->addStretch();
     serviceScanButtons->addWidget(serviceScanStartButton);
     serviceScanButtons->addWidget(serviceScanStopButton);
@@ -355,15 +377,22 @@ void UDSWorkbenchWindow::buildUi()
     connect(serviceScanStopButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::stopServiceScan);
     connect(loadServiceScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::loadServiceScan);
     connect(saveServiceScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::saveServiceScan);
+    connect(clearServiceScanButton, &QPushButton::clicked, serviceScanResults, &QListWidget::clear);
     tabs->addTab(serviceDiscoveryPage, tr("Service discovery"));
 
     QWidget *sessionDiscoveryPage = new QWidget(tabs);
     QVBoxLayout *sessionDiscoveryLayout = new QVBoxLayout(sessionDiscoveryPage);
     sessionScanResults = new QListWidget(sessionDiscoveryPage);
     sessionDiscoveryLayout->addWidget(sessionScanResults, 1);
+    QHBoxLayout *sessionButtons = new QHBoxLayout;
+    QPushButton *clearSessionScanButton = new QPushButton(tr("Clear results"), sessionDiscoveryPage);
     QPushButton *sessionScanButton = new QPushButton(tr("Scan diagnostic sessions"), sessionDiscoveryPage);
-    sessionDiscoveryLayout->addWidget(sessionScanButton, 0, Qt::AlignRight);
+    sessionButtons->addWidget(clearSessionScanButton);
+    sessionButtons->addStretch();
+    sessionButtons->addWidget(sessionScanButton);
+    sessionDiscoveryLayout->addLayout(sessionButtons);
     connect(sessionScanButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::startSessionScan);
+    connect(clearSessionScanButton, &QPushButton::clicked, sessionScanResults, &QListWidget::clear);
     tabs->addTab(sessionDiscoveryPage, tr("Session discovery"));
 
     QWidget *summaryPage = new QWidget(tabs);
@@ -375,14 +404,17 @@ void UDSWorkbenchWindow::buildUi()
     QPushButton *refreshSummaryButton = new QPushButton(tr("Refresh"), summaryPage);
     QPushButton *exportSummaryButton = new QPushButton(tr("Export CSV"), summaryPage);
     QPushButton *compareSummaryButton = new QPushButton(tr("Compare snapshot"), summaryPage);
+    QPushButton *clearSummaryButton = new QPushButton(tr("Clear"), summaryPage);
     summaryButtons->addWidget(refreshSummaryButton);
     summaryButtons->addWidget(exportSummaryButton);
     summaryButtons->addWidget(compareSummaryButton);
+    summaryButtons->addWidget(clearSummaryButton);
     summaryButtons->addStretch();
     summaryLayout->addLayout(summaryButtons);
     connect(refreshSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::refreshDiscoverySummary);
     connect(exportSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::exportDiscoveryCsv);
     connect(compareSummaryButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::compareDiscoverySnapshot);
+    connect(clearSummaryButton, &QPushButton::clicked, discoverySummaryTree, &QTreeWidget::clear);
     tabs->addTab(summaryPage, tr("Discovery summary"));
 
     QWidget *dtcPage = new QWidget(tabs);
@@ -391,9 +423,11 @@ void UDSWorkbenchWindow::buildUi()
     dtcStatusMaskEdit = new QLineEdit(QStringLiteral("0xFF"), dtcPage);
     QPushButton *readDtcsButton = new QPushButton(tr("Read DTCs"), dtcPage);
     QPushButton *clearDtcsButton = new QPushButton(tr("Clear all DTCs"), dtcPage);
+    QPushButton *clearDtcOutputButton = new QPushButton(tr("Clear output"), dtcPage);
     dtcControls->addWidget(new QLabel(tr("Status mask"), dtcPage));
     dtcControls->addWidget(dtcStatusMaskEdit);
     dtcControls->addWidget(readDtcsButton);
+    dtcControls->addWidget(clearDtcOutputButton);
     dtcControls->addStretch();
     dtcControls->addWidget(clearDtcsButton);
     dtcLayout->addLayout(dtcControls);
@@ -417,6 +451,7 @@ void UDSWorkbenchWindow::buildUi()
     connect(readDtcsButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::requestDtcs);
     connect(dtcDetailButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendDetailedDtcRequest);
     connect(clearDtcsButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::clearDtcs);
+    connect(clearDtcOutputButton, &QPushButton::clicked, dtcResponse, &QTextEdit::clear);
     tabs->addTab(dtcPage, tr("DTCs"));
 
     QWidget *routinePage = new QWidget(tabs);
@@ -433,12 +468,18 @@ void UDSWorkbenchWindow::buildUi()
     routineForm->addRow(tr("Routine ID"), routineIdEdit);
     routineForm->addRow(tr("Option data"), routineDataEdit);
     routineLayout->addLayout(routineForm);
+    QHBoxLayout *routineButtons = new QHBoxLayout;
+    QPushButton *clearRoutineButton = new QPushButton(tr("Clear output"), routinePage);
     QPushButton *routineButton = new QPushButton(tr("Send Routine Control"), routinePage);
-    routineLayout->addWidget(routineButton, 0, Qt::AlignRight);
+    routineButtons->addWidget(clearRoutineButton);
+    routineButtons->addStretch();
+    routineButtons->addWidget(routineButton);
+    routineLayout->addLayout(routineButtons);
     routineResponse = new QTextEdit(routinePage);
     routineResponse->setReadOnly(true);
     routineLayout->addWidget(routineResponse);
     connect(routineButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendRoutineControl);
+    connect(clearRoutineButton, &QPushButton::clicked, routineResponse, &QTextEdit::clear);
     tabs->addTab(routinePage, tr("Routine Control"));
 
     QWidget *controlPage = new QWidget(tabs);
@@ -454,12 +495,18 @@ void UDSWorkbenchWindow::buildUi()
     controlForm->addRow(tr("Operation"), controlServiceCombo);
     controlForm->addRow(tr("Payload"), controlDataEdit);
     controlLayout->addLayout(controlForm);
+    QHBoxLayout *controlButtons = new QHBoxLayout;
+    QPushButton *clearControlButton = new QPushButton(tr("Clear output"), controlPage);
     QPushButton *controlButton = new QPushButton(tr("Review and send"), controlPage);
-    controlLayout->addWidget(controlButton, 0, Qt::AlignRight);
+    controlButtons->addWidget(clearControlButton);
+    controlButtons->addStretch();
+    controlButtons->addWidget(controlButton);
+    controlLayout->addLayout(controlButtons);
     controlResponse = new QTextEdit(controlPage);
     controlResponse->setReadOnly(true);
     controlLayout->addWidget(controlResponse);
     connect(controlButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendGuardedControl);
+    connect(clearControlButton, &QPushButton::clicked, controlResponse, &QTextEdit::clear);
     tabs->addTab(controlPage, tr("ECU controls"));
 
     QWidget *securityPage = new QWidget(tabs);
@@ -476,6 +523,8 @@ void UDSWorkbenchWindow::buildUi()
     QHBoxLayout *securityButtons = new QHBoxLayout;
     QPushButton *seedButton = new QPushButton(tr("Request seed"), securityPage);
     QPushButton *keyButton = new QPushButton(tr("Send key"), securityPage);
+    QPushButton *clearSecurityButton = new QPushButton(tr("Clear output"), securityPage);
+    securityButtons->addWidget(clearSecurityButton);
     securityButtons->addStretch();
     securityButtons->addWidget(seedButton);
     securityButtons->addWidget(keyButton);
@@ -485,6 +534,7 @@ void UDSWorkbenchWindow::buildUi()
     securityLayout->addWidget(securityResponse);
     connect(seedButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::requestSecuritySeed);
     connect(keyButton, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendSecurityKey);
+    connect(clearSecurityButton, &QPushButton::clicked, securityResponse, &QTextEdit::clear);
     tabs->addTab(securityPage, tr("Security Access"));
 
     QWidget *manualPage = new QWidget(tabs);
@@ -496,14 +546,20 @@ void UDSWorkbenchWindow::buildUi()
     manualForm->addRow(tr("Service"), manualServiceEdit);
     manualForm->addRow(tr("Request data"), manualPayloadEdit);
     manualLayout->addLayout(manualForm);
+    QHBoxLayout *manualButtons = new QHBoxLayout;
+    QPushButton *clearManualButton = new QPushButton(tr("Clear output"), manualPage);
     QPushButton *sendManual = new QPushButton(tr("Send request"), manualPage);
-    manualLayout->addWidget(sendManual, 0, Qt::AlignRight);
+    manualButtons->addWidget(clearManualButton);
+    manualButtons->addStretch();
+    manualButtons->addWidget(sendManual);
+    manualLayout->addLayout(manualButtons);
     manualResponse = new QTextEdit(manualPage);
     manualResponse->setReadOnly(true);
     manualLayout->addWidget(manualResponse);
     connect(sendManual, &QPushButton::clicked, this, &UDSWorkbenchWindow::sendManualRequest);
+    connect(clearManualButton, &QPushButton::clicked, manualResponse, &QTextEdit::clear);
     tabs->addTab(manualPage, tr("Manual service"));
-    requestControls = {selectedButton, allButton, pollingCheck, scanStartButton,
+    requestControls = {selectedButton, allButton, pollingButton, scanStartButton,
         serviceScanStartButton, readDtcsButton, clearDtcsButton, dtcDetailButton,
         routineButton, controlButton, seedButton, keyButton, sendManual};
     for (QWidget *control : requestControls) control->setEnabled(false);
@@ -513,6 +569,9 @@ void UDSWorkbenchWindow::buildUi()
     eventLog->setReadOnly(true);
     eventLog->setMaximumHeight(130);
     root->addWidget(eventLog);
+    QPushButton *clearLogButton = new QPushButton(tr("Clear log"), this);
+    root->addWidget(clearLogButton, 0, Qt::AlignRight);
+    connect(clearLogButton, &QPushButton::clicked, eventLog, &QTextEdit::clear);
 }
 
 uint32_t UDSWorkbenchWindow::parseNumber(const QString &text, bool *ok) const
@@ -753,6 +812,8 @@ void UDSWorkbenchWindow::connectEndpoint()
     }
     udsHandler->clearAllFilters();
     udsHandler->addFilter(busSpin->value(), responseId, requestId > 0x7FF || responseId > 0x7FF ? 0x1FFFFFFF : 0x7FF);
+    udsHandler->setFlowCtrl(true);
+    udsHandler->setFlowControlParameters(flowBlockSizeSpin->value(), flowStMinSpin->value());
     udsHandler->setReception(true);
     UDS_MESSAGE message;
     message.bus = busSpin->value();
@@ -849,9 +910,56 @@ bool UDSWorkbenchWindow::addDidRequest(const QString &name, const QString &did,
     return true;
 }
 
+QJsonObject UDSWorkbenchWindow::aiState() const
+{
+    QJsonArray requests;
+    for (int row = 0; row < didTable->rowCount(); ++row)
+    {
+        requests.append(QJsonObject{
+            {QStringLiteral("enabled"),
+             didTable->item(row, DidEnabled)->checkState() == Qt::Checked},
+            {QStringLiteral("name"), didTable->item(row, DidName)->text()},
+            {QStringLiteral("did"), didTable->item(row, DidIdentifier)->text()},
+            {QStringLiteral("format"), didTable->item(row, DidFormat)->text()},
+            {QStringLiteral("poll_ms"), didTable->item(row, DidPollMs)->text().toInt()}
+        });
+    }
+    return QJsonObject{
+        {QStringLiteral("connected"), endpointConnected},
+        {QStringLiteral("bus"), busSpin->value()},
+        {QStringLiteral("request_id"), requestIdEdit->text()},
+        {QStringLiteral("response_id"), responseIdEdit->text()},
+        {QStringLiteral("polling"), pollingCheck->isChecked()},
+        {QStringLiteral("poll_cycle_ms"), pollIntervalSpin->value()},
+        {QStringLiteral("requests"), requests}
+    };
+}
+
 bool UDSWorkbenchWindow::executeAIRequest(const QString &operation,
                                           const QJsonObject &arguments, QString *error)
 {
+    if (operation == QStringLiteral("connect")) {
+        connectEndpoint();
+        return endpointConnected || responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("disconnect")) {
+        disconnectEndpoint();
+        return !endpointConnected && !responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("clear_dids")) {
+        didQueue.clear();
+        activeDidRow = -1;
+        didTable->setRowCount(0);
+        return true;
+    }
+    if (operation == QStringLiteral("stop_polling")) {
+        pollingCheck->setChecked(false);
+        return !pollingCheck->isChecked();
+    }
+    if (operation == QStringLiteral("scan_ecus")) {
+        startEcuScan();
+        return ecuScanActive;
+    }
     if (!endpointConnected || responseTimer.isActive()) {
         if (error) *error = tr("Connect the UDS endpoint and wait for any active request.");
         return false;
@@ -876,7 +984,96 @@ bool UDSWorkbenchWindow::executeAIRequest(const QString &operation,
         startDidScan();
         return didScanActive;
     }
-    if (operation == QStringLiteral("dtc")) { requestDtcs(); return responseTimer.isActive(); }
+    if (operation == QStringLiteral("request_all")) {
+        requestAllDids();
+        return responseTimer.isActive() || activeDidRow >= 0;
+    }
+    if (operation == QStringLiteral("start_polling")) {
+        pollingCheck->setChecked(true);
+        return pollingCheck->isChecked();
+    }
+    if (operation == QStringLiteral("scan_services")) {
+        startServiceScan();
+        return serviceScanActive;
+    }
+    if (operation == QStringLiteral("scan_sessions")) {
+        startSessionScan();
+        return sessionScanActive;
+    }
+    if (operation == QStringLiteral("dtc") || operation == QStringLiteral("read_dtcs")) {
+        requestDtcs();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("clear_dtcs")) {
+        sendServiceRequest(UDS_SERVICES::CLEAR_DIAG, QByteArray::fromHex("FFFFFF"),
+                           ContextDtcClear);
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("tester_present")) {
+        sendTesterPresent();
+        return true;
+    }
+    if (operation == QStringLiteral("routine_control")) {
+        const QString control = arguments.value("control").toString().toLower();
+        const QMap<QString, int> controls = {
+            {QStringLiteral("start"), 1}, {QStringLiteral("stop"), 2},
+            {QStringLiteral("results"), 3}
+        };
+        const int type = controls.value(control, arguments.value("control").toInt(1));
+        const int index = routineTypeCombo->findData(type);
+        if (index < 0) {
+            if (error) *error = tr("Routine control must be start, stop, or results.");
+            return false;
+        }
+        routineTypeCombo->setCurrentIndex(index);
+        routineIdEdit->setText(arguments.value("routine_id").toVariant().toString());
+        routineDataEdit->setText(arguments.value("data").toString());
+        sendRoutineControl();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("security_seed")) {
+        securityLevelSpin->setValue(arguments.value("level").toInt(1));
+        requestSecuritySeed();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("security_key")) {
+        int level = arguments.value("level").toInt(1);
+        if ((level & 1) == 0) --level;
+        const QByteArray key = QByteArray::fromHex(arguments.value("key").toString().toLatin1());
+        if (key.isEmpty()) {
+            if (error) *error = tr("SecurityAccess key bytes are required.");
+            return false;
+        }
+        QByteArray data(1, char(level + 1));
+        data.append(key);
+        sendServiceRequest(UDS_SERVICES::SECURITY_ACCESS, data, ContextSecurity);
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("detailed_dtc")) {
+        const int subfunction = arguments.value("subfunction").toVariant().toInt();
+        const int index = dtcDetailTypeCombo->findData(subfunction);
+        if (index < 0) {
+            if (error) *error = tr("Unsupported ReadDTCInformation subfunction.");
+            return false;
+        }
+        dtcDetailTypeCombo->setCurrentIndex(index);
+        dtcDetailDataEdit->setText(arguments.value("data").toString());
+        sendDetailedDtcRequest();
+        return responseTimer.isActive();
+    }
+    if (operation == QStringLiteral("manual_request")
+        || operation == QStringLiteral("guarded_control")) {
+        bool ok = false;
+        const int service = parseNumber(arguments.value("service").toVariant().toString(), &ok);
+        if (!ok || service < 0 || service > 0xFF) {
+            if (error) *error = tr("UDS service must be an 8-bit value.");
+            return false;
+        }
+        sendServiceRequest(service,
+            QByteArray::fromHex(arguments.value("data").toString().toLatin1()),
+            operation == QStringLiteral("guarded_control") ? ContextControl : ContextManual);
+        return responseTimer.isActive();
+    }
     if (error) *error = tr("Unsupported UDS AI operation: %1").arg(operation);
     return false;
 }
@@ -978,6 +1175,8 @@ void UDSWorkbenchWindow::pollEnabledDids()
         }
     }
     sendNextDid();
+    if (didQueue.isEmpty() && activeDidRow < 0 && pollingCheck->isChecked())
+        pollingTimer.start(pollIntervalSpin->value());
 }
 
 void UDSWorkbenchWindow::requestDtcs()
@@ -1169,7 +1368,14 @@ void UDSWorkbenchWindow::requestAllDids()
 
 void UDSWorkbenchWindow::sendNextDid()
 {
-    if (didQueue.isEmpty()) { activeDidRow = -1; activeService = -1; return; }
+    if (didQueue.isEmpty())
+    {
+        activeDidRow = -1;
+        activeService = -1;
+        if (pollingCheck->isChecked() && endpointConnected)
+            pollingTimer.start(pollIntervalSpin->value());
+        return;
+    }
     sendDidRow(didQueue.dequeue());
 }
 
@@ -1547,7 +1753,7 @@ void UDSWorkbenchWindow::finishDidScan(const QString &status)
     scanStartButton->setEnabled(true);
     scanResumeButton->setEnabled(scanCurrentDid <= scanEndDid);
     scanStopButton->setEnabled(false);
-    if (pollingCheck->isChecked()) pollingTimer.start(100);
+    if (pollingCheck->isChecked()) pollingTimer.start(pollIntervalSpin->value());
     log(tr("%1; %2 DIDs found").arg(status).arg(scanResults->count()));
     refreshDiscoverySummary();
 }
@@ -1763,7 +1969,7 @@ void UDSWorkbenchWindow::finishSessionScan(const QString &status)
     activeSessionScan = -1;
     activeService = -1;
     requestContext = ContextNone;
-    if (pollingCheck->isChecked()) pollingTimer.start(100);
+    if (pollingCheck->isChecked()) pollingTimer.start(pollIntervalSpin->value());
     log(tr("%1; %2 supported session(s)").arg(status).arg(sessionScanResults->count()));
     refreshDiscoverySummary();
 }
@@ -1810,7 +2016,7 @@ void UDSWorkbenchWindow::finishServiceScan(const QString &status)
     responseTimer.setInterval(normalResponseTimeout);
     serviceScanStartButton->setEnabled(true);
     serviceScanStopButton->setEnabled(false);
-    if (pollingCheck->isChecked()) pollingTimer.start(100);
+    if (pollingCheck->isChecked()) pollingTimer.start(pollIntervalSpin->value());
     log(tr("%1; %2 recognized services").arg(status).arg(serviceScanResults->count()));
     refreshDiscoverySummary();
 }
@@ -2174,7 +2380,7 @@ void UDSWorkbenchWindow::gotUDSReply(UDS_MESSAGE message)
         for (QWidget *control : requestControls) control->setEnabled(true);
         connectionStatus->setText(tr("Session active"));
         if (testerPresentCheck->isChecked()) testerTimer.start();
-        if (pollingCheck->isChecked()) pollingTimer.start(100);
+        if (pollingCheck->isChecked()) pollingTimer.start(pollIntervalSpin->value());
     }
 }
 
@@ -2264,6 +2470,18 @@ void UDSWorkbenchWindow::loadSettings()
     busSpin->setValue(settings.value("UDSWorkbench/Bus", 0).toInt());
     requestIdEdit->setText(settings.value("UDSWorkbench/RequestId", "0x7E0").toString());
     responseIdEdit->setText(settings.value("UDSWorkbench/ResponseId", "0x7E8").toString());
+    QString addressPreset = settings.value("UDSWorkbench/AddressPreset").toString();
+    if (addressPreset.isEmpty())
+    {
+        bool requestOk = false;
+        const uint32_t request = parseNumber(requestIdEdit->text(), &requestOk);
+        if (requestOk && request == 0x7DF) addressPreset = QStringLiteral("11functional");
+        else if (requestOk && request > 0x7FF) addressPreset = QStringLiteral("29fixed");
+        else if (requestOk && request == 0x7E0) addressPreset = QStringLiteral("11physical");
+        else addressPreset = QStringLiteral("custom");
+    }
+    addressPresetCombo->setCurrentIndex(
+        qMax(0, addressPresetCombo->findData(addressPreset)));
     responseOffsetEdit->setText(settings.value("UDSWorkbench/ResponseOffset", "0x8").toString());
     QString responseMode = settings.value("UDSWorkbench/ResponseMode").toString();
     if (responseMode.isEmpty())
@@ -2284,6 +2502,7 @@ void UDSWorkbenchWindow::loadSettings()
     p2StarTimeoutSpin->setValue(settings.value("UDSWorkbench/P2StarTimeout", 5000).toInt());
     flowBlockSizeSpin->setValue(settings.value("UDSWorkbench/FlowBlockSize", 0).toInt());
     flowStMinSpin->setValue(settings.value("UDSWorkbench/FlowStMin", 3).toInt());
+    scanTimeoutSpin->setValue(settings.value("UDSWorkbench/DidScanTimeout", 300).toInt());
     normalResponseTimeout = p2TimeoutSpin->value();
     udsHandler->setFlowControlParameters(flowBlockSizeSpin->value(), flowStMinSpin->value());
     sessionCombo->setCurrentIndex(settings.value("UDSWorkbench/Session", 2).toInt());
@@ -2298,6 +2517,7 @@ void UDSWorkbenchWindow::saveSettings() const
 {
     QSettings settings;
     settings.setValue("UDSWorkbench/Bus", busSpin->value());
+    settings.setValue("UDSWorkbench/AddressPreset", addressPresetCombo->currentData().toString());
     settings.setValue("UDSWorkbench/RequestId", requestIdEdit->text());
     settings.setValue("UDSWorkbench/ResponseId", responseIdEdit->text());
     settings.setValue("UDSWorkbench/ResponseMode", responseAddressModeCombo->currentData().toString());
@@ -2307,6 +2527,7 @@ void UDSWorkbenchWindow::saveSettings() const
     settings.setValue("UDSWorkbench/P2StarTimeout", p2StarTimeoutSpin->value());
     settings.setValue("UDSWorkbench/FlowBlockSize", flowBlockSizeSpin->value());
     settings.setValue("UDSWorkbench/FlowStMin", flowStMinSpin->value());
+    settings.setValue("UDSWorkbench/DidScanTimeout", scanTimeoutSpin->value());
     settings.setValue("UDSWorkbench/Session", sessionCombo->currentIndex());
     settings.setValue("UDSWorkbench/PollInterval", pollIntervalSpin->value());
     settings.setValue("UDSWorkbench/PollEnabled", pollingCheck->isChecked());

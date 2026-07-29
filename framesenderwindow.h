@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QTime>
 #include <QMutex>
+#include <QJsonObject>
 #include "can_structs.h"
 #include "can_trigger_structs.h"
 #include "dbc/dbchandler.h"
@@ -39,10 +40,22 @@ public:
     ~FrameSenderWindow();
     bool addFrameDraft(int bus, quint32 canId, bool extended, const QByteArray &payload,
                        QString *error = nullptr);
+    bool addFrameDraftWithFlags(int bus, quint32 canId, bool extended, bool remote,
+                                const QByteArray &payload, QString *error = nullptr);
     bool addFrameLoopDraft(int bus, quint32 canId, bool extended, const QByteArray &payload,
                            int count, int intervalMs, QString *error = nullptr);
+    bool addFrameLoopDraftWithFlags(int bus, quint32 canId, bool extended, bool remote,
+                                    const QByteArray &payload, int count, int intervalMs,
+                                    QString *error = nullptr);
     bool enableDraftRow(int row, QString *error = nullptr);
     void disableAllRows();
+    bool updateDraftRow(int row, const QJsonObject &values, QString *error = nullptr);
+    bool setDraftRowEnabled(int row, bool enabled, QString *error = nullptr);
+    bool removeDraftRows(const QList<int> &rows, QString *error = nullptr);
+    int clearDraftRows();
+    void setAllDraftRowsEnabled(bool enabled);
+    bool saveDraftGrid(const QString &filename, QString *error = nullptr);
+    bool loadDraftGrid(const QString &filename, QString *error = nullptr);
 
 private slots:
     void onCellChanged(int, int);

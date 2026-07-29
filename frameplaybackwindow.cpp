@@ -3,6 +3,7 @@
 #include "ui_frameplaybackwindow.h"
 #include <QDebug>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMenu>
 #include <QSettings>
 #include <qevent.h>
@@ -99,6 +100,85 @@ FramePlaybackWindow::FramePlaybackWindow(const QVector<CANFrame> *frames, QWidge
 FramePlaybackWindow::~FramePlaybackWindow()
 {
     delete ui;
+}
+
+bool FramePlaybackWindow::executeAIRequest(const QString &operation,
+                                           const QJsonObject &arguments,
+                                           QString *error)
+{
+    if (operation == QStringLiteral("load_live")) {
+        btnLoadLive();
+        return !seqItems.isEmpty();
+    }
+    if (operation == QStringLiteral("load_file")) {
+        QString filename = arguments.value(QStringLiteral("path")).toString();
+        SequenceItem item;
+        if (filename.isEmpty() || !FrameFileIO::loadFrameFile(filename, &item.data)) {
+            if (error) *error = tr("Could not load the requested playback file.");
+            return false;
+        }
+        std::sort(item.data.begin(), item.data.end());
+        item.filename = QFileInfo(filename).fileName();
+        item.currentLoopCount = 0;
+        item.maxLoops = qMax(1, arguments.value(QStringLiteral("loops")).toInt(1));
+        fillIDHash(item);
+        seqItems.append(item);
+        const int row = ui->tblSequence->rowCount();
+        ui->tblSequence->insertRow(row);
+        ui->tblSequence->setItem(row, 0, new QTableWidgetItem(item.filename));
+        ui->tblSequence->setItem(row, 1, new QTableWidgetItem(QString::number(item.maxLoops)));
+        if (currentSeqNum == -1) {
+            currentSeqNum = 0;
+            currentSeqItem = &seqItems[0];
+            playbackObject.setSequenceObject(currentSeqItem);
+        }
+        refreshIDList();
+        updateFrameLabel();
+        return true;
+    }
+    if (operation == QStringLiteral("configure")) {
+        if (arguments.contains(QStringLiteral("interval_ms")))
+            ui->spinPlaySpeed->setValue(arguments.value(QStringLiteral("interval_ms")).toInt());
+        if (arguments.contains(QStringLiteral("burst")))
+            ui->spinBurstSpeed->setValue(arguments.value(QStringLiteral("burst")).toInt());
+        if (arguments.contains(QStringLiteral("loop")))
+            ui->cbLoop->setChecked(arguments.value(QStringLiteral("loop")).toBool());
+        if (arguments.contains(QStringLiteral("original_timing")))
+            ui->cbOriginalTiming->setChecked(
+                arguments.value(QStringLiteral("original_timing")).toBool());
+        if (arguments.contains(QStringLiteral("bus"))) {
+            const int bus = arguments.value(QStringLiteral("bus")).toInt();
+            const int index = ui->comboCANBus->findText(QString::number(bus));
+            if (index >= 0) ui->comboCANBus->setCurrentIndex(index);
+            else {
+                if (error) *error = tr("Requested playback bus is not available.");
+                return false;
+            }
+        }
+        return true;
+    }
+    if (operation == QStringLiteral("delete_sequence")) {
+        const int row = arguments.value(QStringLiteral("row")).toInt(ui->tblSequence->currentRow());
+        if (row < 0 || row >= seqItems.size()) {
+            if (error) *error = tr("Playback sequence row does not exist.");
+            return false;
+        }
+        ui->tblSequence->setCurrentCell(row, 0);
+        btnDeleteCurrSeq();
+        return true;
+    }
+    if (operation == QStringLiteral("play")) btnPlayClick();
+    else if (operation == QStringLiteral("reverse")) btnReverseClick();
+    else if (operation == QStringLiteral("pause")) btnPauseClick();
+    else if (operation == QStringLiteral("stop")) btnStopClick();
+    else if (operation == QStringLiteral("step_forward")) btnFwdOneClick();
+    else if (operation == QStringLiteral("step_back")) btnBackOneClick();
+    else {
+        if (error) *error = tr("Unknown playback operation.");
+        return false;
+    }
+    return operation == QStringLiteral("pause") || operation == QStringLiteral("stop")
+        || !seqItems.isEmpty();
 }
 
 void FramePlaybackWindow::showEvent(QShowEvent *)

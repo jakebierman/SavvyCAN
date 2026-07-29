@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN CANopen"
+  short_description: "Operate CANopen nodes and object dictionaries"
+  default_prompt: "Use @savvycan-canopen to handle this CANopen workflow in SavvyCAN."

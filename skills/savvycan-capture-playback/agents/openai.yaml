@@ -1,0 +1,3 @@
+interface:
+  display_name: "SavvyCAN Capture Playback"
+  short_description: "Load and safely replay CAN captures"

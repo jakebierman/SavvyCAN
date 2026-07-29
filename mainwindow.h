@@ -49,6 +49,8 @@ class ScriptingWindow;
 class QSortFilterProxyModel;
 class QDockWidget;
 class QComboBox;
+class QSplitter;
+class QToolButton;
 
 enum SIMP_COL
 {
@@ -59,7 +61,9 @@ enum SIMP_COL
     SC_COL_REM = 4,
     SC_COL_DATA = 5,
     SC_COL_INTERVAL = 6,
-    SC_COL_COUNT = 7,
+    SC_COL_LIMIT = 7,
+    SC_COL_COUNT = 8,
+    SC_COL_STATUS = 9,
 };
 
 namespace Ui {
@@ -184,7 +188,11 @@ private:
     bool payloadDockTraceContext = true;
     QTabWidget *workspaceTabs;
     QWidget *traceWorkspace;
+    QSplitter *traceSenderSplitter;
+    QWidget *traceSenderPanel;
+    QToolButton *traceSenderCollapseButton;
     void setupWorkspaceTabs();
+    void setupTraceSenderPanel();
     void activateWorkspace(QWidget *page, const QString &title);
     void populatePayloadDisplayCombo();
     void setupPayloadDock();
@@ -286,7 +294,27 @@ private:
     bool eventFilter(QObject *obj, QEvent *event);
     void manageRowExpansion();
     void disableAutoRowExpansion();
-    void createSenderRow();
+    int createSenderRow();
+    QList<int> selectedSenderRows() const;
+    bool validateSenderRow(int row, QString *error = nullptr) const;
+    void rebuildSenderTrigger(int row);
+    void updateSenderRowStatus(int row);
+    bool setSenderRowsEnabled(const QList<int> &rows, bool enabled,
+                              QString *error = nullptr);
+    bool sendSenderRowsOnce(const QList<int> &rows, QString *error = nullptr);
+    void deleteSenderRows(const QList<int> &rows);
+    void duplicateSenderRows(const QList<int> &rows);
+    bool updateTraceSenderRow(int row, const QJsonObject &values,
+                              QString *error = nullptr);
+    void copySelectedTraceToSender();
+    void moveSenderRowsToAdvanced(const QList<int> &rows);
+    void saveTraceSenderList();
+    void loadTraceSenderList();
+    bool saveTraceSenderListToPath(const QString &path, QString *error = nullptr);
+    bool loadTraceSenderListFromPath(const QString &path, QString *error = nullptr);
+    void showSenderContextMenu(const QPoint &pos);
+    void showSenderHeaderMenu(const QPoint &pos);
+    void setTraceSenderCollapsed(bool collapsed);
     bool addTraceSenderLoop(int bus, quint32 canId, bool extended,
                             const QByteArray &payload, int count,
                             int intervalMs, QString *error);

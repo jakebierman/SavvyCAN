@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QSet>
+#include <QStringList>
 #include <functional>
 
 #include "can_structs.h"
@@ -37,7 +38,11 @@ public:
     bool authorizeTransmit(const QString &capability, const QJsonObject &arguments,
                            QString *error) const;
     int transmissionConfirmationMode() const;
+    bool previewActionsOnly() const;
+    void beginActionBatch(int expectedActions);
+    void endActionBatch();
     void recordActionResult(const QString &capability, bool success, const QString &message);
+    void recordActionPreview(const QJsonArray &actions);
 
 public slots:
     void submitChat(const QString &question, bool includeCapture);
@@ -70,6 +75,7 @@ private slots:
     void removeModel();
     void modelOperationFinished(int exitCode);
     void sendChatMessage();
+    void clearAudit();
     void updateModelButtons();
     void updateResourceStats();
     void gpuStatsFinished(int exitCode);
@@ -81,6 +87,17 @@ private slots:
     void previewEvidence();
     void handleLiveFrames(CANConnection *connection, QVector<CANFrame> &frames);
     void liveAnalysisTick();
+    void providerChanged();
+    void testOnlineProvider();
+    void updateGraphifyStatus();
+    void validateSkills();
+    void installHeadroom();
+    void startHeadroom();
+    void stopHeadroom();
+    void headroomInstallFinished(int exitCode);
+    void headroomStarted();
+    void headroomFinished(int exitCode);
+    void saveHeadroomKey();
 
 private:
     enum class RequestPurpose { None, ModelList, PrimaryAnalysis, Review, Chat, ChatReview };
@@ -107,17 +124,54 @@ private:
     void updateCaptureStatus();
     void emergencyStop();
     QString compressedChatHistory() const;
+    QString locateGraphifyExecutable() const;
+    QString locateGraphifyGraph() const;
+    QString graphifyContext(const QString &question) const;
+    bool usingOnlineProvider() const;
+    bool usingOpenAI() const;
+    bool usingHeadroom() const;
+    QString onlineApiKey() const;
+    QString headroomRoot() const;
+    QString headroomExecutable() const;
+    QString headroomKeyPath() const;
+    QString loadHeadroomKey() const;
+    void updateHeadroomControls();
+    void probeHeadroomReady(int attemptsRemaining);
+    void requestHeadroomStats(bool reportRequestDelta);
+    void handleHeadroomStatsReply(QNetworkReply *reply);
+    bool confirmOnlineRequest(const QString &prompt, RequestPurpose purpose);
+    QJsonObject promptApplicationContext(const QString &question = QString()) const;
+    QJsonArray selectedCapabilityCatalog;
+    QString skillRoutingQuestion;
 
     const QVector<CANFrame> *modelFrames;
     QNetworkAccessManager *network;
     QProcess *managedRuntime;
     QProcess *modelOperation;
+    QProcess *headroomRuntime;
+    QProcess *headroomInstaller;
     QNetworkReply *activeReply = nullptr;
     RequestPurpose requestPurpose = RequestPurpose::None;
     QJsonObject currentEvidence;
     QString primaryResult;
     QString primaryChatResult;
     QString chatHistory;
+    bool suppressChatTools = false;
+    bool headroomReady = false;
+    bool headroomStatsReady = false;
+    qint64 headroomInputTokens = -1;
+    qint64 headroomSavedTokens = 0;
+    qint64 headroomAttemptedTokens = 0;
+    qint64 headroomCacheReadTokens = 0;
+    double headroomSavedUsd = -1.0;
+    double headroomCacheSavingsUsd = 0.0;
+    bool detailedActionResults = false;
+    bool actionBatchActive = false;
+    int actionBatchExpected = 0;
+    int actionBatchSucceeded = 0;
+    int actionBatchFailed = 0;
+    QStringList actionBatchFailures;
+    QStringList actionBatchChanges;
     QSet<QString> installedModels;
     std::function<QJsonObject()> contextProvider;
     QDateTime accessArmedUntil;
@@ -136,6 +190,32 @@ private:
     QString lastRuntimeOutput;
 
     QLineEdit *endpointEdit;
+    QComboBox *providerCombo;
+    QLineEdit *openAIEndpointEdit;
+    QLineEdit *openAIKeyEdit;
+    QCheckBox *openAIEnabledCheck;
+    QCheckBox *openAIContextCheck;
+    QCheckBox *openAICaptureCheck;
+    QCheckBox *openAIHistoryCheck;
+    QCheckBox *openAIConfirmCheck;
+    QCheckBox *openAIStoreCheck;
+    QComboBox *headroomModeCombo;
+    QPushButton *onlineTestButton;
+    QLineEdit *headroomUpstreamKeyEdit;
+    QCheckBox *headroomRememberKeyCheck;
+    QCheckBox *headroomAutoStartCheck;
+    QPushButton *headroomInstallButton;
+    QPushButton *headroomStartButton;
+    QPushButton *headroomStopButton;
+    QLabel *headroomStatus;
+    QLabel *openAIStatus;
+    QLabel *openAIUsage;
+    QCheckBox *graphifyEnabledCheck;
+    QCheckBox *graphifyOnlineCheck;
+    QLineEdit *graphifyPathEdit;
+    QSpinBox *graphifyBudgetSpin;
+    QLabel *graphifyStatus;
+    QLabel *skillStatus;
     QComboBox *primaryModelCombo;
     QComboBox *reviewModelCombo;
     QLabel *connectionStatus;
@@ -151,6 +231,7 @@ private:
     QComboBox *accessDurationCombo;
     QComboBox *confirmationCombo;
     QCheckBox *armAccessCheck;
+    QCheckBox *previewActionsCheck;
     QLabel *accessStatus;
     QLabel *resourceStatus;
     QLabel *gpuStatus;
@@ -175,6 +256,7 @@ private:
     QPushButton *analyzeButton;
     QPushButton *stopButton;
     QPushButton *chatSendButton;
+    int headroomInstallStage = 0;
 };
 
 #endif

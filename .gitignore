@@ -53,3 +53,5 @@ SavvyCAN.xcodeproj
 
 # Project-local AI runtime and multi-gigabyte model data
 local-ai/
+graphify-out/
+build-ai-skills/

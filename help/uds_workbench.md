@@ -6,9 +6,9 @@ Set the CAN bus and request/response IDs, choose a diagnostic session, then sele
 
 ## DID requests
 
-Add DIDs to the table, enter each 16-bit identifier, and choose **Request selected** or **Request enabled**. The list, endpoint, and selected session are restored the next time the workbench opens.
+Add DIDs to the table and enter each 16-bit identifier. The **Poll** checkbox includes a row in enabled operations. Use **Send selected once** for highlighted rows, **Send enabled once** for one pass through checked rows, and the single **Start polling** / **Stop polling** button for repeated cycles. The list, endpoint, and selected session are restored the next time the workbench opens.
 
-Enable **Poll** and select the shared interval to request enabled rows repeatedly. A row's **Poll ms** value overrides the shared interval; use `0` to inherit it. Polling waits while manual requests or an earlier DID queue are active, so only one diagnostic exchange is in flight at a time.
+Select the cycle interval before starting polling. DIDs are sent sequentially, advancing only after each response or timeout; the cycle interval begins after that queue finishes. A row's **Poll ms** value is an optional minimum time between requests for that DID, so slower-changing DIDs can skip cycles; use `0` to include the row in every cycle. Only one diagnostic exchange is in flight at a time.
 
 Use **Save DID list** to save the endpoint, session, and DID definitions as JSON. **Load DID list** replaces the current list and endpoint; reconnect the imported endpoint before sending requests.
 
@@ -20,7 +20,7 @@ See [Payload Formatter Reference](./payload_formatter.md) for the complete gramm
 
 ## DID discovery
 
-The **DID discovery** tab scans a configurable inclusive range with ReadDataByIdentifier (`0x22`). The default `0xF180` through `0xF1FF` range covers common standardized identification DIDs. Set a timeout appropriate for the ECU and transport; a short timeout makes unsupported DIDs pass quickly, while a slower ECU may require more time.
+The **DID discovery** tab scans a configurable inclusive range with ReadDataByIdentifier (`0x22`). The default `0xF180` through `0xF1FF` range covers common standardized identification DIDs. Set a timeout appropriate for the ECU and transport; a short timeout makes unsupported DIDs pass quickly, while a slower ECU may require more time. Discovery defaults to 300 ms and remembers the chosen timeout. If a DID works as a normal request but is absent from a scan, increase this timeout toward the endpoint's P2 value.
 
 Only positive responses containing the requested DID are added to the result list. Negative responses and timeouts advance to the next DID, while Response Pending continues waiting for the current DID. The scan can be stopped at any time. Polling pauses during discovery and resumes afterward when enabled.
 
@@ -28,7 +28,7 @@ Select one or more results and choose **Add selected to DID requests**. Existing
 
 Large scans require confirmation. DID discovery sends active diagnostic requests and should only be used on modules you own or are authorised to test.
 
-Stopped scans can be resumed in the same session. **Save results** stores the range, next DID, and positive responses as JSON; loading that file restores the exact resume point.
+Stopped scans can be resumed in the same session. Existing positive results are retained and the discovery summary is rebuilt from the combined result list when the resumed scan stops or completes. **Save results** stores the range, next DID, and positive responses as JSON; loading that file restores the exact resume point.
 
 ## Service discovery
 
@@ -52,7 +52,9 @@ Only send diagnostic requests to vehicles and modules you own or are authorised 
 
 ## Endpoint setup and safety
 
-The endpoint preset selects common 11-bit physical, 11-bit functional, or 29-bit normal-fixed addressing. Response addressing may use an explicit ID, request plus `0x8`, request plus `0x80`, or a custom offset. **Learn response** probes the current request ID and records responding endpoints.
+The addressing selector identifies common 11-bit physical, 11-bit functional, or 29-bit normal-fixed addressing. Changing the selection preserves the request ID, response ID, and response rule you already entered. Choose **Apply defaults** only when you intentionally want the selected type's standard example IDs and response mode. The selection is retained between sessions.
+
+CAN frame width is ultimately inferred from the numeric identifier: IDs through `0x7FF` use the standard 11-bit format and larger IDs use the extended 29-bit format. Response addressing may use an explicit ID, request plus `0x8`, request plus `0x80`, or a custom offset. **Learn response** probes the current request ID and records responding endpoints.
 
 In ECU discovery, **Any response ID** installs a temporary wildcard receive filter. Only frames that decode as a reply to the active UDS probe are recorded. This is useful when neither the 11-bit nor 29-bit response address is known; select the discovered pair and choose **Use selected ECU** afterward.
 
@@ -62,7 +64,9 @@ Active scans have an inter-request gap and request limit, checkpoint their remai
 
 The Setup tab provides Passive, Read-only active, and Full diagnostics safety modes. Passive blocks all diagnostic transmission. Read-only permits discovery and data retrieval but blocks security, clearing, routines, resets, writes, downloads, and controls. Full diagnostics enables those operations while retaining their confirmation dialogs.
 
-P2 controls the normal response timeout and P2* controls Response Pending. ISO-TP block size and STmin are placed directly in generated flow-control frames. Endpoint profiles retain addressing, session, safety, timing, transport settings, and DID rows.
+P2 controls the normal response timeout and P2* controls Response Pending. ISO-TP flow control is enabled for UDS replies. Block size and STmin are placed directly in generated flow-control frames, and another Continue To Send frame is issued after each configured receive block until reassembly completes. Endpoint profiles retain addressing, session, safety, timing, transport settings, and DID rows.
+
+Each discovery/result page and response pane has its own clear control. Clearing displayed results does not remove configured DID requests or send anything to the ECU.
 
 ## Discovery summary
 

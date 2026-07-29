@@ -1,0 +1,17 @@
+{
+  "name": "SavvyCAN skills",
+  "version": "2026.07.3",
+  "skills": [
+    "savvycan-interface",
+    "savvycan-capture-playback",
+    "savvycan-dbc-signals",
+    "savvycan-reverse-engineering",
+    "savvycan-raw-can",
+    "savvycan-obd",
+    "savvycan-uds",
+    "savvycan-canopen",
+    "savvycan-connections",
+    "savvycan-fuzzing",
+    "savvycan-scripting"
+  ]
+}

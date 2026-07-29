@@ -1,0 +1,4 @@
+interface:
+  display_name: "SavvyCAN UDS"
+  short_description: "Operate UDS discovery and diagnostics"
+  default_prompt: "Use @savvycan-uds to handle this UDS diagnostic workflow safely."
