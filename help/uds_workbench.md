@@ -8,7 +8,7 @@ Set the CAN bus and request/response IDs, choose a diagnostic session, then sele
 
 Add DIDs to the table and enter each 16-bit identifier. The **Poll** checkbox includes a row in enabled operations. Use **Send selected once** for highlighted rows, **Send enabled once** for one pass through checked rows, and the single **Start polling** / **Stop polling** button for repeated cycles. The list, endpoint, and selected session are restored the next time the workbench opens.
 
-Select the cycle interval before starting polling. DIDs are sent sequentially, advancing only after each response or timeout; the cycle interval begins after that queue finishes. A row's **Poll ms** value is an optional minimum time between requests for that DID, so slower-changing DIDs can skip cycles; use `0` to include the row in every cycle. Only one diagnostic exchange is in flight at a time.
+Select the cycle interval before starting polling. DIDs are sent sequentially, advancing immediately after each complete response or the P2 timeout. **Cycle interval** is measured from the start of one list pass to the start of the next; if a pass takes longer than the interval, the next pass starts as soon as the current one finishes. A row's **Poll ms** value is an optional minimum time between requests for that DID, so slower-changing DIDs can skip cycles; use `0` to include the row in every cycle. Only one diagnostic exchange is in flight at a time.
 
 Use **Save DID list** to save the endpoint, session, and DID definitions as JSON. **Load DID list** replaces the current list and endpoint; reconnect the imported endpoint before sending requests.
 

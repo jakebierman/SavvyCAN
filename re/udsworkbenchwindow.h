@@ -209,6 +209,8 @@ private:
     int ecuProbeCount = 0;
     int ecuErrorFrameBaseline = 0;
     int normalResponseTimeout = 1500;
+    qint64 pollCycleStartedMs = 0;
+    bool pollCycleActive = false;
 };
 
 #endif // UDSWORKBENCHWINDOW_H

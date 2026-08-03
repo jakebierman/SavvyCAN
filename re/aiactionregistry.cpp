@@ -82,6 +82,7 @@ QJsonArray AIActionRegistry::catalog()
 {"capability":"frame.load_grid","title":"Load a Frame Sender grid","ui":"Frame Sender","access":"edit","arguments":{"path":"existing .fsd path"}},
 {"capability":"trace_sender.add","title":"Add a compact CAN Trace sender row","ui":"Trace Sender","access":"edit","arguments":{"bus":"integer","can_id":"hex CAN ID","extended":"optional boolean","remote":"optional boolean","payload":"space-separated hex bytes","interval_ms":"optional 1-3600000","limit":"optional 0-1000000; zero is unlimited"}},
 {"capability":"trace_sender.update","title":"Edit a compact CAN Trace sender row","ui":"Trace Sender","access":"edit","arguments":{"row":"zero-based row","bus":"optional integer","can_id":"optional hex CAN ID","extended":"optional boolean","remote":"optional boolean","payload":"optional hex bytes","interval_ms":"optional 1-3600000","limit":"optional 0-1000000"}},
+{"capability":"trace_sender.update_bits","title":"Set individual bits in a compact CAN Trace sender row","ui":"Trace Sender","access":"edit","arguments":{"row":"zero-based row","changes":"array of {byte:0-7, bit:0-7, value:boolean}"}},
 {"capability":"trace_sender.remove","title":"Remove compact CAN Trace sender rows","ui":"Trace Sender","access":"edit","arguments":{"rows":"array of zero-based rows"}},
 {"capability":"trace_sender.clear","title":"Clear the compact CAN Trace sender list","ui":"Trace Sender","access":"edit","arguments":{}},
 {"capability":"trace_sender.stop","title":"Stop compact CAN Trace sender rows","ui":"Trace Sender","access":"edit","arguments":{"rows":"array of zero-based rows"}},
@@ -216,8 +217,8 @@ QJsonArray AIActionRegistry::skills()
 {"id":"raw_can","title":"Raw CAN frames and transmission","package":"skills/savvycan-raw-can",
  "triggers":["raw can","can frame","frame","frames","packet","packets","trace sender","sender row","send once","send repeatedly","send data","send bytes","loop frame","repeat frame","transmit","arbitration id","can id"],
  "workspaces":["can trace"],
- "capabilities":["ui.open","frame.add_draft","frame.update_draft","frame.set_enabled","frame.remove_rows","frame.clear","frame.set_all_enabled","frame.save_grid","frame.load_grid","frame.send","frame.send_once","frame.send_loop","trace_sender.add","trace_sender.update","trace_sender.remove","trace_sender.clear","trace_sender.stop","trace_sender.copy_selected","trace_sender.to_advanced","trace_sender.save","trace_sender.load","trace_sender.start","trace_sender.send_once"],
- "rules":["Use frame.send_once for an explicitly described one-shot frame.","Use frame.send_loop for a newly requested bounded repetition so it appears in the compact CAN Trace sender.","Use trace_sender capabilities to operate configured compact rows. Row indices come from trace_sender_rows application context.","Use frame draft/grid capabilities only for the advanced Frame Sender with triggers and modifiers.","Payload is a space-separated hexadecimal byte string and can_id is the arbitration identifier."],
+ "capabilities":["ui.open","frame.add_draft","frame.update_draft","frame.set_enabled","frame.remove_rows","frame.clear","frame.set_all_enabled","frame.save_grid","frame.load_grid","frame.send","frame.send_once","frame.send_loop","trace_sender.add","trace_sender.update","trace_sender.update_bits","trace_sender.remove","trace_sender.clear","trace_sender.stop","trace_sender.copy_selected","trace_sender.to_advanced","trace_sender.save","trace_sender.load","trace_sender.start","trace_sender.send_once"],
+ "rules":["Use frame.send_once for an explicitly described one-shot frame.","Use frame.send_loop for a newly requested bounded repetition so it appears in the compact CAN Trace sender.","Use trace_sender capabilities to operate configured compact rows. Row indices come from trace_sender_rows application context.","Use trace_sender.update_bits when the user identifies byte and bit positions; bit 0 is the least-significant bit.","Use frame draft/grid capabilities only for the advanced Frame Sender with triggers and modifiers.","Payload bytes may be hexadecimal or 0b-prefixed binary and can_id is the arbitration identifier."],
  "examples":[
   {"user":"send 123 01 02 once on bus 0","capability":"frame.send_once","arguments":{"bus":0,"can_id":"0x123","extended":false,"payload":"01 02"}},
   {"user":"send that frame ten times every 100 ms","capability":"frame.send_loop","arguments":{"bus":0,"can_id":"0x123","extended":false,"payload":"01 02","count":10,"interval_ms":100}}
@@ -317,7 +318,7 @@ QJsonArray AIActionRegistry::catalogForQuestion(const QString &question,
 
 QString AIActionRegistry::skillVersion()
 {
-    return QStringLiteral("2026.07.4");
+    return QStringLiteral("2026.08.1");
 }
 
 QString AIActionRegistry::skillContext(const QString &question,
@@ -668,6 +669,10 @@ bool AIActionRegistry::validate(const QJsonObject &action, QString *error)
             && require(QStringLiteral("payload"));
     if (capability == QStringLiteral("trace_sender.update"))
         return require(QStringLiteral("row"));
+    if (capability == QStringLiteral("trace_sender.update_bits"))
+        return require(QStringLiteral("row")) && require(QStringLiteral("changes"))
+            && arguments.value(QStringLiteral("changes")).isArray()
+            && !arguments.value(QStringLiteral("changes")).toArray().isEmpty();
     if (capability == QStringLiteral("trace_sender.remove")
         || capability == QStringLiteral("trace_sender.stop")
         || capability == QStringLiteral("trace_sender.to_advanced")

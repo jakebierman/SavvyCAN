@@ -10,6 +10,8 @@ description: Prepare, validate, send, repeat, filter, and analyze raw classic CA
 3. Use `frame.send_loop` for bounded repetition so the row remains visible and
    stoppable in CAN Trace.
 4. Use `trace_sender.add` and `trace_sender.update` for compact row drafts.
+   Use `trace_sender.update_bits` for exact byte/bit changes; byte and bit
+   indices are zero-based and bit 0 is the least-significant bit.
    Use `trace_sender.start`, `trace_sender.stop`, and
    `trace_sender.send_once` to operate existing rows. Resolve row indices from
    the supplied `trace_sender_rows` application context.
@@ -21,4 +23,5 @@ description: Prepare, validate, send, repeat, filter, and analyze raw classic CA
 8. Respect read/full access, arming, validation and confirmation controls.
 
 Classic CAN payloads contain at most eight bytes. Standard identifiers are at
-most `0x7FF`; extended identifiers are at most `0x1FFFFFFF`.
+most `0x7FF`; extended identifiers are at most `0x1FFFFFFF`. Payload byte
+tokens may mix hexadecimal and `0b`-prefixed binary values.

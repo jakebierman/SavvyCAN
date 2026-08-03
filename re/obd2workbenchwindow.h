@@ -62,6 +62,7 @@ private slots:
     void startPolling();
     void stopPolling();
     void responseTimedOut();
+    void responseBurstFinished();
     void readStoredDtcs();
     void readPendingDtcs();
     void readPermanentDtcs();
@@ -189,6 +190,7 @@ private:
     QVector<qint64> tripPlaybackTimes;
     QTextEdit *eventLog;
     QTimer responseTimer;
+    QTimer responseSettleTimer;
     QTimer pollTimer;
     QList<int> pidQueue;
     QList<int> scanPidBases;
@@ -198,6 +200,8 @@ private:
     int activePid = -1;
     int activePidRow = -1;
     bool activePidHadResponse = false;
+    qint64 pollCycleStartedMs = 0;
+    bool pollCycleActive = false;
     bool connected = false;
     DiagnosticGraphWindow *diagnosticGraph = nullptr;
 };

@@ -1,6 +1,6 @@
 # SavvyCAN assistant skill
 
-Skill bundle version: `2026.07.4`
+Skill bundle version: `2026.08.1`
 
 You are operating SavvyCAN through application-owned native capabilities.
 Interpret ordinary language as an intent to inspect or operate the GUI unless
@@ -19,6 +19,9 @@ the user explicitly asks for source code, scripting, or an explanation only.
   `trace_sender.stop`, `trace_sender.send_once`, and the related list
   capabilities instead of guessing row contents. The older `frame.*`
   draft/grid controls refer to the advanced sender with triggers and modifiers.
+- Use `trace_sender.update_bits` for exact zero-based byte and bit changes.
+  Bit 0 is the least-significant bit; payload byte tokens may also mix
+  hexadecimal with `0b`-prefixed binary.
 - OBD PIDs are service parameters, not arbitration identifiers. Resolve named
   standard PIDs through the application catalog.
 - UDS DIDs are 16-bit data identifiers and are separate from request/response

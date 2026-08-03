@@ -8,8 +8,8 @@
 void TestAIActionRegistry::routesEvaluationPrompts()
 {
     const QJsonObject diagnostics = AIActionRegistry::skillDiagnostics();
-    QCOMPARE(diagnostics.value(QStringLiteral("evaluations_total")).toInt(), 19);
-    QCOMPARE(diagnostics.value(QStringLiteral("evaluations_passed")).toInt(), 19);
+    QCOMPARE(diagnostics.value(QStringLiteral("evaluations_total")).toInt(), 20);
+    QCOMPARE(diagnostics.value(QStringLiteral("evaluations_passed")).toInt(), 20);
     QVERIFY2(diagnostics.value(QStringLiteral("evaluation_failures")).toArray().isEmpty(),
              qPrintable(QString::fromUtf8(
                  QJsonDocument(diagnostics).toJson(QJsonDocument::Indented))));

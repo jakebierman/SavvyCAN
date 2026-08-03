@@ -306,6 +306,9 @@ private:
     void duplicateSenderRows(const QList<int> &rows);
     bool updateTraceSenderRow(int row, const QJsonObject &values,
                               QString *error = nullptr);
+    bool updateTraceSenderBits(int row, const QJsonArray &changes,
+                               QString *error = nullptr);
+    void editSenderBits(int row = -1);
     void copySelectedTraceToSender();
     void moveSenderRowsToAdvanced(const QList<int> &rows);
     void saveTraceSenderList();

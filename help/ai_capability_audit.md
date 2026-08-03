@@ -20,8 +20,8 @@ GUI actions are preferred; scripting is only offered when explicitly requested.
 - CANopen Object Dictionary entries, SDO uploads and guarded writes, node
   scanning, NMT, SYNC, TIME, LSS discovery/configuration, EDS/DCF import/export,
   EMCY clearing and CiA 402 state reads.
-- Compact CAN Trace sender context, draft creation/edit/removal, start/stop,
-  selected-row one-shot sends, JSON load/save, selected-frame copy and
+- Compact CAN Trace sender context, draft creation/edit/removal, structured
+  byte/bit updates, start/stop, selected-row one-shot sends, JSON load/save, selected-frame copy and
   advanced-sender transfer. The advanced Frame Sender also supports draft
   editing/removal, batch enable/disable, `.fsd` grids, triggers and modifiers.
 - Filter ID/range/mask editing, clear, and filter profile load/save.

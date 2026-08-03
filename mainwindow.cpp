@@ -27,6 +27,7 @@
 #include <QTabWidget>
 #include <QPlainTextEdit>
 #include <QCheckBox>
+#include <QLabel>
 #include <QHeaderView>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -36,6 +37,7 @@
 #include <QToolButton>
 #include <QStyle>
 #include <QSaveFile>
+#include <QSpinBox>
 #include <QTimer>
 #include <algorithm>
 #include <functional>
@@ -568,6 +570,10 @@ void MainWindow::setupTraceSenderPanel()
     ui->tableSimpleSender->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->tableSimpleSender, &QWidget::customContextMenuRequested,
             this, &MainWindow::showSenderContextMenu);
+    connect(ui->tableSimpleSender, &QTableWidget::cellDoubleClicked,
+            this, [this](int row, int column) {
+        if (column == SC_COL_DATA) editSenderBits(row);
+    });
     QHeaderView *header = ui->tableSimpleSender->horizontalHeader();
     header->setSectionsMovable(true);
     header->setSectionResizeMode(QHeaderView::Interactive);
@@ -586,6 +592,9 @@ void MainWindow::setupTraceSenderPanel()
     ui->tableSimpleSender->setColumnWidth(SC_COL_LIMIT, 75);
     ui->tableSimpleSender->setColumnWidth(SC_COL_COUNT, 75);
     ui->tableSimpleSender->setColumnWidth(SC_COL_STATUS, 120);
+    ui->tableSimpleSender->horizontalHeaderItem(SC_COL_DATA)->setToolTip(
+        tr("Enter hexadecimal bytes or mix in binary bytes such as 12 0b00110101 FF. "
+           "Double-click to edit individual bits."));
     ui->tableSimpleSender->setColumnHidden(SC_COL_EXT, true);
     ui->tableSimpleSender->setColumnHidden(SC_COL_REM, true);
 
@@ -1225,6 +1234,13 @@ void MainWindow::handleAIAction(const QJsonObject &action)
     {
         applied = updateTraceSenderRow(number(QStringLiteral("row"), -1),
                                        arguments, &error);
+        activateWorkspace(traceWorkspace, tr("CAN Trace"));
+    }
+    else if (capability == QStringLiteral("trace_sender.update_bits"))
+    {
+        applied = updateTraceSenderBits(number(QStringLiteral("row"), -1),
+                                        arguments.value(QStringLiteral("changes")).toArray(),
+                                        &error);
         activateWorkspace(traceWorkspace, tr("CAN Trace"));
     }
     else if (capability == QStringLiteral("trace_sender.remove"))
@@ -2903,6 +2919,212 @@ bool MainWindow::updateTraceSenderRow(int row, const QJsonObject &values,
     return validateSenderRow(row, error);
 }
 
+bool MainWindow::updateTraceSenderBits(int row, const QJsonArray &changes,
+                                       QString *error)
+{
+    if (row < 0 || row >= ui->tableSimpleSender->rowCount())
+    {
+        if (error) *error = tr("Trace sender row is outside the configured list.");
+        return false;
+    }
+
+    QByteArray payload;
+    const QStringList tokens = ui->tableSimpleSender->item(row, SC_COL_DATA)
+                                   ->text().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const QString &token : tokens)
+    {
+        bool ok = false;
+        const uint value = parseSenderNumber(token, true, &ok);
+        if (!ok || value > 0xFF)
+        {
+            if (error) *error = tr("The existing payload contains an invalid byte: %1").arg(token);
+            return false;
+        }
+        payload.append(char(value));
+    }
+
+    if (changes.isEmpty())
+    {
+        if (error) *error = tr("Provide at least one byte/bit change.");
+        return false;
+    }
+    for (const QJsonValue &value : changes)
+    {
+        if (!value.isObject())
+        {
+            if (error) *error = tr("Each bit change must be an object.");
+            return false;
+        }
+        const QJsonObject change = value.toObject();
+        const int byteIndex = change.value(QStringLiteral("byte")).toInt(-1);
+        const int bitIndex = change.value(QStringLiteral("bit")).toInt(-1);
+        if (byteIndex < 0 || byteIndex > 7 || bitIndex < 0 || bitIndex > 7
+            || !change.contains(QStringLiteral("value"))
+            || !change.value(QStringLiteral("value")).isBool())
+        {
+            if (error) *error = tr("Bit changes require byte 0-7, bit 0-7, and a boolean value.");
+            return false;
+        }
+        while (payload.size() <= byteIndex) payload.append(char(0));
+        quint8 byte = quint8(payload.at(byteIndex));
+        const quint8 mask = quint8(1U << bitIndex);
+        byte = change.value(QStringLiteral("value")).toBool()
+            ? quint8(byte | mask) : quint8(byte & ~mask);
+        payload[byteIndex] = char(byte);
+    }
+
+    QStringList normalized;
+    for (quint8 byte : payload)
+        normalized << QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper();
+    {
+        const QSignalBlocker blocker(ui->tableSimpleSender);
+        ui->tableSimpleSender->item(row, SC_COL_DATA)->setText(normalized.join(QLatin1Char(' ')));
+        processSenderCellChange(row, SC_COL_DATA);
+    }
+    updateSenderRowStatus(row);
+    return validateSenderRow(row, error);
+}
+
+void MainWindow::editSenderBits(int row)
+{
+    if (row < 0) row = ui->tableSimpleSender->currentRow();
+    if (row < 0 || row >= ui->tableSimpleSender->rowCount())
+    {
+        QMessageBox::information(this, tr("Bit editor"), tr("Select a Trace sender row first."));
+        return;
+    }
+
+    QByteArray bytes;
+    const QStringList tokens = ui->tableSimpleSender->item(row, SC_COL_DATA)
+                                   ->text().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const QString &token : tokens)
+    {
+        bool ok = false;
+        const uint value = parseSenderNumber(token, true, &ok);
+        if (!ok || value > 0xFF)
+        {
+            QMessageBox::warning(this, tr("Bit editor"),
+                                 tr("Fix the invalid payload byte before opening the bit editor: %1")
+                                     .arg(token));
+            return;
+        }
+        bytes.append(char(value));
+    }
+    if (bytes.isEmpty()) bytes.append(char(0));
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Edit sender payload bits"));
+    dialog.resize(760, 430);
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    QHBoxLayout *lengthLayout = new QHBoxLayout;
+    lengthLayout->addWidget(new QLabel(tr("Payload bytes"), &dialog));
+    QSpinBox *lengthSpin = new QSpinBox(&dialog);
+    lengthSpin->setRange(1, 8);
+    lengthSpin->setValue(qMin(8, bytes.size()));
+    lengthLayout->addWidget(lengthSpin);
+    lengthLayout->addStretch();
+    layout->addLayout(lengthLayout);
+
+    QTableWidget *bits = new QTableWidget(8, 10, &dialog);
+    bits->setHorizontalHeaderLabels({tr("Byte"), tr("Hex"), tr("b7"), tr("b6"),
+        tr("b5"), tr("b4"), tr("b3"), tr("b2"), tr("b1"), tr("b0")});
+    bits->verticalHeader()->hide();
+    bits->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    bits->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    bits->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    bits->setSelectionMode(QAbstractItemView::NoSelection);
+    bool syncing = true;
+    while (bytes.size() < 8) bytes.append(char(0));
+    for (int byteIndex = 0; byteIndex < 8; ++byteIndex)
+    {
+        QTableWidgetItem *label = new QTableWidgetItem(QString::number(byteIndex));
+        label->setFlags(label->flags() & ~Qt::ItemIsEditable);
+        label->setTextAlignment(Qt::AlignCenter);
+        bits->setItem(byteIndex, 0, label);
+        bits->setItem(byteIndex, 1, new QTableWidgetItem(
+            QStringLiteral("%1").arg(quint8(bytes.at(byteIndex)), 2, 16,
+                                      QLatin1Char('0')).toUpper()));
+        for (int column = 2; column < 10; ++column)
+        {
+            const int bitIndex = 9 - column;
+            QTableWidgetItem *bit = new QTableWidgetItem;
+            bit->setFlags((bit->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+            bit->setCheckState((quint8(bytes.at(byteIndex)) & (1U << bitIndex))
+                                   ? Qt::Checked : Qt::Unchecked);
+            bit->setTextAlignment(Qt::AlignCenter);
+            bits->setItem(byteIndex, column, bit);
+        }
+    }
+    syncing = false;
+    layout->addWidget(bits, 1);
+
+    auto setVisibleRows = [bits](int length) {
+        for (int rowIndex = 0; rowIndex < 8; ++rowIndex)
+            bits->setRowHidden(rowIndex, rowIndex >= length);
+    };
+    setVisibleRows(lengthSpin->value());
+    connect(lengthSpin, qOverload<int>(&QSpinBox::valueChanged), &dialog, setVisibleRows);
+    connect(bits, &QTableWidget::cellChanged, &dialog,
+            [bits, &bytes, &syncing](int byteIndex, int column) {
+        if (syncing || byteIndex < 0 || byteIndex >= 8) return;
+        syncing = true;
+        if (column == 1)
+        {
+            bool ok = false;
+            const uint value = parseSenderNumber(bits->item(byteIndex, 1)->text(), true, &ok);
+            if (ok && value <= 0xFF)
+            {
+                bytes[byteIndex] = char(value);
+                bits->item(byteIndex, 1)->setText(
+                    QStringLiteral("%1").arg(value, 2, 16, QLatin1Char('0')).toUpper());
+                for (int bitColumn = 2; bitColumn < 10; ++bitColumn)
+                    bits->item(byteIndex, bitColumn)->setCheckState(
+                        (value & (1U << (9 - bitColumn))) ? Qt::Checked : Qt::Unchecked);
+            }
+            else
+            {
+                bits->item(byteIndex, 1)->setText(
+                    QStringLiteral("%1").arg(quint8(bytes.at(byteIndex)), 2, 16,
+                                              QLatin1Char('0')).toUpper());
+            }
+        }
+        else if (column >= 2)
+        {
+            const quint8 mask = quint8(1U << (9 - column));
+            quint8 value = quint8(bytes.at(byteIndex));
+            value = bits->item(byteIndex, column)->checkState() == Qt::Checked
+                ? quint8(value | mask) : quint8(value & ~mask);
+            bytes[byteIndex] = char(value);
+            bits->item(byteIndex, 1)->setText(
+                QStringLiteral("%1").arg(value, 2, 16, QLatin1Char('0')).toUpper());
+        }
+        syncing = false;
+    });
+
+    QLabel *hint = new QLabel(
+        tr("Bit 7 is the most-significant bit. The Data cell also accepts mixed input such as "
+           "12 0b00110101 FF."), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    QDialogButtonBox *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QStringList normalized;
+    for (int index = 0; index < lengthSpin->value(); ++index)
+        normalized << QStringLiteral("%1").arg(quint8(bytes.at(index)), 2, 16,
+                                                QLatin1Char('0')).toUpper();
+    {
+        const QSignalBlocker blocker(ui->tableSimpleSender);
+        ui->tableSimpleSender->item(row, SC_COL_DATA)->setText(normalized.join(QLatin1Char(' ')));
+        processSenderCellChange(row, SC_COL_DATA);
+    }
+    updateSenderRowStatus(row);
+}
+
 void MainWindow::copySelectedTraceToSender()
 {
     const QModelIndex proxyIndex = ui->canFramesView->currentIndex();
@@ -2971,6 +3193,9 @@ void MainWindow::showSenderContextMenu(const QPoint &pos)
     menu.addSeparator();
     menu.addAction(tr("Duplicate"), this, [this, rows]() { duplicateSenderRows(rows); });
     menu.addAction(tr("Delete"), this, [this, rows]() { deleteSenderRows(rows); });
+    menu.addAction(tr("Edit payload bits..."), this, [this, rows]() {
+        editSenderBits(rows.isEmpty() ? -1 : rows.first());
+    });
     menu.addAction(tr("Copy selected trace frame"), this,
                    &MainWindow::copySelectedTraceToSender);
     menu.addAction(tr("Open in advanced sender"), this,

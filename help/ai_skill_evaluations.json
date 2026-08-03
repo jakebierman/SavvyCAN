@@ -25,6 +25,11 @@
     "expected_capability": "trace_sender.copy_selected"
   },
   {
+    "prompt": "set byte 2 bit 5 in trace sender row 0",
+    "expected_skill": "raw_can",
+    "expected_capability": "trace_sender.update_bits"
+  },
+  {
     "prompt": "clear the OBD list, add engine rpm and coolant temperature, then poll it",
     "expected_skill": "obd",
     "expected_capability": "obd.configure_pids"

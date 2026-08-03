@@ -68,7 +68,9 @@ receives `trace_sender_rows` context containing row number, bus, CAN ID, frame
 flags, payload, interval, limit, sent count, and status. It can add or edit
 drafts, start, stop, send configured rows once, remove or clear rows, copy the
 selected Trace frame, save/load JSON lists, or transfer rows to the advanced
-Frame Sender. Starting or transmitting rows still passes through full-access,
+Frame Sender. Exact bit changes use `trace_sender.update_bits` with zero-based
+byte and bit positions; bit 0 is the least-significant bit. Starting or
+transmitting rows still passes through full-access,
 arming, and confirmation checks. The older `frame.*` draft/grid actions refer
 to the advanced sender and its trigger/modifier workflow.
 

@@ -49,6 +49,14 @@ right of its toolbar to collapse it.
 - **Sent** and **Status** show current progress. A row can be Draft, Stopped,
   Running, Complete, Invalid, or Unavailable when no bus is connected.
 
+The **Data** cell accepts hexadecimal bytes and `0b`-prefixed binary bytes in
+the same payload, for example `12 0b00110101 FF`. Double-click Data or choose
+**Edit payload bits** from the row menu to open an eight-byte bit grid. Changing
+a hexadecimal byte updates its eight bit switches and changing a switch updates
+the hexadecimal byte; bit 7 is the most-significant bit and bit 0 is the
+least-significant bit. The accepted value is normalized to hexadecimal in the
+compact sender.
+
 Select several rows with Ctrl or Shift before using toolbar or context-menu
 commands. Right-click a row to send, start, stop, duplicate, delete, copy the
 currently selected CAN Trace frame, or copy the configuration into the advanced

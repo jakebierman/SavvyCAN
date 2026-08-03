@@ -369,6 +369,10 @@ OBD2WorkbenchWindow::OBD2WorkbenchWindow(QWidget *parent) : QDialog(parent), han
     responseTimer.setInterval(900);
     connect(handler, &UDS_HANDLER::newUDSMessage, this, &OBD2WorkbenchWindow::gotReply);
     connect(&responseTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::responseTimedOut);
+    responseSettleTimer.setSingleShot(true);
+    responseSettleTimer.setInterval(40);
+    connect(&responseSettleTimer, &QTimer::timeout,
+            this, &OBD2WorkbenchWindow::responseBurstFinished);
     pollTimer.setSingleShot(true);
     connect(&pollTimer, &QTimer::timeout, this, &OBD2WorkbenchWindow::pollPids);
     tripPlaybackTimer.setSingleShot(true);
@@ -1335,6 +1339,7 @@ void OBD2WorkbenchWindow::disconnectEndpoint()
 {
     stopPolling();
     responseTimer.stop();
+    responseSettleTimer.stop();
     activePidRow = -1;
     activeMode = -1;
     context = None;
@@ -1655,7 +1660,13 @@ void OBD2WorkbenchWindow::requestEnabledPids()
     requestFinished();
 }
 
-void OBD2WorkbenchWindow::pollPids() { if (connected && !responseTimer.isActive() && pidQueue.isEmpty()) requestEnabledPids(); }
+void OBD2WorkbenchWindow::pollPids()
+{
+    if (!connected || responseTimer.isActive() || !pidQueue.isEmpty()) return;
+    pollCycleStartedMs = QDateTime::currentMSecsSinceEpoch();
+    pollCycleActive = true;
+    requestEnabledPids();
+}
 
 void OBD2WorkbenchWindow::startPolling()
 {
@@ -1686,6 +1697,8 @@ void OBD2WorkbenchWindow::stopPolling()
     pollTimer.stop();
     pollCheck->setChecked(false);
     pidQueue.clear();
+    pollCycleActive = false;
+    pollCycleStartedMs = 0;
     pollStartButton->setText(tr("Start polling"));
     pollStartButton->setEnabled(connected);
     dashboardPollStartButton->setText(tr("Start polling"));
@@ -1706,6 +1719,11 @@ void OBD2WorkbenchWindow::responseTimedOut()
     requestFinished();
 }
 
+void OBD2WorkbenchWindow::responseBurstFinished()
+{
+    if (responseTimer.isActive()) requestFinished();
+}
+
 void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context nextContext)
 {
     if (!transmissionAllowed(mode == 4 || mode == 8)) return;
@@ -1722,6 +1740,7 @@ void OBD2WorkbenchWindow::sendRequest(int mode, const QByteArray &data, Context 
     message.setPayload(data);
     activeMode = mode;
     context = nextContext;
+    responseSettleTimer.stop();
     if (!handler->sendUDSFrame(message)) {
         connected = false;
         connectButton->setText(tr("Enable OBD"));
@@ -2290,7 +2309,7 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
             .arg(ecu).arg(responseCode, 2, 16, QLatin1Char('0')).arg(detail).toUpper();
         connectionStatus->setText(error);
         eventLog->append(error);
-        responseTimer.start(900);
+        responseSettleTimer.start();
         if (context == LivePid && activePidRow >= 0 && activePidRow < pidTable->rowCount())
         {
             activePidHadResponse = true;
@@ -2316,7 +2335,6 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
     }
     if (message.service != activeMode + 0x40) return;
     connectionStatus->setText(tr("ECU responding"));
-    responseTimer.start(900);
     QByteArray payload = message.payload();
     if (context == LivePid)
     {
@@ -2423,6 +2441,7 @@ void OBD2WorkbenchWindow::gotReply(UDS_MESSAGE message)
         discoveryOutput->append(tr("%1 page 0x%2: %3").arg(ecu)
             .arg(activePid, 2, 16, QLatin1Char('0')).arg(supported).toUpper());
     }
+    responseSettleTimer.start();
 }
 
 void OBD2WorkbenchWindow::showDiagnosticGraph()
@@ -2435,6 +2454,7 @@ void OBD2WorkbenchWindow::showDiagnosticGraph()
 void OBD2WorkbenchWindow::requestFinished()
 {
     responseTimer.stop();
+    responseSettleTimer.stop();
     const Context finishedContext = context;
     context = None;
     activeMode = -1;
@@ -2454,7 +2474,12 @@ void OBD2WorkbenchWindow::requestFinished()
     {
         activePidRow = -1;
         if (pollCheck->isChecked() && connected)
-            pollTimer.start(pollIntervalSpin->value());
+        {
+            const qint64 elapsed = pollCycleActive
+                ? QDateTime::currentMSecsSinceEpoch() - pollCycleStartedMs : 0;
+            pollTimer.start(qMax(0, pollIntervalSpin->value() - int(elapsed)));
+        }
+        pollCycleActive = false;
         return;
     }
     activePidRow = pidQueue.takeFirst();

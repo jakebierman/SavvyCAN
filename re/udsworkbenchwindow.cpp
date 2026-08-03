@@ -293,6 +293,12 @@ void UDSWorkbenchWindow::buildUi()
         pollingTimer.stop();
         pollingButton->setText(enabled ? tr("Stop polling") : tr("Start polling"));
         if (enabled) pollEnabledDids();
+        else
+        {
+            didQueue.clear();
+            pollCycleActive = false;
+            pollCycleStartedMs = 0;
+        }
     });
     connect(pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         if (pollingCheck->isChecked() && pollingTimer.isActive()) pollingTimer.start(value);
@@ -849,6 +855,8 @@ void UDSWorkbenchWindow::disconnectEndpoint()
     pollingTimer.stop();
     if (pollingCheck->isChecked()) pollingCheck->setChecked(false);
     didQueue.clear();
+    pollCycleActive = false;
+    pollCycleStartedMs = 0;
     activeDidRow = -1;
     activeService = -1;
     requestContext = ContextNone;
@@ -1161,6 +1169,8 @@ void UDSWorkbenchWindow::pollEnabledDids()
 {
     if (!endpointConnected || responseTimer.isActive() || activeDidRow >= 0 || !didQueue.isEmpty()) return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    pollCycleStartedMs = now;
+    pollCycleActive = true;
     for (int row = 0; row < didTable->rowCount(); ++row)
     {
         if (didTable->item(row, DidEnabled)->checkState() != Qt::Checked) continue;
@@ -1175,8 +1185,6 @@ void UDSWorkbenchWindow::pollEnabledDids()
         }
     }
     sendNextDid();
-    if (didQueue.isEmpty() && activeDidRow < 0 && pollingCheck->isChecked())
-        pollingTimer.start(pollIntervalSpin->value());
 }
 
 void UDSWorkbenchWindow::requestDtcs()
@@ -1373,7 +1381,12 @@ void UDSWorkbenchWindow::sendNextDid()
         activeDidRow = -1;
         activeService = -1;
         if (pollingCheck->isChecked() && endpointConnected)
-            pollingTimer.start(pollIntervalSpin->value());
+        {
+            const qint64 elapsed = pollCycleActive
+                ? QDateTime::currentMSecsSinceEpoch() - pollCycleStartedMs : 0;
+            pollingTimer.start(qMax(0, pollIntervalSpin->value() - int(elapsed)));
+        }
+        pollCycleActive = false;
         return;
     }
     sendDidRow(didQueue.dequeue());
