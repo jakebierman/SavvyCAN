@@ -52,6 +52,7 @@ jobs:
   buildlinux:
     name: Linux x64
     runs-on: ubuntu-22.04
+    needs: validate
 
     steps:
       - name: Prepare Environment
@@ -86,6 +87,7 @@ jobs:
   buildmacos86:
     name: macOS x64
     runs-on: macos-15-intel
+    needs: validate
 
     steps:
       - name: Prepare macOS Environment
@@ -121,6 +123,7 @@ jobs:
   buildmacos-arm64:
     name: macOS ARM64
     runs-on: macos-15
+    needs: validate
 
     steps:
       - name: Prepare macOS Environment
@@ -156,6 +159,7 @@ jobs:
   buildwindows:
     name: Windows x64
     runs-on: windows-2022
+    needs: validate
 
     steps:      
       - name: Prepare Qt Libraries
