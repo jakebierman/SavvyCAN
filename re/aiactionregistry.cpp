@@ -11,7 +11,7 @@
 
 QJsonArray AIActionRegistry::catalog()
 {
-    static const char json[] = R"JSON([
+    static const char jsonPart1[] = R"JSON([
 {"capability":"ui.open","title":"Open a tool","ui":"Application","access":"read","arguments":{"target":"trace|uds|obd|canopen|bus_diagnostics|diagnostic_simulator|ai|fuzzing|frame_sender|scripting|sniffer|graphing|temporal_graph|playback|dbc|dbc_compare|connection|isotp|bridge|uds_scanner|uds_firmware|signal_viewer|flow_view|range|bisect"}},
 {"capability":"uds.add_did","title":"Add a DID request","ui":"UDS Workbench","access":"edit","arguments":{"did":"hex DID","name":"optional","format":"payload format","poll_ms":"integer"}},
 {"capability":"uds.read_did","title":"Add a DID request","ui":"UDS Workbench","access":"edit","arguments":{"did":"hex DID","name":"optional","format":"payload format","poll_ms":"integer"}},
@@ -78,6 +78,8 @@ QJsonArray AIActionRegistry::catalog()
 {"capability":"frame.remove_rows","title":"Remove Frame Sender rows","ui":"Frame Sender","access":"edit","arguments":{"rows":"array of zero-based rows"}},
 {"capability":"frame.clear","title":"Clear the Frame Sender grid","ui":"Frame Sender","access":"edit","arguments":{}},
 {"capability":"frame.set_all_enabled","title":"Enable or disable all Frame Sender rows","ui":"Frame Sender","access":"armed-confirm-send","arguments":{"enabled":"boolean"}},
+)JSON";
+    static const char jsonPart2[] = R"JSON(
 {"capability":"frame.save_grid","title":"Save the Frame Sender grid","ui":"Frame Sender","access":"edit","arguments":{"path":"destination .fsd path"}},
 {"capability":"frame.load_grid","title":"Load a Frame Sender grid","ui":"Frame Sender","access":"edit","arguments":{"path":"existing .fsd path"}},
 {"capability":"trace_sender.add","title":"Add a compact CAN Trace sender row","ui":"Trace Sender","access":"edit","arguments":{"bus":"integer","can_id":"hex CAN ID","extended":"optional boolean","remote":"optional boolean","payload":"space-separated hex bytes","interval_ms":"optional 1-3600000","limit":"optional 0-1000000; zero is unlimited"}},
@@ -156,7 +158,9 @@ QJsonArray AIActionRegistry::catalog()
 {"capability":"connection.resume","title":"Resume all CAN connections","ui":"Connection Settings","access":"edit","arguments":{}},
 {"capability":"connection.add","title":"Add and start a CAN connection profile","ui":"Connection Settings","access":"armed-confirm-send","arguments":{"type":"gvret_serial|kvaser|serialbus|remote|kayak|mqtt|lawicel|canserver|canlogserver","port":"device/interface/host","driver":"optional Qt CAN driver","serial_speed":"integer","bus_speed":"integer","can_fd":"boolean","data_rate":"integer"}}
 ])JSON";
-    return QJsonDocument::fromJson(QByteArray(json)).array();
+    QByteArray json(jsonPart1);
+    json += jsonPart2;
+    return QJsonDocument::fromJson(json).array();
 }
 
 QJsonObject AIActionRegistry::definition(const QString &capability)

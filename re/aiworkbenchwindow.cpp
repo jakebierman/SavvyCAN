@@ -44,6 +44,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <bitset>
 #include <cmath>
 #include <cstdio>
 
@@ -799,8 +800,11 @@ void AIWorkbenchWindow::liveAnalysisTick()
         const QByteArray payload = frame.payload();
         if (previous.contains(frame.frameId()))
             for (int byte = 0; byte < qMin(payload.size(), previous[frame.frameId()].size()); ++byte)
-                changedBits += __builtin_popcount(
-                    quint8(payload.at(byte)) ^ quint8(previous[frame.frameId()].at(byte)));
+            {
+                const quint8 changed = quint8(payload.at(byte))
+                    ^ quint8(previous[frame.frameId()].at(byte));
+                changedBits += int(std::bitset<8>(changed).count());
+            }
         previous[frame.frameId()] = payload;
     }
     if (changedBits < meaningfulBitsSpin->value()) return;
