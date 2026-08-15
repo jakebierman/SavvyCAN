@@ -44,6 +44,23 @@ The script asks you to type the tag before it does anything. It then:
 Open the repository's **Actions** page to watch all four builds. The release is
 created only after every platform succeeds.
 
+On a new fork, first open **Actions** and enable workflows if GitHub displays an
+enable button. A tag still appears under **Tags** when Actions is disabled, but
+it only has GitHub's automatic source archives and no corresponding Release.
+
+## Retry an existing tag
+
+The workflow can rebuild an existing tag without moving or recreating it:
+
+1. Open **Actions**, select **Build**, then choose **Run workflow**.
+2. Select `master`, enter the existing tag (for example `v222`) in
+   **Existing v* tag to build and publish**, and run it.
+3. Wait for validation and all four platform builds to complete. The workflow
+   then creates the Release and uploads the binaries and checksums.
+
+Running it again for a published tag replaces its assets while preserving the
+tag and Release page.
+
 ## Manual Git equivalent
 
 ```bash
