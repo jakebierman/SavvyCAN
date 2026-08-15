@@ -61,6 +61,9 @@ jobs:
 
       - name: Prepare Qt Libraries
         uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "5.15.2"
+          modules: "qtserialbus qtserialport"
 
       - name: Clone
         uses: actions/checkout@v5
@@ -164,6 +167,9 @@ jobs:
     steps:      
       - name: Prepare Qt Libraries
         uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "5.15.2"
+          modules: "qtserialbus qtserialport"
 
       - name: Clone
         uses: actions/checkout@v5
