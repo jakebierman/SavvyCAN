@@ -63,7 +63,6 @@ jobs:
         uses: jurplel/install-qt-action@v4.3.1
         with:
           version: "5.15.2"
-          modules: "qtserialbus qtserialport"
 
       - name: Clone
         uses: actions/checkout@v5
@@ -169,7 +168,6 @@ jobs:
         uses: jurplel/install-qt-action@v4.3.1
         with:
           version: "5.15.2"
-          modules: "qtserialbus qtserialport"
 
       - name: Clone
         uses: actions/checkout@v5
