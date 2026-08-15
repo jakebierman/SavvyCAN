@@ -170,14 +170,42 @@ jobs:
           for %%f in (translations\*.ts) do lrelease "%%f"
 
       - name: Package
+        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force package, package/help, package/examples, package/translations
-          Copy-Item "release/SavvyCAN.exe" package/
+          $packageDirectories = @(
+            "package",
+            "package/help",
+            "package/examples",
+            "package/translations"
+          )
+          New-Item -ItemType Directory -Force -Path $packageDirectories | Out-Null
+
+          $executable = @(
+            "release/SavvyCAN.exe",
+            "SavvyCAN.exe",
+            "debug/SavvyCAN.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $executable) {
+            $executable = Get-ChildItem -Path . -Filter SavvyCAN.exe -File -Recurse |
+              Where-Object { $_.FullName -notlike "*\package\*" } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $executable) {
+            throw "SavvyCAN.exe was not produced by the Windows build"
+          }
+
+          Write-Host "Packaging executable: $executable"
+          $packagedExecutable = "package/SavvyCAN.exe"
+          Copy-Item $executable $packagedExecutable
           Copy-Item help/*.md package/help/
           Copy-Item help/images package/help/ -Recurse -ErrorAction SilentlyContinue
           Copy-Item examples/* package/examples/ -Recurse
           Copy-Item translations/*.qm package/translations/
-          & "${Env:Qt5_Dir}/bin/windeployqt.exe" --release --compiler-runtime --dir package release/SavvyCAN.exe
+          & "${Env:Qt5_Dir}/bin/windeployqt.exe" --release --compiler-runtime --dir package $packagedExecutable
+          if ($LASTEXITCODE -ne 0) {
+            throw "windeployqt failed with exit code $LASTEXITCODE"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
