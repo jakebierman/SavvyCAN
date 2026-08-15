@@ -12,6 +12,11 @@ on:
         description: "Existing v* tag to build and publish (leave blank for a test build)"
         required: false
         type: string
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Unit and capability tests
@@ -165,9 +170,15 @@ jobs:
         shell: cmd
         run: | 
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          qmake CONFIG+=release SavvyCAN.pro
-          nmake /C
-          for %%f in (translations\*.ts) do lrelease "%%f"
+          if errorlevel 1 exit /b %errorlevel%
+          if not exist build-windows mkdir build-windows
+          cd build-windows
+          qmake ..\SavvyCAN.pro "CONFIG-=debug" "CONFIG+=release"
+          if errorlevel 1 exit /b %errorlevel%
+          nmake /NOLOGO
+          if errorlevel 1 exit /b %errorlevel%
+          cd ..
+          for %%f in (translations\*.ts) do lrelease "%%f" || exit /b 1
 
       - name: Package
         shell: pwsh
@@ -181,6 +192,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $packageDirectories | Out-Null
 
           $executable = @(
+            "build-windows/release/SavvyCAN.exe",
+            "build-windows/SavvyCAN.exe",
             "release/SavvyCAN.exe",
             "SavvyCAN.exe",
             "debug/SavvyCAN.exe"
