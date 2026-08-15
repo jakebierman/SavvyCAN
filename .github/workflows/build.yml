@@ -223,7 +223,10 @@ jobs:
           Copy-Item help/images package/help/ -Recurse -ErrorAction SilentlyContinue
           Copy-Item examples/* package/examples/ -Recurse
           Copy-Item translations/*.qm package/translations/
-          & "${Env:Qt5_Dir}/bin/windeployqt.exe" --release --compiler-runtime --dir package $packagedExecutable
+
+          $windeployqt = Get-Command windeployqt.exe -ErrorAction Stop
+          Write-Host "Deploying Qt runtime with: $($windeployqt.Source)"
+          & $windeployqt.Source --release --compiler-runtime --dir package $packagedExecutable
           if ($LASTEXITCODE -ne 0) {
             throw "windeployqt failed with exit code $LASTEXITCODE"
           }
