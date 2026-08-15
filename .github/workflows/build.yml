@@ -23,12 +23,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Prepare Qt 5.15.2
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4.3.1
         with:
           version: "5.15.2"
           cache: true
@@ -59,10 +59,10 @@ jobs:
             sudo apt-get install libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-randr0 libxkbcommon-x11-0 libfuse2
 
       - name: Prepare Qt Libraries
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4.3.1
 
       - name: Clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
@@ -94,7 +94,7 @@ jobs:
             brew link qt@5 --force
 
       - name: Clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
@@ -129,7 +129,7 @@ jobs:
             brew link qt@5 --force
 
       - name: Clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
@@ -159,10 +159,10 @@ jobs:
 
     steps:      
       - name: Prepare Qt Libraries
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4.3.1
 
       - name: Clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
       
@@ -234,7 +234,7 @@ jobs:
     needs: [validate, buildwindows, buildmacos86, buildmacos-arm64, buildlinux]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4.1.7
 
@@ -261,7 +261,7 @@ jobs:
     needs: [validate, buildwindows, buildmacos86, buildmacos-arm64, buildlinux]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
