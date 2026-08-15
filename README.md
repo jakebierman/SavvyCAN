@@ -74,6 +74,9 @@ Now run SavvyCAN
 ./SavvyCAN
 ```
 
+Maintainers can publish versioned cross-platform builds using the tagged
+release process documented in [help/releasing.md](help/releasing.md).
+
 On linux systems you can run `./install.sh` to create a desktop shortcut.
 
 ### Compiling in debug mode for additional information
