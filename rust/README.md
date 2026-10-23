@@ -46,6 +46,7 @@ default typed expression, and RTR requests are never formatted.
 | PEAK PCAN `.trc` (1.1/1.2/1.3/2.0/2.1) | Initial support: classic, CAN FD DLC mapping, RTR and Rx/Tx |
 | IXXAT MiniLog quoted CSV | Initial support, compatible with legacy SavvyCAN writer (Std/Ext ID and time of day) |
 | Vehicle Spy CSV | Initial support: quoted descriptions, ID width, direction, payload and sub-second timestamps |
+| SocketCAN classic PCAP (linktype 227) | Initial support: classic CAN, CAN FD, RTR, micro/nanosecond file timestamps |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
@@ -56,7 +57,7 @@ default typed expression, and RTR requests are never formatted.
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
 | DBC J1939 PGN matching | Initial support; enabled by a DBC global protocol attribute; exact ID preferred |
 | GMLAN and other DBC protocol profiles | Not yet |
-| BLF, PCAP, Vector CAN FD ASC and other source formats | Not yet |
+| BLF, PCAPNG, other PCAP linktypes, Vector CAN FD ASC and other formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
 | Passive ISO-TP normal-addressing payload reassembly | Initial core support (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
@@ -66,7 +67,7 @@ default typed expression, and RTR requests are never formatted.
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1, IXXAT MiniLog
-and Vehicle Spy CSV text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
+and Vehicle Spy CSV text logs, plus binary SocketCAN PCAP captures. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
@@ -256,3 +257,13 @@ Tx/Rx and standard/extended IDs, and parses quoted CSV correctly when
 descriptions contain commas. The original network is currently represented
 as `bus0`, matching the existing Qt importer. Remote-request rows without a
 recoverable DLC are rejected instead of assigning an invented value.
+
+## Binary SocketCAN PCAP
+
+Classic PCAP files with linktype 227 are auto-detected and decoded without
+a libpcap runtime. Both file byte orders and microsecond/nanosecond PCAP
+timestamp variants are accepted; CAN-ID flags use network byte order.
+Classic CAN, CAN FD (BRS/ESI), RTR and capture timestamps are represented.
+PCAP has no standard per-frame interface or Rx/Tx field for this linktype,
+so imports default to `bus0` and direction unknown. Truncated records,
+error frames, unexpected linktypes and pcapng are rejected explicitly.

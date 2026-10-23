@@ -13,6 +13,7 @@ pub mod filter;
 pub mod dbc_stack;
 pub mod signal_export;
 pub mod isotp;
+pub mod pcap;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
