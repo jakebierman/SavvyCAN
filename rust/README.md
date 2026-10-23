@@ -39,18 +39,19 @@ default typed expression, and RTR requests are never formatted.
 | Per-interface identity, microsecond timestamps, FD flags and RTR | Done |
 | Linux candump compact and simple bracketed-text log import | Done |
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
+| BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Offline trace statistics and first 25,000 rows in a Slint viewer | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
-| BLF, PCAP, BusMaster, Microchip and other source formats | Not yet |
+| BLF, PCAP, CANalyzer, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
-Capture import autodetects candump, CRTD and the original GVRET/generic CSV
-headers. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
+Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER and
+Microchip logs. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction

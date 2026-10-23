@@ -10,6 +10,8 @@ pub enum TraceFormat {
     Crtd,
     GvretCsv,
     GenericCsv,
+    Busmaster,
+    Microchip,
 }
 
 impl fmt::Display for TraceFormat {
@@ -19,6 +21,8 @@ impl fmt::Display for TraceFormat {
             Self::Crtd => "CRTD",
             Self::GvretCsv => "GVRET CSV",
             Self::GenericCsv => "generic ID/data CSV",
+            Self::Busmaster => "BUSMASTER log",
+            Self::Microchip => "Microchip CAN BUS Analyzer log",
         })
     }
 }
@@ -81,7 +85,11 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("time stamp,id,extended,") {
+    if normalized.starts_with("***busmaster") {
+        Ok(TraceFormat::Busmaster)
+    } else if normalized.starts_with("//---") || normalized.starts_with("microchip technology inc") {
+        Ok(TraceFormat::Microchip)
+    } else if normalized.starts_with("time stamp,id,extended,") {
         Ok(TraceFormat::GvretCsv)
     } else if normalized.starts_with("id,data bytes") {
         Ok(TraceFormat::GenericCsv)
@@ -131,6 +139,14 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                 if trimmed.to_ascii_lowercase().starts_with("id,data bytes") {
                     Ok(None)
                 } else { parse_generic_csv_line(trimmed) }
+            }
+            TraceFormat::Busmaster => {
+                if trimmed.starts_with("***") { Ok(None) }
+                else { parse_busmaster_line(trimmed) }
+            }
+            TraceFormat::Microchip => {
+                if trimmed.starts_with("//") || !trimmed.contains(';') { Ok(None) }
+                else { parse_microchip_line(trimmed) }
             }
         };
         match result {
@@ -250,6 +266,66 @@ fn parse_generic_csv_line(line: &str) -> Result<Option<CanFrame>, String> {
     let id = parse_hex_id(id.trim(), false)?;
     let data = data.split_whitespace().map(parse_hex_byte).collect::<Result<Vec<_>, _>>()?;
     Ok(Some(frame(None, "bus0".into(), id, data, Direction::Unknown)?))
+}
+
+
+fn parse_busmaster_line(line: &str) -> Result<Option<CanFrame>, String> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() < 6 { return Err("BUSMASTER row has fewer than six columns".into()); }
+    let clock: Vec<&str> = words[0].split(':').collect();
+    if clock.len() != 4 { return Err("BUSMASTER time must be hh:mm:ss:ms".into()); }
+    let h = clock[0].parse::<u64>().map_err(|_| "invalid BUSMASTER hour")?;
+    let m = clock[1].parse::<u64>().map_err(|_| "invalid BUSMASTER minute")?;
+    let sec = clock[2].parse::<u64>().map_err(|_| "invalid BUSMASTER second")?;
+    let ms = clock[3].parse::<u64>().map_err(|_| "invalid BUSMASTER millisecond")?;
+    if h > 23 || m > 59 || sec > 59 || ms > 999 {
+        return Err("BUSMASTER clock component outside range".into());
+    }
+    let timestamp = ((h * 3600 + m * 60 + sec) * 1000 + ms) * 1000;
+    let direction = match words[1].to_ascii_uppercase().as_str() {
+        "RX" => Direction::Received,
+        "TX" => Direction::Transmitted,
+        _ => return Err("BUSMASTER direction must be Rx/Tx".into()),
+    };
+    let bus = words[2].parse::<u16>().map_err(|_| "invalid BUSMASTER channel")?;
+    let frame_type = words[4].to_ascii_uppercase();
+    let (extended, rtr) = match frame_type.as_str() {
+        "S" => (false, false), "X" => (true, false),
+        "SR" => (false, true), "XR" => (true, true),
+        _ => return Err(format!("invalid BUSMASTER type '{}'", words[4])),
+    };
+    let id = parse_hex_id(words[3], extended)?;
+    if !extended && id.is_extended() { return Err("standard BUSMASTER frame has extended ID".into()); }
+    let len = words[5].parse::<u8>().map_err(|_| "invalid BUSMASTER DLC")?;
+    if len > 8 { return Err("BUSMASTER classic DLC cannot exceed 8".into()); }
+    let kind = if rtr { FrameKind::RemoteRequest { dlc: len } } else { FrameKind::Data };
+    let data = if rtr { Vec::new() } else {
+        if words.len() < 6 + usize::from(len) { return Err("BUSMASTER payload shorter than DLC".into()); }
+        words[6..6+usize::from(len)].iter().map(|byte| parse_hex_byte(byte))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut frame = CanFrame::new(Some(timestamp), format!("bus{bus}"), id, kind, data, false, FdFlags::default())
+        .map_err(|err| err.to_string())?;
+    frame.direction = direction;
+    Ok(Some(frame))
+}
+
+fn parse_microchip_line(line: &str) -> Result<Option<CanFrame>, String> {
+    let values: Vec<&str> = line.split(';').map(str::trim).collect();
+    if values.len() < 4 { return Err("Microchip row requires timestamp, direction, ID and length".into()); }
+    let millis = values[0].parse::<u64>().map_err(|_| "invalid Microchip millisecond timestamp")?;
+    let timestamp = millis.checked_mul(1000).ok_or("Microchip timestamp overflow")?;
+    let direction = match values[1].to_ascii_uppercase().as_str() {
+        "RX" => Direction::Received, "TX" => Direction::Transmitted,
+        _ => return Err("Microchip direction must be RX/TX".into()),
+    };
+    let id = parse_hex_id(values[2], false)?;
+    let len = values[3].parse::<usize>().map_err(|_| "invalid Microchip payload length")?;
+    if len > 8 { return Err("Microchip classic payload exceeds eight bytes".into()); }
+    if values.len() < 4 + len { return Err("Microchip data shorter than length".into()); }
+    let data = values[4..4+len].iter().map(|value| parse_hex_byte(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(frame(Some(timestamp), "bus0".into(), id, data, direction)?))
 }
 
 fn export_bus(frame: &CanFrame, index: usize) -> Result<u16, ExportError> {
@@ -402,6 +478,37 @@ mod tests {
         frame.is_fd = true;
         assert!(write_crtd(&mut bytes, &[frame]).is_err());
         assert!(bytes.is_empty());
+    }
+
+
+    #[test]
+    fn busmaster_and_microchip_examples_load_without_losing_frames() {
+        let native = load(include_str!("../../../examples/GVRET_Log.csv"));
+        let busmaster = load(include_str!("../../../examples/BusMasterLog.log"));
+        let microchip = load(include_str!("../../../examples/MicrochipLog.log"));
+        assert_eq!(busmaster.format, TraceFormat::Busmaster);
+        assert_eq!(microchip.format, TraceFormat::Microchip);
+        assert_eq!(busmaster.frames.len(), native.frames.len());
+        assert_eq!(microchip.frames.len(), native.frames.len());
+        for (n, (b, m)) in busmaster.frames.iter().zip(&microchip.frames).enumerate() {
+            let expected = &native.frames[n];
+            assert_eq!(b.id, expected.id);
+            assert_eq!(b.data, expected.data);
+            assert_eq!(m.id, expected.id);
+            assert_eq!(m.data, expected.data);
+            assert_eq!(m.timestamp_us, expected.timestamp_us);
+        }
+        assert_eq!(busmaster.frames[0].timestamp_us, Some(80_414_992_000));
+    }
+
+    #[test]
+    fn busmaster_rtr_and_errors() {
+        let text = "***BUSMASTER Ver 3***\n00:00:00:020 Tx 1 00000123 sr 4\n";
+        let parsed = load(text);
+        assert_eq!(parsed.frames[0].kind, FrameKind::RemoteRequest { dlc: 4 });
+        assert_eq!(parsed.frames[0].direction, Direction::Transmitted);
+        assert_eq!(parsed.frames[0].interface, "bus1");
+        assert!(read_trace(Cursor::new("***BUSMASTER Ver 3***\n00:00:00:020 Rx 0 123 s 2 11\n")).is_err());
     }
 
     #[test]
