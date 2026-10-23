@@ -55,7 +55,7 @@ default typed expression, and RTR requests are never formatted.
 | Cabana CSV (`time,addr,bus,data`) | Initial support; preserves bus, decimal ID and timestamp with microsecond precision |
 | SocketCAN classic PCAP (linktype 227) | Initial import/export support: classic CAN, CAN FD, RTR, micro/nanosecond reads |
 | SocketCAN PCAPNG (linktype 227) | Initial import/export: multiple interfaces, endian sections, timestamps and Rx/Tx flags |
-| Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
+| Vector CANalyzer ASC classic and CAN FD frames | Initial support (including RTR, 12–64-byte FD DLCs, BRS/ESI, Rx/Tx, standard/extended IDs) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
@@ -72,7 +72,7 @@ default typed expression, and RTR requests are never formatted.
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
 | DBC J1939 PGN matching | Initial support; enabled by a DBC global protocol attribute; exact ID preferred |
 | GMLAN and other DBC protocol profiles | Not yet |
-| BLF, other PCAP linktypes, Vector CAN FD ASC and other formats | Not yet |
+| BLF, other PCAP linktypes, and additional proprietary formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
 | Passive ISO-TP normal-addressing payload reassembly | Initial core support and selectable read-only Slint inspector (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |

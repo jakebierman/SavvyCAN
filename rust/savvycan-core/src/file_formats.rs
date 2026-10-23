@@ -32,7 +32,7 @@ impl fmt::Display for TraceFormat {
             Self::Busmaster => "BUSMASTER log",
             Self::Microchip => "Microchip CAN BUS Analyzer log",
             Self::CarbusAnalyzer => "CARBUS Analyzer trace",
-            Self::VectorAsc => "Vector CANalyzer ASC (classic)",
+            Self::VectorAsc => "Vector CANalyzer ASC (classic / CAN FD)",
             Self::PcanTrc => "PEAK PCAN TRC",
             Self::IxxatMinilog => "IXXAT MiniLog CSV",
             Self::VehicleSpy => "Vehicle Spy CSV",
@@ -702,7 +702,7 @@ fn parse_vector_asc_line(line: &str) -> Result<Option<CanFrame>, String> {
         return Ok(None);
     }
     if words.len() > 1 && words[1].eq_ignore_ascii_case("CANFD") {
-        return Err("Vector CAN FD ASC row is not yet supported".into());
+        return parse_vector_asc_fd(&words);
     }
     if words.len() < 6 {
         if words.get(3).is_some_and(|v| v.eq_ignore_ascii_case("Rx") || v.eq_ignore_ascii_case("Tx")) {
@@ -739,6 +739,64 @@ fn parse_vector_asc_line(line: &str) -> Result<Option<CanFrame>, String> {
         .map_err(|err| err.to_string())?;
     result.direction = direction;
     Ok(Some(result))
+}
+
+/// Vector ASC CAN FD rows:
+/// <time> CANFD <channel> Rx|Tx <id>[x] [symbolic-name] BRS ESI DLC
+/// <data-length> <hex-data...> [duration length flags crc timing...].
+/// DLC is a hexadecimal 4-bit code, but data-length is a decimal byte count.
+fn parse_vector_asc_fd(words: &[&str]) -> Result<Option<CanFrame>, String> {
+    if words.len() < 5 { return Err("Vector CAN FD row has too few columns".into()); }
+    let direction = match words[3].to_ascii_lowercase().as_str() {
+        "rx" => Direction::Received,
+        "tx" => Direction::Transmitted,
+        _ => return Ok(None), // ErrorFrame and other Vector event entries
+    };
+    if words[4].eq_ignore_ascii_case("errorframe") { return Ok(None); }
+    if words.len() < 9 {
+        return Err("Vector CAN FD row is missing DLC, flags or data length".into());
+    }
+    let timestamp = parse_timestamp(words[0])?;
+    let channel = words[2].parse::<u16>().map_err(|_| "invalid Vector CAN FD channel")?;
+    let raw_id = words[4];
+    let extended = raw_id.ends_with('x') || raw_id.ends_with('X');
+    let id = parse_hex_id(if extended { &raw_id[..raw_id.len() - 1] } else { raw_id }, extended)?;
+    let mut at = 5;
+    if words[at] != "0" && words[at] != "1" {
+        // The symbolic name is optional; it occupies exactly one ASC column.
+        at += 1;
+    }
+    if words.len() < at + 4 {
+        return Err("Vector CAN FD row is missing BRS, ESI, DLC or data length".into());
+    }
+    let brs = match words[at] {
+        "0" => false, "1" => true, _ => return Err("Vector CAN FD BRS must be 0 or 1".into()),
+    };
+    let esi = match words[at + 1] {
+        "0" => false, "1" => true, _ => return Err("Vector CAN FD ESI must be 0 or 1".into()),
+    };
+    let dlc_raw = words[at + 2].trim_start_matches("0x").trim_start_matches("0X");
+    let dlc = usize::from_str_radix(dlc_raw, 16)
+        .map_err(|_| "invalid Vector CAN FD hexadecimal DLC")?;
+    let expected_len = pcan_fd_dlc_bytes(dlc)
+        .map_err(|_| "Vector CAN FD DLC must be between 0 and F".to_string())?;
+    let data_len = words[at + 3].parse::<usize>()
+        .map_err(|_| "invalid Vector CAN FD decimal data length")?;
+    if data_len != expected_len {
+        return Err(format!("Vector CAN FD DLC {dlc:X} represents {expected_len} bytes, not {data_len}"));
+    }
+    let payload = &words[at + 4..];
+    if payload.len() < data_len {
+        return Err(format!("Vector CAN FD payload shorter than {data_len} bytes"));
+    }
+    let data = payload[..data_len].iter().map(|word| parse_hex_byte(word))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut frame = CanFrame::new(Some(timestamp), format!("bus{channel}"), id,
+        FrameKind::Data, data, true,
+        FdFlags { bitrate_switch: brs, error_state_indicator: esi })
+        .map_err(|error| error.to_string())?;
+    frame.direction = direction;
+    Ok(Some(frame))
 }
 
 fn parse_carbus_line(line: &str, version_2: bool) -> Result<Option<CanFrame>, String> {
@@ -1074,11 +1132,59 @@ mod tests {
     }
 
     #[test]
-    fn vector_fd_rows_fail_explicitly() {
-        let text = "date Mon Oct 23 2026\n1.000 CANFD 1 Rx 123 0 0 8 8 00 11\n";
-        let error = read_trace(Cursor::new(text)).unwrap_err();
-        assert!(error.to_string().contains("line 2"));
-        assert!(error.to_string().contains("not yet supported"));
+    fn vector_asc_can_fd_preserves_flags_length_direction_and_id_width() {
+        let asc = "date Mon Oct 23 2026\nbase hex timestamps absolute\n\
+            0.001132 CANFD 1 Rx 14e A0058_Unknown 0 0 8 8 00 01 02 03 04 05 06 07 0 0 1000 0\n\
+            0.002000 CANFD 2 Tx 18FF50E5x 1 1 9 12 00 01 02 03 04 05 06 07 08 09 0A 0B 0 0 7000 0\n";
+        let trace = load(asc);
+        assert_eq!(trace.format, TraceFormat::VectorAsc);
+        assert_eq!(trace.frames.len(), 2);
+        let first = &trace.frames[0];
+        assert_eq!(first.timestamp_us, Some(1_132));
+        assert_eq!(first.interface, "bus1");
+        assert_eq!(first.id, CanId::Standard(0x14e));
+        assert_eq!(first.direction, Direction::Received);
+        assert_eq!(first.data.len(), 8);
+        assert!(first.is_fd);
+        assert!(!first.fd_flags.bitrate_switch);
+        assert!(!first.fd_flags.error_state_indicator);
+        let second = &trace.frames[1];
+        assert_eq!(second.timestamp_us, Some(2_000));
+        assert_eq!(second.interface, "bus2");
+        assert_eq!(second.id, CanId::Extended(0x18FF50E5));
+        assert_eq!(second.direction, Direction::Transmitted);
+        assert_eq!(second.data.len(), 12);
+        assert!(second.fd_flags.bitrate_switch);
+        assert!(second.fd_flags.error_state_indicator);
+        assert_eq!(second.data[11], 0x0B);
+    }
+
+    #[test]
+    fn vector_asc_can_fd_supports_64_bytes_and_zero_data() {
+        let hex = (0..64).map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" ");
+        let asc = format!("date Mon Oct 23 2026\n0.000 CANFD 1 Rx 123 0 0 F 64 {hex}\n\
+            0.001 CANFD 1 Rx 124 0 0 0 0 0 0 1000 0\n");
+        let trace = load(&asc);
+        assert_eq!(trace.frames.len(), 2);
+        assert_eq!(trace.frames[0].data.len(), 64);
+        assert_eq!(trace.frames[0].data[63], 63);
+        assert_eq!(trace.frames[1].data.len(), 0);
+        assert_eq!(trace.frames[1].kind, FrameKind::Data);
+    }
+
+    #[test]
+    fn vector_asc_can_fd_rejects_bad_length_and_invalid_flags_with_line_numbers() {
+        let prefix = "date Mon Oct 23 2026\n";
+        let bad_dlc = format!("{prefix}1.000 CANFD 1 Rx 123 1 0 9 8 00 11\n");
+        let error = read_trace(Cursor::new(bad_dlc)).unwrap_err().to_string();
+        assert!(error.contains("line 2"));
+        assert!(error.contains("12 bytes, not 8"));
+        let bad_flags = format!("{prefix}1.000 CANFD 1 Rx 123 1 2 8 8 00 11 22 33 44 55 66 77\n");
+        assert!(read_trace(Cursor::new(bad_flags)).unwrap_err()
+            .to_string().contains("ESI"));
+        let short = format!("{prefix}1.000 CANFD 1 Rx 123 0 0 8 8 00 11\n");
+        assert!(read_trace(Cursor::new(short)).unwrap_err()
+            .to_string().contains("payload shorter"));
     }
 
 
