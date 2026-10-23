@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 savvycan-core = { path = "../savvycan-core" }
+serialport = { version = "4.10.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 socketcan = "4.0.0"

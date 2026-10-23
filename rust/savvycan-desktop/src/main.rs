@@ -11,15 +11,14 @@ use std::time::Duration;
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
     analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
-    FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
+    CanReceive, FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
 use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
 
 #[cfg(target_os = "linux")]
-use savvycan_core::CanReceive;
-#[cfg(target_os = "linux")]
 use savvycan_transports::SocketCanReceive;
+use savvycan_transports::SlcanSerialReceive;
 
 slint::include_modules!();
 
@@ -551,6 +550,74 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let _ = (interface, dbc_path, format_spec, rules_path,
                     &state_for_start, &model_for_start, &flag_for_start, &receiver_for_start);
                 ui.set_status_text("SocketCAN capture is currently Linux-only.".into());
+            }
+        }
+    });
+
+
+    // Explicit, preconfigured serial listener. The decoder does not send
+    // CAN frames, device configuration or SLCAN open-channel commands.
+    let weak = ui.as_weak();
+    let state_for_slcan = Rc::clone(&state);
+    let model_for_slcan = Rc::clone(&model);
+    let flag_for_slcan = Rc::clone(&capture_flag);
+    let receiver_for_slcan = Rc::clone(&receiver);
+    ui.on_start_slcan(move |port, baud_text, interface, dbc_path, format_spec, rules_path| {
+        if let Some(ui) = weak.upgrade() {
+            let baud = match baud_text.trim().parse::<u32>() {
+                Ok(value) if (9_600..=3_000_000).contains(&value) => value,
+                _ => {
+                    ui.set_status_text("SLCAN serial baud must be 9600–3000000.".into());
+                    return;
+                }
+            };
+            if port.trim().is_empty() || interface.trim().is_empty() {
+                ui.set_status_text("Enter a serial path and interface label for SLCAN.".into());
+                return;
+            }
+            match decode_context(dbc_path.as_str(), format_spec.as_str(), rules_path.as_str()) {
+                Ok(context) => {
+                    stop_capture(&flag_for_slcan);
+                    *receiver_for_slcan.borrow_mut() = None;
+                    let (sender, rx) = mpsc::sync_channel(4_096);
+                    let running = Arc::new(AtomicBool::new(true));
+                    let worker_running = Arc::clone(&running);
+                    let (port, interface) = (port.to_string(), interface.to_string());
+                    std::thread::spawn(move || {
+                        match SlcanSerialReceive::open(&port, baud, &interface) {
+                            Ok(mut source) => {
+                                while worker_running.load(Ordering::Relaxed) {
+                                    match source.receive(Duration::from_millis(100)) {
+                                        Ok(Some(frame)) => {
+                                            if sender.send(Ok(frame)).is_err() { break; }
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            let _ = sender.send(Err(error));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => { let _ = sender.send(Err(error)); }
+                        }
+                    });
+                    *flag_for_slcan.borrow_mut() = Some(running);
+                    *receiver_for_slcan.borrow_mut() = Some(rx);
+                    *state_for_slcan.borrow_mut() = ViewerState {
+                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0,
+                    };
+                    model_for_slcan.clear();
+                    ui.set_show_isotp(false);
+                    ui.set_show_stats(false);
+                    ui.set_page_text("Live: latest 2,000 matching rows".into());
+                    ui.set_status_text(
+                        "Opening passive SLCAN serial • preconfigured/auto-streaming adapter required".into()
+                    );
+                }
+                Err(error) => {
+                    ui.set_status_text(format!("Cannot start SLCAN listener: {error}").into())
+                }
             }
         }
     });

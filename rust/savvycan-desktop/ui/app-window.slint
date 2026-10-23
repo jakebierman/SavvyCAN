@@ -48,6 +48,9 @@ export component AppWindow inherits Window {
     in-out property <string> rules-path: "";
     in-out property <string> export-path: "";
     in-out property <string> live-interface: "can0";
+    in-out property <string> serial-path: "";
+    in-out property <string> serial-baud: "115200";
+    in-out property <string> serial-interface: "slcan0";
     in-out property <string> filter-interface: "";
     in-out property <string> filter-id: "";
     in-out property <string> filter-from: "";
@@ -67,6 +70,7 @@ export component AppWindow inherits Window {
     callback export-trace(string);
     callback start-live(string, string, string, string);
     callback stop-live();
+    callback start-slcan(string, string, string, string, string, string);
     callback apply-filter(string, string, string, string);
     callback previous-page();
     callback next-page();
@@ -143,6 +147,28 @@ export component AppWindow inherits Window {
             Button {
                 text: "Stop";
                 clicked => { root.stop-live(); }
+            }
+        }
+
+
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.serial-path;
+                placeholder-text: "Preconfigured SLCAN serial path (e.g. /dev/ttyUSB0)";
+            }
+            LineEdit {
+                text <=> root.serial-baud;
+                placeholder-text: "Serial baud (e.g. 115200)";
+            }
+            LineEdit {
+                text <=> root.serial-interface;
+                placeholder-text: "SLCAN interface label";
+            }
+            Button {
+                text: "Start SLCAN receive-only";
+                clicked => { root.start-slcan(root.serial-path, root.serial-baud,
+                    root.serial-interface, root.dbc-path, root.format-spec, root.rules-path); }
             }
         }
 
@@ -350,6 +376,12 @@ export component AppWindow inherits Window {
                     Text { text: stat.hz; color: #9cdbc1; }
                 }
             }
+        }
+
+        Text {
+            text: "SLCAN serial must already auto-stream; opening a port may pulse DTR/reset devices • No CAN transmissions";
+            color: #d6ab6b;
+            font-size: 12px;
         }
 
         Text {

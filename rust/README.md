@@ -67,7 +67,8 @@ default typed expression, and RTR requests are never formatted.
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET binary receive stream | Initial classic/FD byte parser and tests; serial/TCP connection, setup and hardware validation not yet |
 | LAWICEL/SLCAN receive stream | Initial parser for classic CAN, RTR, optional timestamp and rollover; physical serial attachment not yet |
-| GVRET/SLCAN serial attachment, QtSerialBus equivalents, MQTT | Not yet |
+| SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |
+| GVRET serial/TCP attachment, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
@@ -329,7 +330,30 @@ frames and `r/R` remote requests. It handles optional 4-hex-digit
 LAWICEL timestamps, unwraps the vendor's documented 60-second millisecond
 counter, ignores ordinary command acknowledgement/status text and rejects
 invalid IDs, DLCs, payloads and overlong records. Frames without a
-recorded timestamp keep it unknown. The parser does not transmit anything or
-open/configure a serial port, and CAN FD extensions remain unsupported until
+recorded timestamp keep it unknown. The parser itself does not transmit anything or open/configure a serial port,
+and CAN FD extensions remain unsupported until
 their dialect is explicitly identified and tested. See the
 [LAWICEL CAN232 manual](https://www.canusb.com/files/can232_v3.pdf).
+
+## Optional receive-only SLCAN serial listener
+
+The Slint desktop now has a **Start SLCAN receive-only** control for an
+existing, already configured LAWICEL-compatible serial CAN adapter. Enter the
+serial path (e.g. `/dev/ttyUSB0`), UART baud (default 115200) and an
+interface label (default `slcan0`). The adapter opens the serial port,
+reads its incoming `t/T/r/R` frames, and presents them using the same
+bounded live-capture pipeline as SocketCAN. It sends **no serial commands,
+CAN frames, bitrate configuration or open/close-bus commands**. The external
+adapter must already be in CAN receive/auto-stream mode; this implementation
+cannot activate a new device from its default startup state. SLCAN supports
+classic CAN and RTR only here, not FD.
+
+**Electrical/device caveat:** serial port opening may briefly assert DTR on
+Linux even when configured off in the API; on certain ESP32/Arduino boards
+this can reset the microcontroller. Select the port explicitly and confirm
+that a reset is safe before clicking Start. This is an experimental adapter;
+verify with an isolated test bus, correct adapter firmware and the vehicle's
+CAN bitrate before production use. No hardware integration test has run.
+
+The adapter uses `serialport` with `libudev` disabled to reduce Linux
+system package dependencies, while preserving standard POSIX/Windows ports.
