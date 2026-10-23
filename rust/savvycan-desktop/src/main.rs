@@ -18,7 +18,7 @@ use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
 
 #[cfg(target_os = "linux")]
 use savvycan_transports::SocketCanReceive;
-use savvycan_transports::SlcanSerialReceive;
+use savvycan_transports::{GvretSerialReceive, SlcanSerialReceive};
 
 slint::include_modules!();
 
@@ -720,6 +720,74 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Err(error) => {
                     ui.set_status_text(format!("Cannot start SLCAN listener: {error}").into())
                 }
+            }
+        }
+    });
+
+
+    // Passive GVRET binary stream. Many devices need a binary-mode
+    // handshake, which is intentionally not sent in this adapter.
+    let weak = ui.as_weak();
+    let state_for_gvret = Rc::clone(&state);
+    let model_for_gvret = Rc::clone(&model);
+    let flag_for_gvret = Rc::clone(&capture_flag);
+    let receiver_for_gvret = Rc::clone(&receiver);
+    ui.on_start_gvret_serial(move |port, baud_text, dbc_path, format_spec, rules_path| {
+        if let Some(ui) = weak.upgrade() {
+            let baud = match baud_text.trim().parse::<u32>() {
+                Ok(value) if (9_600..=3_000_000).contains(&value) => value,
+                _ => {
+                    ui.set_status_text("GVRET serial baud must be 9600–3000000.".into());
+                    return;
+                }
+            };
+            if port.trim().is_empty() {
+                ui.set_status_text("Enter a GVRET serial path first.".into());
+                return;
+            }
+            match decode_context(dbc_path.as_str(), format_spec.as_str(), rules_path.as_str()) {
+                Ok(context) => {
+                    stop_capture(&flag_for_gvret);
+                    *receiver_for_gvret.borrow_mut() = None;
+                    let (sender, rx) = mpsc::sync_channel(4_096);
+                    let running = Arc::new(AtomicBool::new(true));
+                    let worker_running = Arc::clone(&running);
+                    let path = port.to_string();
+                    std::thread::spawn(move || {
+                        match GvretSerialReceive::open(&path, baud) {
+                            Ok(mut source) => {
+                                while worker_running.load(Ordering::Relaxed) {
+                                    match source.receive(Duration::from_millis(100)) {
+                                        Ok(Some(frame)) => {
+                                            if sender.send(Ok(frame)).is_err() { break; }
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            let _ = sender.send(Err(error));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => { let _ = sender.send(Err(error)); }
+                        }
+                    });
+                    *flag_for_gvret.borrow_mut() = Some(running);
+                    *receiver_for_gvret.borrow_mut() = Some(rx);
+                    *state_for_gvret.borrow_mut() = ViewerState {
+                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0,
+                    };
+                    model_for_gvret.clear();
+                    ui.set_show_isotp(false);
+                    ui.set_show_stats(false);
+                    ui.set_show_bam(false);
+                    ui.set_page_text("Live: latest 2,000 matching rows".into());
+                    ui.set_status_text(
+                        "Opening passive GVRET serial • device must already emit binary F1 frames".into()
+                    );
+                }
+                Err(error) =>
+                    ui.set_status_text(format!("Cannot start GVRET listener: {error}").into()),
             }
         }
     });

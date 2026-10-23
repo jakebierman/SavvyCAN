@@ -85,6 +85,7 @@ export component AppWindow inherits Window {
     callback start-live(string, string, string, string);
     callback stop-live();
     callback start-slcan(string, string, string, string, string, string);
+    callback start-gvret-serial(string, string, string, string, string);
     callback apply-filter(string, string, string, string);
     callback previous-page();
     callback next-page();
@@ -184,6 +185,11 @@ export component AppWindow inherits Window {
                 text: "Start SLCAN receive-only";
                 clicked => { root.start-slcan(root.serial-path, root.serial-baud,
                     root.serial-interface, root.dbc-path, root.format-spec, root.rules-path); }
+            }
+            Button {
+                text: "Start GVRET stream";
+                clicked => { root.start-gvret-serial(root.serial-path, root.serial-baud,
+                    root.dbc-path, root.format-spec, root.rules-path); }
             }
         }
 
@@ -452,7 +458,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "SLCAN serial must already auto-stream; opening a port may pulse DTR/reset devices • No CAN transmissions";
+            text: "SLCAN or GVRET serial must already auto-stream • Opening a port may pulse DTR/reset devices • No CAN transmissions";
             color: #d6ab6b;
             font-size: 12px;
         }

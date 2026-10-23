@@ -6,9 +6,11 @@ pub use savvycan_core::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, Rece
 pub mod gvret;
 pub mod slcan;
 pub mod serial_rx;
+pub mod gvret_serial_rx;
 pub use gvret::{GvretDecodeError, GvretStreamDecoder};
 pub use slcan::{SlcanDecodeError, SlcanStreamDecoder};
 pub use serial_rx::SlcanSerialReceive;
+pub use gvret_serial_rx::GvretSerialReceive;
 
 #[cfg(target_os = "linux")]
 mod linux {
