@@ -65,6 +65,7 @@ default typed expression, and RTR requests are never formatted.
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
 | Passive ISO-TP normal-addressing payload reassembly | Initial core support and selectable read-only Slint inspector (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
+| Passive J1939 BAM multi-packet reassembly | Initial core receive-only support for TP.CM BAM / TP.DT, isolation, sequence/timeout limits |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET binary receive stream | Initial classic/FD byte parser and tests; serial/TCP connection, setup and hardware validation not yet |
 | LAWICEL/SLCAN receive stream | Initial parser for classic CAN, RTR, optional timestamp and rollover; physical serial attachment not yet |
@@ -375,3 +376,16 @@ without timestamps cannot round-trip and are rejected. Support for additional
 linktypes and timestamp-less Simple Packet Blocks remains planned. A modern
 [IETF PCAPNG draft](https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)
 was used to validate the format.
+
+## Read-only J1939 broadcast reassembly
+
+`J1939BamAssembler` reconstructs J1939-21 Transport Protocol broadcasts
+from captured `TP.CM` BAM (PGN EC00, control 20h) and `TP.DT` (PGN EB00)
+frames, preserving the source ECU address, destination application PGN,
+source interface and start/end microsecond timestamps. Sessions are isolated
+per interface and source, bounded to 1,785-byte payloads, and validated for
+announced packet counts, consecutive sequence numbers, fragment time gaps and
+reserved fields. Final-chunk padding is discarded. There is no CAN output,
+address claiming, RTS/CTS flow control or vehicle control. Integration with
+DBC analysis and the Slint diagnostic view remains to do. The frame layout
+is verified against [Linux CAN J1939 example traffic](https://github.com/linux-can/can-utils/blob/master/can-j1939-kickstart.md).
