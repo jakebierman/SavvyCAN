@@ -152,7 +152,7 @@ fn parse_kind(name: &str) -> Result<FieldType, FormatError> {
     if matches!(name, "u8" | "i8") {
         return Ok(FieldType::Integer { bytes: 1, signed: name == "i8", little: true });
     }
-    if name.len() >= 4 && matches!(&name[0..1], "u" | "i") {
+    if name.is_ascii() && name.len() >= 4 && matches!(&name[0..1], "u" | "i") {
         let signed = name.starts_with('i');
         let bytes = match &name[1..name.len()-2] {
             "16" => 2, "32" => 4, "64" => 8, _ => 0,
@@ -517,7 +517,7 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_expressions() {
-        for expression in ["", "u24le", "u8/0", "u8*0{0:Off}", "f32le&1",
+        for expression in ["", "µ16le", "u24le", "u8/0", "u8*0{0:Off}", "f32le&1",
             "str2[unit]", "bool9", "bit0>>1", "u8{0:Off,0:On}",
             "u8{*:Unknown,*:Other}", "u8{0:Off}{1:On}", "u8{2}*3",
             "0invalid:u8", "u16le>>16"] {

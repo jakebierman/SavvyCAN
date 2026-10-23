@@ -13,6 +13,7 @@ pub enum TraceFormat {
     Busmaster,
     Microchip,
     CarbusAnalyzer,
+    VectorAsc,
 }
 
 impl fmt::Display for TraceFormat {
@@ -25,6 +26,7 @@ impl fmt::Display for TraceFormat {
             Self::Busmaster => "BUSMASTER log",
             Self::Microchip => "Microchip CAN BUS Analyzer log",
             Self::CarbusAnalyzer => "CARBUS Analyzer trace",
+            Self::VectorAsc => "Vector CANalyzer ASC (classic)",
         })
     }
 }
@@ -87,7 +89,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("@ text @") {
+    if normalized.starts_with("date ") || normalized.starts_with("base hex ") {
+        Ok(TraceFormat::VectorAsc)
+    } else if normalized.starts_with("@ text @") {
         Ok(TraceFormat::CarbusAnalyzer)
     } else if normalized.starts_with("***busmaster") {
         Ok(TraceFormat::Busmaster)
@@ -164,6 +168,7 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                     if trimmed.starts_with("@ TEXT @") { Ok(None) }
                     else { parse_carbus_line(trimmed, carbus_v2) }
                 }
+                TraceFormat::VectorAsc => parse_vector_asc_line(trimmed),
             };
             match result {
                 Ok(Some(frame)) => frames.push(frame),
@@ -286,6 +291,63 @@ fn parse_generic_csv_line(line: &str) -> Result<Option<CanFrame>, String> {
 }
 
 
+
+
+fn parse_vector_asc_line(line: &str) -> Result<Option<CanFrame>, String> {
+    let normalized = line.to_ascii_lowercase();
+    if normalized.starts_with("date ") || normalized.starts_with("base ")
+        || normalized.starts_with("internal events")
+        || normalized.starts_with("begin triggerblock")
+        || normalized.starts_with("end triggerblock")
+        || line.starts_with("//") {
+        return Ok(None);
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() { return Ok(None); }
+    // Vector logs also contain error/event records. Only data-frame-shaped
+    // records are imported; CAN FD rows must use a dedicated validated parser.
+    if !words[0].bytes().next().is_some_and(|byte| byte.is_ascii_digit()) {
+        return Ok(None);
+    }
+    if words.len() > 1 && words[1].eq_ignore_ascii_case("CANFD") {
+        return Err("Vector CAN FD ASC row is not yet supported".into());
+    }
+    if words.len() < 6 {
+        if words.get(3).is_some_and(|v| v.eq_ignore_ascii_case("Rx") || v.eq_ignore_ascii_case("Tx")) {
+            return Err("Vector ASC CAN record has fewer than six columns".into());
+        }
+        return Ok(None);
+    }
+    let direction = match words[3].to_ascii_lowercase().as_str() {
+        "rx" => Direction::Received, "tx" => Direction::Transmitted,
+        _ => return Ok(None), // Vector event record, not a CAN frame
+    };
+    let timestamp = parse_timestamp(words[0])?;
+    let bus = words[1].parse::<u16>().map_err(|_| "invalid Vector ASC channel")?;
+    let extended = words[2].ends_with('x') || words[2].ends_with('X');
+    let raw = if extended { &words[2][..words[2].len()-1] } else { words[2] };
+    let id = parse_hex_id(raw, extended)?;
+    let len = words[5].parse::<u8>().map_err(|_| "invalid Vector ASC DLC")?;
+    if len > 8 { return Err("classic Vector ASC DLC exceeds 8".into()); }
+    let kind = match words[4].to_ascii_lowercase().as_str() {
+        "d" => FrameKind::Data,
+        "r" => FrameKind::RemoteRequest { dlc: len },
+        _ => return Err("Vector ASC frame type must be d or r".into()),
+    };
+    let data = if matches!(kind, FrameKind::RemoteRequest { .. }) {
+        Vec::new()
+    } else {
+        if words.len() < 6 + usize::from(len) {
+            return Err("Vector ASC data shorter than DLC".into());
+        }
+        words[6..6+usize::from(len)].iter().map(|v| parse_hex_byte(v))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut result = CanFrame::new(Some(timestamp), format!("bus{bus}"), id, kind, data, false, FdFlags::default())
+        .map_err(|err| err.to_string())?;
+    result.direction = direction;
+    Ok(Some(result))
+}
 
 fn parse_carbus_line(line: &str, version_2: bool) -> Result<Option<CanFrame>, String> {
     let values: Vec<&str> = line.split_whitespace().collect();
@@ -561,6 +623,37 @@ mod tests {
         assert_eq!(load(&converted).frames, result.frames);
         let v3 = load("@ TEXT @ 3 @ 0 @\n46,016 0 0004 7FF 1 AA\n");
         assert_eq!(v3.frames[0].timestamp_us, Some(46_016));
+    }
+
+
+    #[test]
+    fn vector_asc_classic_rx_tx_and_remote() {
+        let asc = "date Mon Oct 23 17:00:00 2026\n\
+                   base hex timestamps absolute\n\
+                   internal events logged\n\
+                   Begin Triggerblock Mon Oct 23 17:00:00 2026\n\
+                   0.001000 1 123 Rx d 2 AA BB\n\
+                   0.001234 2 18FF50E5x Tx d 1 00\n\
+                   0.001235 2 123 Rx r 8\n\
+                   End Triggerblock\n";
+        let trace = load(asc);
+        assert_eq!(trace.format, TraceFormat::VectorAsc);
+        assert_eq!(trace.frames.len(), 3);
+        assert_eq!(trace.frames[0].timestamp_us, Some(1000));
+        assert_eq!(trace.frames[0].id, CanId::Standard(0x123));
+        assert_eq!(trace.frames[0].data, vec![0xAA,0xBB]);
+        assert_eq!(trace.frames[1].id, CanId::Extended(0x18ff50e5));
+        assert_eq!(trace.frames[1].direction, Direction::Transmitted);
+        assert_eq!(trace.frames[2].kind, FrameKind::RemoteRequest { dlc: 8 });
+        assert_eq!(trace.frames[2].data.len(), 0);
+    }
+
+    #[test]
+    fn vector_fd_rows_fail_explicitly() {
+        let text = "date Mon Oct 23 2026\n1.000 CANFD 1 Rx 123 0 0 8 8 00 11\n";
+        let error = read_trace(Cursor::new(text)).unwrap_err();
+        assert!(error.to_string().contains("line 2"));
+        assert!(error.to_string().contains("not yet supported"));
     }
 
     #[test]

@@ -43,13 +43,14 @@ default typed expression, and RTR requests are never formatted.
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
 | CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
+| Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Offline trace statistics, first 25,000 rows and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
 | DBC J1939/GMLAN PGN profile matching | Not yet |
-| BLF, PCAP, CANalyzer, PCAN and other source formats | Not yet |
+| BLF, PCAP, Vector CAN FD ASC, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
