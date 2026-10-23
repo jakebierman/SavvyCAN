@@ -63,3 +63,12 @@ jobs:
         run: cargo check --manifest-path rust/Cargo.toml -p savvycan-desktop
       - name: Test Rust/Slint Windows data logic
         run: cargo test --manifest-path rust/Cargo.toml -p savvycan-desktop
+      - name: Build runnable Windows preview
+        run: cargo build --manifest-path rust/Cargo.toml -p savvycan-desktop
+      - name: Upload Windows preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: savvycan-rust-slint-windows-x86_64
+          path: rust/target/debug/savvycan-desktop.exe
+          if-no-files-found: error
+          retention-days: 7
