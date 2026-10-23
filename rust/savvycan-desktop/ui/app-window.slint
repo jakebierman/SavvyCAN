@@ -81,6 +81,10 @@ export component AppWindow inherits Window {
     in property <string> page-text: "No trace loaded";
     in property <[FrameRow]> frames: [];
     callback open-trace(string, string, string, string);
+    callback browse-trace();
+    callback browse-dbc();
+    callback browse-rules();
+    callback browse-export();
     callback export-trace(string);
     callback start-live(string, string, string, string);
     callback stop-live();
@@ -116,10 +120,12 @@ export component AppWindow inherits Window {
                 text <=> root.file-path;
                 placeholder-text: "Path to CAN trace (.log, .trc, .asc, .crtd, .csv)";
             }
+            Button { text: "Browse"; clicked => { root.browse-trace(); } }
             LineEdit {
                 text <=> root.dbc-path;
                 placeholder-text: "DBC associations: file.dbc;can0=other.dbc";
             }
+            Button { text: "DBC files"; clicked => { root.browse-dbc(); } }
             Button {
                 text: "Open trace";
                 clicked => { root.open-trace(root.file-path, root.dbc-path, root.format-spec, root.rules-path); }
@@ -137,10 +143,12 @@ export component AppWindow inherits Window {
                 text <=> root.rules-path;
                 placeholder-text: "Optional per-interface/CAN-ID formatter rules file";
             }
+            Button { text: "Browse"; clicked => { root.browse-rules(); } }
             LineEdit {
                 text <=> root.export-path;
                 placeholder-text: "New export (.crtd, .csv, .log, .pcap, .pcapng, .stats.csv, .signals.csv)";
             }
+            Button { text: "Save as"; clicked => { root.browse-export(); } }
             Button {
                 text: "Export trace";
                 clicked => { root.export-trace(root.export-path); }

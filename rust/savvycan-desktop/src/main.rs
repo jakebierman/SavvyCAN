@@ -368,6 +368,62 @@ fn main() -> Result<(), Box<dyn Error>> {
     let import_rx: Rc<RefCell<Option<mpsc::Receiver<ImportResult>>>> =
         Rc::new(RefCell::new(None));
 
+    // Native OS file pickers only select paths. All reads and writes retain
+    // their existing validation; export still refuses to overwrite files.
+    let weak = ui.as_weak();
+    ui.on_browse_trace(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("CAN traces", &["log", "trc", "asc", "crtd", "csv", "pcap", "pcapng"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+        {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_file_path(path.to_string_lossy().into_owned().into());
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_browse_dbc(move || {
+        if let Some(paths) = rfd::FileDialog::new()
+            .add_filter("CAN database", &["dbc"])
+            .pick_files()
+        {
+            if let Some(ui) = weak.upgrade() {
+                let paths = paths.iter().map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>().join(";");
+                ui.set_dbc_path(paths.into());
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_browse_rules(move || {
+        if let Some(path) = rfd::FileDialog::new().pick_file() {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_rules_path(path.to_string_lossy().into_owned().into());
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_browse_export(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("capture.pcapng")
+            .add_filter("PCAPNG capture", &["pcapng"])
+            .add_filter("PCAP capture", &["pcap"])
+            .add_filter("CAN logs", &["log", "crtd", "csv"])
+            .save_file()
+        {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_export_path(path.to_string_lossy().into_owned().into());
+                ui.set_status_text(
+                    "Export path selected. Click Export trace to create a NEW file.".into()
+                );
+            }
+        }
+    });
+
     let weak = ui.as_weak();
     let import_for_open = Rc::clone(&import_rx);
     ui.on_open_trace(move |path, dbc_path, format_spec, rules_path| {

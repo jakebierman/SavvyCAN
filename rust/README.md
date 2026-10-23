@@ -69,11 +69,13 @@ default typed expression, and RTR requests are never formatted.
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET binary receive stream | Initial classic/FD byte parser, tests and opt-in preconfigured serial listener; mode setup and hardware validation not yet |
 | LAWICEL/SLCAN receive stream | Initial parser for classic CAN, RTR, optional timestamp and rollover; physical serial attachment not yet |
-| SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |
+| SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |\n| Native open/save dialogs (trace, DBC, rules, export) | Initial desktop support; selecting an export path never overwrites an existing file |
 | GVRET device handshake/activation and TCP, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
-Offline file loading is performed on a worker thread so large traces do not block the Slint event loop. Opening another file replaces the pending result; live capture starts cancel the pending result. The worker still reads to completion if its result is abandoned, so cooperative cancellation and streaming disk-to-view loading are future improvements.\n\nCapture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
+The desktop interface has native open/save path dialogs for CAN traces, multiple DBC files and formatter rules. Selected DBC files populate the semicolon-separated global list; per-interface DBC associations can be entered manually in the same field. Selecting an export filename **does not write anything**: press **Export trace** to create the file, and an existing destination is rejected rather than overwritten. On Linux, the native dialogs require an available XDG Desktop Portal backend at runtime.\n\nOffline file loading is performed on a worker thread so large traces do not block the Slint event loop. Opening another file replaces the pending result; live capture starts cancel the pending result. The worker still reads to completion if its result is abandoned, so cooperative cancellation and streaming disk-to-view loading are future improvements.
+
+Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1, IXXAT MiniLog
 Vehicle Spy and Cabana CSV text logs, plus binary SocketCAN PCAP and PCAPNG captures. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
