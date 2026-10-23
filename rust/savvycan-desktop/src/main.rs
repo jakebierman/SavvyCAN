@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, extract_numeric_series_batch, plot_path_on_axes, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series_batch, plot_path_on_axes, HorizontalAxis, NumericSeries, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -477,6 +477,84 @@ fn plot_relative_offset(value: u64, first: u64, axis: HorizontalAxis) -> String 
     }
 }
 
+/// Decoded signal observations are kept across navigation commands.
+/// The next explicit Plot action replaces the cache after decoding a new
+/// selection. Replotting a viewport never queries the bus or re-decodes CAN.
+struct PlotSession {
+    series: Vec<NumericSeries>,
+    first: u64,
+    last: u64,
+    axis: HorizontalAxis,
+    independent: bool,
+}
+
+fn draw_plot_session(
+    ui: &AppWindow, session: &PlotSession, x_start: u64, x_end: u64,
+) -> Result<String, String> {
+    let ranges = session.series.iter().map(|signal| {
+        signal.points.iter().filter(|(x, _)| *x >= x_start && *x <= x_end)
+            .fold(None, |acc: Option<(f64, f64, usize)>, (_, value)| {
+                Some(match acc {
+                    Some((min, max, count)) => (min.min(*value), max.max(*value), count + 1),
+                    None => (*value, *value, 1),
+                })
+            })
+    }).collect::<Vec<_>>();
+    if ranges.iter().all(Option::is_none) {
+        return Err("No decoded signal samples inside this plot window.".into());
+    }
+    let shared_min = ranges.iter().flatten().map(|(min, _, _)| *min)
+        .fold(f64::INFINITY, f64::min);
+    let shared_max = ranges.iter().flatten().map(|(_, max, _)| *max)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut commands = [String::new(), String::new(), String::new()];
+    let mut legends = [String::new(), String::new(), String::new()];
+    let mut all_samples = 0usize;
+    for (index, signal) in session.series.iter().enumerate() {
+        let Some((minimum, maximum, count)) = ranges[index] else {
+            legends[index] = format!("{}: no samples in window", signal.signal);
+            continue;
+        };
+        let (lower, upper) = if session.independent {
+            (minimum, maximum)
+        } else { (shared_min, shared_max) };
+        let plot = plot_path_on_axes(&signal.points, 800,
+            x_start, x_end, lower, upper)?;
+        commands[index] = plot.commands;
+        all_samples += count;
+        let units = if signal.unit.is_empty() { String::new() }
+            else { format!(" {}", signal.unit) };
+        legends[index] = format!("{}: {:.3}–{:.3}{} ({} samples)",
+            signal.signal, minimum, maximum, units, count);
+    }
+    let divisor = if session.axis == HorizontalAxis::TimestampMicroseconds {
+        1_000_000.0
+    } else { 1.0 };
+    let unit = if session.axis == HorizontalAxis::TimestampMicroseconds {
+        "seconds"
+    } else { "frame offsets" };
+    let label = format!(
+        "{} signals • {} visible samples • {:.3}–{:.3} {} since first sample • {} Y scales",
+        session.series.len(), all_samples,
+        x_start.saturating_sub(session.first) as f64 / divisor,
+        x_end.saturating_sub(session.first) as f64 / divisor,
+        unit, if session.independent { "independent" } else { "shared" }
+    );
+    ui.set_plot_commands(commands[0].clone().into());
+    ui.set_plot_commands_b(commands[1].clone().into());
+    ui.set_plot_commands_c(commands[2].clone().into());
+    ui.set_plot_legend_a(legends[0].clone().into());
+    ui.set_plot_legend_b(legends[1].clone().into());
+    ui.set_plot_legend_c(legends[2].clone().into());
+    ui.set_plot_summary(label.clone().into());
+    ui.set_show_isotp(false);
+    ui.set_show_stats(false);
+    ui.set_show_bam(false);
+    ui.set_show_bytes(false);
+    ui.set_show_plot(true);
+    Ok(label)
+}
+
 type ImportResult = Result<(ViewerState, String), String>;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -922,6 +1000,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // and shared X axis. Independent Y scales keep different engineering
     // units interpretable without suggesting they share a physical scale.
     let plot_navigation = Rc::new(RefCell::new(None::<PlotNavigation>));
+    let plot_cache = Rc::new(RefCell::new(None::<PlotSession>));
+    let cache_for_plot = Rc::clone(&plot_cache);
     let nav_for_plot = Rc::clone(&plot_navigation);
     let weak = ui.as_weak();
     let state_for_plot = Rc::clone(&state);
@@ -989,83 +1069,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
         };
-        let ranges = series.iter().map(|signal| {
-            signal.points.iter().filter(|(x, _)| *x >= x_start && *x <= x_end)
-                .fold(None, |acc: Option<(f64, f64, usize)>, (_, value)| {
-                    Some(match acc {
-                        Some((min, max, count)) => (min.min(*value), max.max(*value), count + 1),
-                        None => (*value, *value, 1),
-                    })
-                })
-        }).collect::<Vec<_>>();
-        if ranges.iter().all(Option::is_none) {
-            ui.set_status_text("No decoded signal samples inside this plot window.".into());
-            return;
-        }
-        let shared_min = ranges.iter().flatten().map(|(min, _, _)| *min)
-            .fold(f64::INFINITY, f64::min);
-        let shared_max = ranges.iter().flatten().map(|(_, max, _)| *max)
-            .fold(f64::NEG_INFINITY, f64::max);
-
-        let mut commands = [String::new(), String::new(), String::new()];
-        let mut legends = [String::new(), String::new(), String::new()];
-        let mut all_samples = 0usize;
-        for (index, signal) in series.iter().enumerate() {
-            let Some((minimum, maximum, count)) = ranges[index] else {
-                legends[index] = format!("{}: no samples in window", signal.signal);
-                continue;
-            };
-            let (lower, upper) = if independent {
-                (minimum, maximum)
-            } else { (shared_min, shared_max) };
-            let plot = match plot_path_on_axes(&signal.points, 800,
-                x_start, x_end, lower, upper) {
-                Ok(plot) => plot,
-                Err(error) => {
-                    ui.set_status_text(error.into());
-                    return;
-                }
-            };
-            commands[index] = plot.commands;
-            all_samples += count;
-            let units = if signal.unit.is_empty() { String::new() }
-                else { format!(" {}", signal.unit) };
-            legends[index] = format!("{}: {:.3}–{:.3}{} ({} samples)",
-                signal.signal, minimum, maximum, units, count);
-        }
-        let divisor = if axis == HorizontalAxis::TimestampMicroseconds {
-            1_000_000.0
-        } else { 1.0 };
-        let unit = if axis == HorizontalAxis::TimestampMicroseconds {
-            "seconds"
-        } else { "frame offsets" };
-        let label = format!(
-            "{} signals • {} visible samples • {:.3}–{:.3} {} since first sample • {} Y scales",
-            series.len(), all_samples,
-            x_start.saturating_sub(first) as f64 / divisor,
-            x_end.saturating_sub(first) as f64 / divisor,
-            unit, if independent { "independent" } else { "shared" }
-        );
-        ui.set_plot_commands(commands[0].clone().into());
-        ui.set_plot_commands_b(commands[1].clone().into());
-        ui.set_plot_commands_c(commands[2].clone().into());
-        ui.set_plot_legend_a(legends[0].clone().into());
-        ui.set_plot_legend_b(legends[1].clone().into());
-        ui.set_plot_legend_c(legends[2].clone().into());
-        ui.set_plot_summary(label.clone().into());
+        let session = PlotSession { series, first, last, axis, independent };
+        let label = match draw_plot_session(&ui, &session, x_start, x_end) {
+            Ok(label) => label,
+            Err(error) => {
+                ui.set_status_text(error.into());
+                return;
+            }
+        };
+        *cache_for_plot.borrow_mut() = Some(session);
         *nav_for_plot.borrow_mut() = Some(PlotNavigation {
             first, last, start: x_start, end: x_end, axis,
         });
-        ui.set_show_isotp(false);
-        ui.set_show_stats(false);
-        ui.set_show_bam(false);
-        ui.set_show_bytes(false);
-        ui.set_show_plot(true);
         ui.set_status_text(label.into());
     });
 
     let weak = ui.as_weak();
     let nav_for_controls = Rc::clone(&plot_navigation);
+    let cache_for_controls = Rc::clone(&plot_cache);
     ui.on_navigate_plot(move |action| {
         let Some(ui) = weak.upgrade() else { return; };
         if !ui.get_show_plot() {
@@ -1075,14 +1096,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         let Some(window) = *nav_for_controls.borrow() else { return; };
         match navigate_plot_window(window, action.as_str()) {
             Ok((start, end)) => {
-                ui.set_plot_window_from(
-                    plot_relative_offset(start, window.first, window.axis).into());
-                ui.set_plot_window_through(
-                    plot_relative_offset(end, window.first, window.axis).into());
-                ui.invoke_plot_signal_series(
-                    ui.get_plot_interface(), ui.get_plot_id(),
-                    ui.get_plot_signal(), ui.get_plot_window_from(),
-                    ui.get_plot_window_through(), ui.get_plot_independent_scales());
+                let cache = cache_for_controls.borrow();
+                let Some(session) = cache.as_ref() else { return; };
+                match draw_plot_session(&ui, session, start, end) {
+                    Ok(label) => {
+                        ui.set_plot_window_from(
+                            plot_relative_offset(start, window.first, window.axis).into());
+                        ui.set_plot_window_through(
+                            plot_relative_offset(end, window.first, window.axis).into());
+                        *nav_for_controls.borrow_mut() = Some(PlotNavigation {
+                            start, end, ..window
+                        });
+                        ui.set_status_text(label.into());
+                    }
+                    Err(error) => ui.set_status_text(error.into()),
+                }
             }
             Err(error) => ui.set_status_text(error.into()),
         }
