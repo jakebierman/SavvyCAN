@@ -84,6 +84,12 @@ export component AppWindow inherits Window {
     in-out property <bool> show-stats: false;
     in-out property <bool> show-bam: false;
     in-out property <bool> show-bytes: false;
+    in-out property <bool> show-plot: false;
+    in-out property <string> plot-interface: "";
+    in-out property <string> plot-id: "S:123";
+    in-out property <string> plot-signal: "RPM";
+    in property <string> plot-commands: "";
+    in property <string> plot-summary: "";
     in-out property <string> byte-interface: "";
     in-out property <string> byte-id: "";
     in property <[ByteActivityRow]> byte-rows: [];
@@ -116,6 +122,7 @@ export component AppWindow inherits Window {
     callback open-statistics();
     callback inspect-bam(string, string);
     callback inspect-bytes(string, string);
+    callback plot-signal-series(string, string, string);
 
     VerticalBox {
         padding: 16px;
@@ -297,6 +304,7 @@ export component AppWindow inherits Window {
                     root.show-stats = false;
                     root.show-bam = false;
                     root.show-bytes = false;
+                    root.show-plot = false;
                 }
             }
         }
@@ -333,6 +341,26 @@ export component AppWindow inherits Window {
             }
         }
 
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.plot-interface;
+                placeholder-text: "DBC plot interface (blank = all)";
+            }
+            LineEdit {
+                text <=> root.plot-id;
+                placeholder-text: "Exact plot CAN ID (S:123)";
+            }
+            LineEdit {
+                text <=> root.plot-signal;
+                placeholder-text: "DBC signal name (e.g. RPM)";
+            }
+            Button {
+                text: "Plot DBC signal";
+                clicked => { root.plot-signal-series(root.plot-interface, root.plot-id, root.plot-signal); }
+            }
+        }
+
         if root.show-isotp : Text {
             text: root.isotp-summary;
             color: #9cdbc1;
@@ -356,13 +384,19 @@ export component AppWindow inherits Window {
             font-size: 13px;
         }
 
+        if root.show-plot : Text {
+            text: root.plot-summary;
+            color: #9cdbc1;
+            font-size: 13px;
+        }
+
         Text {
             text: root.status-text;
             color: #9fcaee;
             font-size: 13px;
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes : Rectangle {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot : Rectangle {
             height: 34px;
             background: #243247;
             HorizontalBox {
@@ -451,7 +485,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes : ListView {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot : ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
                 width: parent.width;
@@ -509,6 +543,25 @@ export component AppWindow inherits Window {
                     Text { text: message.length; width: 65px; color: #f2f6ff; }
                     Text { text: message.payload; color: #9cdbc1; }
                 }
+            }
+        }
+
+        if root.show-plot : Rectangle {
+            height: 340px;
+            width: parent.width;
+            background: #151f2d;
+            border-color: #35445b;
+            border-width: 1px;
+            border-radius: 7px;
+            Path {
+                x: 20px;
+                y: 20px;
+                width: parent.width - 40px;
+                height: parent.height - 40px;
+                commands: root.plot-commands;
+                fill: transparent;
+                stroke: #65d8cf;
+                stroke-width: 2px;
             }
         }
 

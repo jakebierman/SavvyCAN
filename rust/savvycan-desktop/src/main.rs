@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path, HorizontalAxis, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -595,6 +595,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_stats(false);
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
                     ui.set_status_text(summary.into());
                 }
                 Ok(_) => ui.set_status_text(
@@ -631,6 +632,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_stats(true);
             ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
             ui.set_status_text(message.into());
         }
     });
@@ -690,6 +692,75 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_status_text(message.into());
     });
 
+    // Passive DBC signal trend for one exact CAN ID. The plotted series
+    // is derived from retained history, with no hardware reads or writes.
+    let weak = ui.as_weak();
+    let state_for_plot = Rc::clone(&state);
+    ui.on_plot_signal_series(move |interface, id, name| {
+        let Some(ui) = weak.upgrade() else { return; };
+        let selector = match TraceFilter::parse(interface.as_str(), id.as_str()) {
+            Ok(filter) if matches!(filter.id, Some(IdFilter::Exact(_))) => filter,
+            Ok(_) => {
+                ui.set_status_text("Plot one exact 11/29-bit CAN ID, e.g. S:123.".into());
+                return;
+            }
+            Err(error) => {
+                ui.set_status_text(format!("Invalid plot CAN ID: {error}").into());
+                return;
+            }
+        };
+        let state = state_for_plot.borrow();
+        if state.live {
+            ui.set_status_text("Stop live capture before plotting a DBC signal.".into());
+            return;
+        }
+        let Some(dbc) = state.context.dbc.as_ref() else {
+            ui.set_status_text("Load a DBC before plotting decoded signals.".into());
+            return;
+        };
+        let series = match extract_numeric_series(&state.frames, dbc, &selector, name.as_str()) {
+            Ok(series) => series,
+            Err(error) => {
+                ui.set_status_text(error.into());
+                return;
+            }
+        };
+        let plot = match plot_path(&series.points, 800) {
+            Ok(plot) => plot,
+            Err(error) => {
+                ui.set_status_text(error.into());
+                return;
+            }
+        };
+        let axis = match series.axis {
+            HorizontalAxis::TimestampMicroseconds => {
+                format!("time {:.6}–{:.6} s",
+                    plot.first_x as f64 / 1_000_000.0,
+                    plot.last_x as f64 / 1_000_000.0)
+            }
+            HorizontalAxis::FrameIndex =>
+                format!("frame index {}–{}", plot.first_x, plot.last_x),
+        };
+        let unit = if series.unit.is_empty() { "".to_owned() }
+            else { format!(" {}", series.unit) };
+        let message = format!(
+            "{} • {} points ({} drawn) • min {:.3}{unit} / max {:.3}{unit} • {axis}{}",
+            series.signal, plot.source_points, plot.plotted_points,
+            plot.min_y, plot.max_y,
+            if series.decode_errors > 0 {
+                format!(" • {} undecodable frames ignored", series.decode_errors)
+            } else { String::new() }
+        );
+        ui.set_plot_commands(plot.commands.into());
+        ui.set_plot_summary(message.clone().into());
+        ui.set_show_isotp(false);
+        ui.set_show_stats(false);
+        ui.set_show_bam(false);
+        ui.set_show_bytes(false);
+        ui.set_show_plot(true);
+        ui.set_status_text(message.into());
+    });
+
     let weak = ui.as_weak();
     let state_for_start = Rc::clone(&state);
     let model_for_start = Rc::clone(&model);
@@ -743,6 +814,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_show_stats(false);
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }
@@ -797,6 +869,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_stats(false);
             ui.set_show_bam(true);
             ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
             ui.set_status_text(summary.into());
         }
     });
@@ -860,6 +933,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_stats(false);
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive SLCAN serial • preconfigured/auto-streaming adapter required".into()
@@ -932,6 +1006,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_stats(false);
                     ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive GVRET serial • device must already emit binary F1 frames".into()
@@ -991,6 +1066,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_show_stats(false);
                 ui.set_show_bam(false);
                     ui.set_show_bytes(false);
+                    ui.set_show_plot(false);
                 ui.set_status_text(message.into());
             }
             Some(Ok(Err(message))) => {
