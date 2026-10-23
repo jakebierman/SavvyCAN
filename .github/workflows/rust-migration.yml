@@ -1,0 +1,33 @@
+name: Rust migration
+
+on:
+  push:
+    branches:
+      - feature/rust-slint-migration
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-migration.yml"
+  pull_request:
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-migration.yml"
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: Test core CAN model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path rust/Cargo.toml -p savvycan-core
+
+  desktop:
+    name: Check Slint desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - run: cargo check --manifest-path rust/Cargo.toml -p savvycan-desktop

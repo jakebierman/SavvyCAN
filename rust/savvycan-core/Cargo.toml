@@ -1,0 +1,9 @@
+[package]
+name = "savvycan-core"
+description = "Platform-independent CAN models and offline analysis for SavvyCAN"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
