@@ -386,6 +386,5 @@ source interface and start/end microsecond timestamps. Sessions are isolated
 per interface and source, bounded to 1,785-byte payloads, and validated for
 announced packet counts, consecutive sequence numbers, fragment time gaps and
 reserved fields. Final-chunk padding is discarded. There is no CAN output,
-address claiming, RTS/CTS flow control or vehicle control. Integration with
-DBC analysis and the Slint diagnostic view remains to do. The frame layout
+address claiming, RTS/CTS flow control or vehicle control. A read-only CLI can inspect BAM payloads from any supported trace:\n\n~~~sh\ncargo run -p savvycan-core --bin savvycan-j1939-bam -- capture.log 80 can0\n~~~\n\nThe optional source address is hexadecimal, and the optional interface name\nrestricts the trace scan. Output previews the first 48 payload bytes and\nreports invalid/incomplete sessions. The Linux CI artifact includes this\ninspector alongside the ISO-TP CLI. Integration with DBC analysis and the\nSlint diagnostic view remains to do. The frame layout
 is verified against [Linux CAN J1939 example traffic](https://github.com/linux-can/can-utils/blob/master/can-j1939-kickstart.md).

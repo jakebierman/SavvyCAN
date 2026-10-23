@@ -35,6 +35,8 @@ jobs:
         run: cargo build --manifest-path rust/Cargo.toml -p savvycan-desktop
       - name: Build read-only ISO-TP trace inspector
         run: cargo build --manifest-path rust/Cargo.toml -p savvycan-core --bin savvycan-isotp
+      - name: Build read-only J1939 BAM trace inspector
+        run: cargo build --manifest-path rust/Cargo.toml -p savvycan-core --bin savvycan-j1939-bam
       - name: Upload Linux preview
         uses: actions/upload-artifact@v4
         with:
@@ -42,5 +44,6 @@ jobs:
           path: |
             rust/target/debug/savvycan-desktop
             rust/target/debug/savvycan-isotp
+            rust/target/debug/savvycan-j1939-bam
           if-no-files-found: error
           retention-days: 7
