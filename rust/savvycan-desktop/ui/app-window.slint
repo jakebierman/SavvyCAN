@@ -21,9 +21,12 @@ export component AppWindow inherits Window {
     in-out property <string> file-path: "";
     in-out property <string> dbc-path: "";
     in-out property <string> format-spec: "";
+    in-out property <string> rules-path: "";
+    in-out property <string> export-path: "";
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
-    callback open-trace(string, string, string);
+    callback open-trace(string, string, string, string);
+    callback export-trace(string);
 
     VerticalBox {
         padding: 16px;
@@ -54,13 +57,29 @@ export component AppWindow inherits Window {
             }
             Button {
                 text: "Open trace";
-                clicked => { root.open-trace(root.file-path, root.dbc-path, root.format-spec); }
+                clicked => { root.open-trace(root.file-path, root.dbc-path, root.format-spec, root.rules-path); }
             }
         }
 
         LineEdit {
             text <=> root.format-spec;
-            placeholder-text: "Optional typed format (e.g. rpm:u16be@0/4[rpm]{1} temp:i8@2-40[C]) — applied to every data frame";
+            placeholder-text: "Optional default typed format (e.g. rpm:u16be@0/4[rpm]{1} temp:i8@2-40[C])";
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.rules-path;
+                placeholder-text: "Optional per-interface/CAN-ID formatter rules file";
+            }
+            LineEdit {
+                text <=> root.export-path;
+                placeholder-text: "New export file path (.crtd or .csv)";
+            }
+            Button {
+                text: "Export trace";
+                clicked => { root.export-trace(root.export-path); }
+            }
         }
 
         Text {
@@ -109,7 +128,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "Offline and read-only • DBC and typed formatting never transmit or write to a CAN device";
+            text: "Offline CAN inspection • Export creates a new file only • No CAN transmission or device writes";
             color: #8195aa;
             font-size: 12px;
         }

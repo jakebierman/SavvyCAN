@@ -25,11 +25,11 @@ cargo test -p savvycan-core
 cargo run -p savvycan-desktop -- /path/to/candump.log /path/to/signals.dbc "rpm:u16be@0/4[rpm]{1}"
 ~~~
 
-The DBC path and typed format are optional. To pass a format without a DBC, use
+The DBC path, typed format and rules-file path are optional. To pass a format without a DBC, use
 an empty string for the DBC argument. You can also enter log/DBC paths and the
-formatter expression directly in the UI. Typed formatting applies globally to
-all data rows for now; core per-interface/ID routing is available for future UI
-assignment. It never formats RTR requests.
+formatter expression directly in the UI. Optionally specify a per-ID rules file
+as the fourth positional argument or in the viewer. Per-ID rules override the
+default typed expression, and RTR requests are never formatted.
 
 ## Current feature boundary
 
@@ -39,19 +39,19 @@ assignment. It never formats RTR requests.
 | Per-interface identity, microsecond timestamps, FD flags and RTR | Done |
 | Linux candump compact and simple bracketed-text log import | Done |
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
-| CRTD and GVRET native CSV V2 exports | Core writer only (classic CAN, lossless preflight checks) |
+| CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Offline trace statistics and first 25,000 rows in a Slint viewer | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
 | BLF, PCAP, BusMaster, Microchip and other source formats | Not yet |
-| Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, tests and global Slint preview |
+| Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD and the original GVRET/generic CSV
-headers. The core can also serialize CRTD and GVRET CSV V2, but the viewer does
-not expose export yet. Those writers deliberately reject frames they cannot
+headers. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
+existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
 and retains those values as unknown.
@@ -60,8 +60,9 @@ The pure-Rust typed formatter supports integer/float byte order, signed values,
 text, individual bits, masks and shifts, arithmetic, units, fixed precision,
 enum labels, missing-byte markers, validation warnings and repeated fields. A
 format is compiled once before opening a trace. Invalid formats fail with a
-user-visible error. Per-interface/ID-specific and legacy ID fallback routing
-are implemented in the core but are not yet editable in the Slint viewer.
+user-visible error. Per-interface/ID-specific and legacy numeric ID fallback routing are supported
+through a text file loaded by the Slint viewer. An interactive per-ID rule
+editor is still pending.
 Refer to ../help/payload_formatter.md for grammar details.
 
 DBC parsing covers BO_, SG_, VAL_, SIG_VALTYPE_, and SG_MUL_VAL_ directives.
@@ -88,3 +89,30 @@ and explicit adapter capability validation.
 
 Build/test workflows are separate from the existing Qt release process.
 Do not merge or replace C++ binaries until parity is measured and verified.
+
+## Typed formatter rules file
+
+Each nonempty line assigns a payload expression to an interface and CAN ID.
+IDs are hexadecimal; `S:` forces 11-bit, `X:` forces 29-bit, and an
+unqualified identifier chooses extended only above 0x7FF. Use `*` for a
+numeric-ID fallback when no interface-specific rule exists.
+
+~~~text
+# interface CAN-ID custom-format
+can0 S:123 rpm:u16be@0/4[rpm]{1} coolant:i8@2-40[C]
+can0 X:00000123 status:u8{0:Off,1:On}
+* 0x456 voltage:u16le/1000[V]{3}
+~~~
+
+The viewer applies matching rules first, then the optional global formatter.
+Names like `can0` and `bus0` must match the imported capture's interface
+exactly. Neither DBC decoding nor the underlying frame bytes are changed.
+
+## Export limitations
+
+Select an output path ending in `.crtd`, `.crt`, or `.csv` and click
+**Export trace**. Export is available only for classic CAN data frames with
+known microsecond timestamps, bus numbers and Rx/Tx directions. It rejects
+CAN FD, RTR and missing metadata before creating the output file; an existing
+file is never replaced. The current exporters are intentionally conservative
+because the legacy formats cannot represent every field.

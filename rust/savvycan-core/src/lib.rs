@@ -6,6 +6,7 @@ pub mod dbc;
 pub mod frame;
 pub mod file_formats;
 pub mod payload_format;
+pub mod format_rules;
 pub mod trace;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
@@ -13,6 +14,7 @@ pub use dbc::{
     ByteOrder, DbcDatabase, DbcMessage, DbcParseError, DbcSignal, DecodeError,
     DecodedMessage, DecodedSignal, MuxCondition, ValueKind,
 };
+pub use format_rules::{parse_format_rules, RuleParseError};
 pub use payload_format::{FormatError, FormattedField, PayloadFormatRouter, PayloadFormatter};
 pub use file_formats::{read_trace, write_crtd, write_gvret_csv, ExportError, ImportError, ImportedTrace, TraceFormat};
 pub use frame::{CanFrame, CanId, Direction, FdFlags, FrameError, FrameKind};
