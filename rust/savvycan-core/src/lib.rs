@@ -18,6 +18,7 @@ pub mod pcap;
 pub mod pcapng;
 pub mod trace_stats;
 pub mod byte_activity;
+pub mod timeseries;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
@@ -36,6 +37,7 @@ pub use pcap::write_socketcan_pcap;
 pub use pcapng::write_socketcan_pcapng;
 pub use trace_stats::{analyze_ids, write_id_stats_csv, IdStatistics};
 pub use byte_activity::{analyze_byte_activity, analyze_byte_activity_matching, write_byte_activity_csv, write_byte_activity_csv_matching, ByteActivity};
+pub use timeseries::{extract_numeric_series, plot_path, HorizontalAxis, NumericSeries, PlotPath};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};
