@@ -153,3 +153,13 @@ the loaded frames or export data. Leave either input blank to match all.
 CAN IDs use hexadecimal; `S:123` and `X:123` distinguish 11/29-bit IDs even
 when the numeric value is identical. Offline display shows the first 25,000
 matching frames. During live capture, it shows the latest 2,000 matching frames.
+
+## CI Linux preview binary
+
+Every migration-branch CI run now tests the Rust core and receive-only
+transports, checks the Slint desktop, then builds a runnable Linux x86_64
+debug preview. Download `savvycan-rust-slint-linux-x86_64` from the workflow
+run's **Artifacts** section and mark the extracted executable as executable.
+This is a developer preview and still requires compatible Linux runtime GUI
+libraries; it is not a packaged release or an alternative to the existing
+Qt/C++ SavvyCAN distributions.
