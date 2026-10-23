@@ -18,6 +18,7 @@ pub enum TraceFormat {
     IxxatMinilog,
     VehicleSpy,
     SocketCanPcap,
+    SocketCanPcapNg,
     CabanaCsv,
 }
 
@@ -36,6 +37,7 @@ impl fmt::Display for TraceFormat {
             Self::IxxatMinilog => "IXXAT MiniLog CSV",
             Self::VehicleSpy => "Vehicle Spy CSV",
             Self::SocketCanPcap => "SocketCAN PCAP",
+            Self::SocketCanPcapNg => "SocketCAN PCAPNG",
             Self::CabanaCsv => "Cabana CSV",
         })
     }
@@ -140,7 +142,7 @@ fn detect(first: &str) -> Result<TraceFormat, ImportError> {
 /// CRTD event/comment records do not contain CAN frames and are intentionally ignored.
 pub fn read_trace<R: BufRead>(mut reader: R) -> Result<ImportedTrace, ImportError> {
     if reader.fill_buf()?.starts_with(&[0x0a, 0x0d, 0x0d, 0x0a]) {
-        return Err(ImportError::Unsupported("pcapng is not yet supported; use classic SocketCAN PCAP".into()));
+        return crate::pcapng::read_socketcan_pcapng(reader);
     }
     if crate::pcap::is_pcap_magic(reader.fill_buf()?) {
         return crate::pcap::read_socketcan_pcap(reader);
@@ -202,7 +204,8 @@ pub fn read_trace<R: BufRead>(mut reader: R) -> Result<ImportedTrace, ImportErro
                         Ok(None)
                     } else { parse_cabana_csv_line(trimmed) }
                 },
-                TraceFormat::SocketCanPcap => unreachable!("binary PCAP was detected first"),
+                TraceFormat::SocketCanPcap | TraceFormat::SocketCanPcapNg =>
+                    unreachable!("binary PCAP/PCAPNG was detected first"),
                 TraceFormat::PcanTrc => {
                     if let Some(value) = trimmed.strip_prefix(";$FILEVERSION=") {
                         pcan_version = match value.trim().trim_end_matches(';') {

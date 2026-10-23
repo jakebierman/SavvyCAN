@@ -18,8 +18,8 @@ fn number(raw: &[u8], little: bool) -> u32 {
     if little { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) }
 }
 
-fn parse_frame(
-    packet: &[u8], timestamp_us: u64, number: usize,
+pub(crate) fn parse_frame(
+    packet: &[u8], timestamp_us: Option<u64>, number: usize,
 ) -> Result<CanFrame, ImportError> {
     let bad = |reason: &str| ImportError::Line {
         number, reason: reason.into()
@@ -62,7 +62,7 @@ fn parse_frame(
         Vec::new()
     } else { packet[8..8 + length].to_vec() };
     let mut frame = CanFrame::new(
-        Some(timestamp_us), "bus0", raw_id, kind, bytes, is_fd, fd_flags
+        timestamp_us, "bus0", raw_id, kind, bytes, is_fd, fd_flags
     ).map_err(|error| bad(&error.to_string()))?;
     // Standard PCAP does not record Tx/Rx direction for this link type.
     frame.direction = Direction::Unknown;
@@ -126,7 +126,7 @@ pub fn read_socketcan_pcap<R: Read>(mut reader: R) -> Result<ImportedTrace, Impo
             })?;
         let mut packet = [0u8; 72];
         reader.read_exact(&mut packet[..included as usize])?;
-        frames.push(parse_frame(&packet[..included as usize], timestamp, packet_number)?);
+        frames.push(parse_frame(&packet[..included as usize], Some(timestamp), packet_number)?);
     }
     Ok(ImportedTrace { format: TraceFormat::SocketCanPcap, frames })
 }
