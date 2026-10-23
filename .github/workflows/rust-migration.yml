@@ -33,10 +33,14 @@ jobs:
       - run: cargo check --manifest-path rust/Cargo.toml -p savvycan-desktop
       - name: Build runnable Linux preview
         run: cargo build --manifest-path rust/Cargo.toml -p savvycan-desktop
+      - name: Build read-only ISO-TP trace inspector
+        run: cargo build --manifest-path rust/Cargo.toml -p savvycan-core --bin savvycan-isotp
       - name: Upload Linux preview
         uses: actions/upload-artifact@v4
         with:
           name: savvycan-rust-slint-linux-x86_64
-          path: rust/target/debug/savvycan-desktop
+          path: |
+            rust/target/debug/savvycan-desktop
+            rust/target/debug/savvycan-isotp
           if-no-files-found: error
           retention-days: 7

@@ -220,6 +220,17 @@ multi-frame first/consecutive frames, CAN FD extended single-frame lengths,
 isolation, timeout checks and payload/session limits are supported. Flow-control
 records are observed only; nothing is sent on the bus.
 
+A read-only CLI wraps this core API for checking imported trace files:
+
+~~~sh
+cargo run -p savvycan-core --bin savvycan-isotp -- /path/capture.log S:7E8 can0
+~~~
+
+The ID filter is required; an optional third argument restricts the CAN
+interface. The tool prints reconstructed payloads and UDS-like service hints
+and warns about incomplete or invalid sequences. The Linux CI preview artifact
+now includes this companion executable alongside the Slint desktop binary.
+
 This is a core API for future diagnostic views, **not** a UDS session-control
 or scanning tool. A caller must explicitly select the diagnostic CAN IDs to
 reassemble; unrelated CAN traffic can otherwise be mistaken for ISO-TP.
