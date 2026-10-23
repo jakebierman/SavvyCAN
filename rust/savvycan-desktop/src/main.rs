@@ -27,12 +27,13 @@ fn row(frame: CanFrame) -> FrameRow {
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(" ");
+    let length = frame.len();
     FrameRow {
         timestamp: timestamp.into(),
         channel: frame.interface.into(),
         can_id: frame.id.to_string().into(),
         format: format.into(),
-        length: frame.len().to_string().into(),
+        length: length.to_string().into(),
         payload: payload.into(),
     }
 }
