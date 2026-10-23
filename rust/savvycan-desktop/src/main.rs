@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_gvret_csv,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv,
     CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -161,24 +161,31 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
     Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0 }, message))
 }
 
-fn export_trace(path: &str, frames: &[CanFrame]) -> Result<(), Box<dyn Error>> {
-    if frames.is_empty() { return Err("Load a non-empty trace before exporting".into()); }
+fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dyn Error>> {
+    if state.frames.is_empty() { return Err("Load a non-empty trace before exporting".into()); }
     if path.trim().is_empty() { return Err("Enter an export path".into()); }
     let mut bytes = Vec::new();
     let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".crtd") || lower.ends_with(".crt") {
-        write_crtd(&mut bytes, frames)?;
+    let signal_count = if lower.ends_with(".signals.csv") {
+        let dbc = state.context.dbc.as_ref()
+            .ok_or("Load at least one DBC before exporting decoded signals")?;
+        Some(write_decoded_csv(&mut bytes, &state.frames, dbc)?)
+    } else if lower.ends_with(".crtd") || lower.ends_with(".crt") {
+        write_crtd(&mut bytes, &state.frames)?;
+        None
     } else if lower.ends_with(".csv") {
-        write_gvret_csv(&mut bytes, frames)?;
+        write_gvret_csv(&mut bytes, &state.frames)?;
+        None
     } else if lower.ends_with(".log") || lower.ends_with(".candump") {
-        write_candump(&mut bytes, frames)?;
+        write_candump(&mut bytes, &state.frames)?;
+        None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, or .candump for export".into());
-    }
+        return Err("Use .crt/.crtd, .csv, .log, .candump, or .signals.csv for export".into());
+    };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(&bytes)?;
-    Ok(())
+    Ok(signal_count)
 }
 
 fn stop_capture(flag: &Rc<RefCell<Option<Arc<AtomicBool>>>>) {
@@ -234,8 +241,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.on_export_trace(move |path| {
         if let Some(ui) = weak.upgrade() {
             let state = state_for_export.borrow();
-            match export_trace(path.as_str(), &state.frames) {
-                Ok(()) => {
+            match export_trace(path.as_str(), &state) {
+                Ok(Some(signals)) => ui.set_status_text(
+                    format!("Exported {signals} decoded DBC signal values to {path}").into()
+                ),
+                Ok(None) => {
                     let candump = path.to_ascii_lowercase().ends_with(".log")
                         || path.to_ascii_lowercase().ends_with(".candump");
                     let caveat = if candump { " • candump does not store Rx/Tx direction" } else { "" };

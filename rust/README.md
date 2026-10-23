@@ -47,6 +47,7 @@ default typed expression, and RTR requests are never formatted.
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
+| Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
 | Offline trace statistics, 1,000-row paging and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
@@ -133,7 +134,8 @@ exactly. Neither DBC decoding nor the underlying frame bytes are changed.
 
 ## Export limitations
 
-Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log` or `.candump`
+Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log`, `.candump`
+or `.signals.csv`
 and click **Export trace**. The `.log`/`.candump` exporter supports classic
 CAN, CAN FD (including BRS/ESI flags), remote requests, interface identities
 and timestamps when present. Candump cannot encode Rx/Tx direction, and that
@@ -143,7 +145,12 @@ CRTD and GVRET CSV are available only for representable classic CAN data frames
 with known timestamps, bus numbers and Rx/Tx directions. These legacy exporters
 reject CAN FD, RTR and missing metadata rather than silently losing fields.
 All exporters validate before creating an output file and never replace an
-existing path.
+existing path. `.signals.csv` requires a loaded DBC, exports a separate row for
+each decoded signal (including raw and scaled values, units and value labels),
+and reports the signal count. Unmatched frames have no decoded-signal rows;
+any signal decoding error fails with its frame index before file creation.
+DBC-controlled text is quoted and spreadsheet-formula guarded. This format is
+for graphing and external analysis, not GVRET re-import.
 
 ## Read-only live SocketCAN capture
 
