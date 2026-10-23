@@ -24,12 +24,15 @@ export component AppWindow inherits Window {
     in-out property <string> rules-path: "";
     in-out property <string> export-path: "";
     in-out property <string> live-interface: "can0";
+    in-out property <string> filter-interface: "";
+    in-out property <string> filter-id: "";
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
     callback open-trace(string, string, string, string);
     callback export-trace(string);
     callback start-live(string, string, string, string);
     callback stop-live();
+    callback apply-filter(string, string);
 
     VerticalBox {
         padding: 16px;
@@ -101,6 +104,22 @@ export component AppWindow inherits Window {
             Button {
                 text: "Stop";
                 clicked => { root.stop-live(); }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.filter-interface;
+                placeholder-text: "Filter interface (blank = all)";
+            }
+            LineEdit {
+                text <=> root.filter-id;
+                placeholder-text: "Filter hex CAN ID (123, S:123 or X:123)";
+            }
+            Button {
+                text: "Apply filter";
+                clicked => { root.apply-filter(root.filter-interface, root.filter-id); }
             }
         }
 

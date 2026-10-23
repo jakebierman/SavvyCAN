@@ -9,6 +9,7 @@ pub mod payload_format;
 pub mod format_rules;
 pub mod trace;
 pub mod receiver;
+pub mod filter;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
@@ -19,5 +20,6 @@ pub use format_rules::{parse_format_rules, RuleParseError};
 pub use payload_format::{FormatError, FormattedField, PayloadFormatRouter, PayloadFormatter};
 pub use file_formats::{read_trace, write_crtd, write_gvret_csv, ExportError, ImportError, ImportedTrace, TraceFormat};
 pub use frame::{CanFrame, CanId, Direction, FdFlags, FrameError, FrameKind};
+pub use filter::{FilterError, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};

@@ -44,7 +44,7 @@ default typed expression, and RTR requests are never formatted.
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
 | CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
-| Offline trace statistics and first 25,000 rows in a Slint viewer | Done |
+| Offline trace statistics, first 25,000 rows and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
@@ -145,3 +145,11 @@ receive queue holds at most 4,096 pending frames. History is capped at 100,000
 received frames; the status line tells you how many older frames have been
 discarded. Export writes only those retained frames and follows the conservative
 legacy-format restrictions described above.
+
+## Non-destructive trace filtering
+
+The interface and CAN ID filters apply to the displayed rows, without changing
+the loaded frames or export data. Leave either input blank to match all.
+CAN IDs use hexadecimal; `S:123` and `X:123` distinguish 11/29-bit IDs even
+when the numeric value is identical. Offline display shows the first 25,000
+matching frames. During live capture, it shows the latest 2,000 matching frames.

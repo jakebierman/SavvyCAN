@@ -10,9 +10,9 @@ use std::time::Duration;
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_crtd, write_gvret_csv,
     CanFrame, DbcDatabase, DecodedSignal, FrameKind, PayloadFormatter,
-    PayloadFormatRouter, ReceiveError,
+    PayloadFormatRouter, ReceiveError, TraceFilter,
 };
-use slint::{ModelRc, VecModel, Timer, TimerMode};
+use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
 
 #[cfg(target_os = "linux")]
 use savvycan_core::CanReceive;
@@ -99,6 +99,22 @@ fn row(frame: &CanFrame, context: &DecodeContext) -> FrameRow {
     }
 }
 
+fn visible_rows(state: &ViewerState, filter: &TraceFilter, limit: usize) -> Vec<FrameRow> {
+    if state.live {
+        let mut rows = state.frames.iter().rev().filter(|frame| filter.matches(frame))
+            .take(limit).map(|frame| row(frame, &state.context)).collect::<Vec<_>>();
+        rows.reverse();
+        rows
+    } else {
+        state.frames.iter().filter(|frame| filter.matches(frame))
+            .take(limit).map(|frame| row(frame, &state.context)).collect()
+    }
+}
+
+fn filtered_count(state: &ViewerState, filter: &TraceFilter) -> usize {
+    state.frames.iter().filter(|frame| filter.matches(frame)).count()
+}
+
 fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
     -> Result<(ViewerState, String), Box<dyn Error>>
 {
@@ -150,6 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model = Rc::new(VecModel::<FrameRow>::from(Vec::new()));
     ui.set_frames(ModelRc::from(Rc::clone(&model)));
     let state = Rc::new(RefCell::new(ViewerState::default()));
+    let filter = Rc::new(RefCell::new(TraceFilter::default()));
     let capture_flag: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::new(RefCell::new(None));
     let receiver: Rc<RefCell<Option<mpsc::Receiver<Result<CanFrame, ReceiveError>>>>> =
         Rc::new(RefCell::new(None));
@@ -159,6 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_for_open = Rc::clone(&model);
     let flag_for_open = Rc::clone(&capture_flag);
     let receiver_for_open = Rc::clone(&receiver);
+    let filter_for_open = Rc::clone(&filter);
     ui.on_open_trace(move |path, dbc_path, format_spec, rules_path| {
         if let Some(ui) = weak.upgrade() {
             if path.trim().is_empty() {
@@ -169,8 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Ok((new_state, message)) => {
                         stop_capture(&flag_for_open);
                         *receiver_for_open.borrow_mut() = None;
-                        let rows = new_state.frames.iter().take(OFFLINE_ROWS)
-                            .map(|frame| row(frame, &new_state.context)).collect::<Vec<_>>();
+                        let rows = visible_rows(&new_state, &filter_for_open.borrow(), OFFLINE_ROWS);
                         model_for_open.set_vec(rows);
                         let truncated = new_state.frames.len() > OFFLINE_ROWS;
                         *state_for_open.borrow_mut() = new_state;
@@ -192,6 +209,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(()) => ui.set_status_text(format!("Exported {} frames to {path}",
                     state.frames.len()).into()),
                 Err(error) => ui.set_status_text(format!("Could not export: {error}").into()),
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state_for_filter = Rc::clone(&state);
+    let model_for_filter = Rc::clone(&model);
+    let filter_for_apply = Rc::clone(&filter);
+    ui.on_apply_filter(move |interface, id| {
+        if let Some(ui) = weak.upgrade() {
+            match TraceFilter::parse(interface.as_str(), id.as_str()) {
+                Ok(new_filter) => {
+                    let state = state_for_filter.borrow();
+                    let limit = if state.live { LIVE_ROWS } else { OFFLINE_ROWS };
+                    let count = filtered_count(&state, &new_filter);
+                    model_for_filter.set_vec(visible_rows(&state, &new_filter, limit));
+                    *filter_for_apply.borrow_mut() = new_filter;
+                    ui.set_status_text(format!("{count} matching frames • {} shown • filter active",
+                        model_for_filter.row_count()).into());
+                }
+                Err(error) => ui.set_status_text(format!("Invalid trace filter: {error}").into()),
             }
         }
     });
@@ -275,6 +313,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_for_timer = Rc::clone(&state);
     let model_for_timer = Rc::clone(&model);
     let flag_for_timer = Rc::clone(&capture_flag);
+    let filter_for_timer = Rc::clone(&filter);
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(ui) = weak.upgrade() else { return; };
@@ -316,12 +355,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 state.frames.drain(..overflow);
                 state.history_dropped += overflow;
             }
-            let start = state.frames.len().saturating_sub(LIVE_ROWS);
-            let rows = state.frames[start..].iter()
-                .map(|frame| row(frame, &state.context)).collect::<Vec<_>>();
-            model_for_timer.set_vec(rows);
-            ui.set_status_text(format!("Receiving • {} buffered • {} older frames discarded • showing latest {}",
-                state.frames.len(), state.history_dropped, LIVE_ROWS.min(state.frames.len())).into());
+            let filter = filter_for_timer.borrow();
+            let matched = filtered_count(&state, &filter);
+            model_for_timer.set_vec(visible_rows(&state, &filter, LIVE_ROWS));
+            ui.set_status_text(format!("Receiving • {} buffered • {matched} match • {} older frames discarded • {} shown",
+                state.frames.len(), state.history_dropped, model_for_timer.row_count()).into());
         }
         if let Some(error) = error_text {
             ui.set_status_text(format!("Live capture stopped: {error}").into());
@@ -340,8 +378,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_rules_path(rules_path.clone().into());
         match open_trace(&path, &dbc, &format_spec, &rules_path) {
             Ok((new_state, message)) => {
-                model.set_vec(new_state.frames.iter().take(OFFLINE_ROWS)
-                    .map(|frame| row(frame, &new_state.context)).collect::<Vec<_>>());
+                model.set_vec(visible_rows(&new_state, &filter.borrow(), OFFLINE_ROWS));
                 *state.borrow_mut() = new_state;
                 ui.set_status_text(message.into());
             }
