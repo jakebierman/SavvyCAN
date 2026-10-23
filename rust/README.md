@@ -5,6 +5,12 @@ SavvyCAN remains in the repository root for feature parity and regression
 testing. Nothing here replaces the established application or its release
 pipeline yet.
 
+SavvyCAN was originally created by **Collin Kidder** and its contributors.
+This fork and its Rust implementation build on the original SavvyCAN project;
+its MIT license and original copyright notice remain in the repository root.
+These migration changes are not presented as an independently originated
+replacement for the upstream work.
+
 ## Why this layout?
 
 - **savvycan-core**: portable pure-Rust CAN frames, validation, candump import,
@@ -73,11 +79,24 @@ default typed expression, and RTR requests are never formatted.
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET binary receive stream | Initial classic/FD byte parser, tests and opt-in preconfigured serial listener; mode setup and hardware validation not yet |
 | LAWICEL/SLCAN receive stream | Initial parser for classic CAN, RTR, optional timestamp and rollover; physical serial attachment not yet |
-| SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |\n| Native open/save dialogs (trace, DBC, rules, export) | Initial desktop support; selecting an export path never overwrites an existing file |
+| SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |
+| Native open/save dialogs (trace, DBC, rules, export) | Initial desktop support; selecting an export path never overwrites an existing file |
 | GVRET device handshake/activation and TCP, QtSerialBus equivalents, MQTT | Not yet |
-| Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
+| Advanced graphing (multi-series, zoom), playback, transmit, scripting, OBD, active UDS, CANopen, AI | Not yet |
 
-Exports can optionally apply the current interface/ID/time/payload filter using **Only matching**. This exports every retained matching frame, including frames outside the displayed 1,000-row page; it does not change the underlying capture. When no rows match, the exporter reports an error without creating an output file. The default is a complete, unfiltered export.\n\nThe read-only DBC signal trend plot accepts an exact CAN ID, an optional interface, and one DBC signal name. It uses real timestamps when all selected decoded observations have them; otherwise it switches the entire horizontal axis to frame indices. The plot is limited to 800 drawn samples using min/max bucketing to preserve short spikes, and the full decoded history remains unchanged. Multiplexed signals only contribute readings when decoded on their active branch. This initial plot has no interactive zoom, multi-series overlay or real-time updates yet.\n\nFor signal hunting, save a capture as `.bytes.csv` to export per-byte activity. The report counts distinct observed values and bit changes between consecutive data frames of the same exact interface and CAN ID. When a byte is absent from an intervening short payload, it is not treated as zero. RTR requests are excluded, and `.bytes.csv` export respects the **Only matching** option.\n\nThe frame filter supports a contiguous hex-byte subsequence such as `22 F1 ?? 90`, where `??` matches one byte. Spaces, underscores and commas can separate bytes; matching is case-insensitive, read-only, and excludes remote request frames. Clearing the payload field disables that filter.\n\nLinux CI uploads a runnable desktop preview and read-only analysis tools; Windows CI checks and unit-tests the desktop and uploads an unbundled `savvycan-desktop.exe` preview. Neither is a signed release or hardware-tested package, and no Windows installer is produced.\n\nThe desktop interface has native open/save path dialogs for CAN traces, multiple DBC files and formatter rules. Selected DBC files populate the semicolon-separated global list; per-interface DBC associations can be entered manually in the same field. Selecting an export filename **does not write anything**: press **Export trace** to create the file, and an existing destination is rejected rather than overwritten. On Linux, the native dialogs require an available XDG Desktop Portal backend at runtime.\n\nOffline file loading is performed on a worker thread so large traces do not block the Slint event loop. Opening another file replaces the pending result; live capture starts cancel the pending result. The worker still reads to completion if its result is abandoned, so cooperative cancellation and streaming disk-to-view loading are future improvements.
+Exports can optionally apply the current interface/ID/time/payload filter using **Only matching**. This exports every retained matching frame, including frames outside the displayed 1,000-row page; it does not change the underlying capture. When no rows match, the exporter reports an error without creating an output file. The default is a complete, unfiltered export.
+
+The read-only DBC signal trend plot accepts an exact CAN ID, an optional interface, and one DBC signal name. It uses real timestamps when all selected decoded observations have them; otherwise it switches the entire horizontal axis to frame indices. The plot is limited to 800 drawn samples using min/max bucketing to preserve short spikes, and the full decoded history remains unchanged. Multiplexed signals only contribute readings when decoded on their active branch. This initial plot has no interactive zoom, multi-series overlay or real-time updates yet.
+
+For signal hunting, save a capture as `.bytes.csv` to export per-byte activity. The report counts distinct observed values and bit changes between consecutive data frames of the same exact interface and CAN ID. When a byte is absent from an intervening short payload, it is not treated as zero. RTR requests are excluded, and `.bytes.csv` export respects the **Only matching** option.
+
+The frame filter supports a contiguous hex-byte subsequence such as `22 F1 ?? 90`, where `??` matches one byte. Spaces, underscores and commas can separate bytes; matching is case-insensitive, read-only, and excludes remote request frames. Clearing the payload field disables that filter.
+
+Linux CI uploads a runnable desktop preview and read-only analysis tools; Windows CI checks and unit-tests the desktop and uploads an unbundled `savvycan-desktop.exe` preview. Neither is a signed release or hardware-tested package, and no Windows installer is produced.
+
+The desktop interface has native open/save path dialogs for CAN traces, multiple DBC files and formatter rules. Selected DBC files populate the semicolon-separated global list; per-interface DBC associations can be entered manually in the same field. Selecting an export filename **does not write anything**: press **Export trace** to create the file, and an existing destination is rejected rather than overwritten. On Linux, the native dialogs require an available XDG Desktop Portal backend at runtime.
+
+Offline file loading is performed on a worker thread so large traces do not block the Slint event loop. Opening another file replaces the pending result; live capture starts cancel the pending result. The worker still reads to completion if its result is abandoned, so cooperative cancellation and streaming disk-to-view loading are future improvements.
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1, IXXAT MiniLog
@@ -322,7 +341,13 @@ return errors; BRS/ESI/RTR are **not** inferred when the wire record does
 not encode them. High CAN FD length bits and unverified 64-byte encodings
 are rejected pending firmware-specific validation.
 
-The decoder itself is a byte-stream component. An explicit **Start GVRET\nstream** button opens a preconfigured serial port read-only, but does not enter\nbinary mode (`0xE7`), change bit rates, request device settings, or send CAN\nframes. A GVRET device must already output binary records. Incoming source\nbuses are labelled `bus0`, `bus1`, etc. Serial-port opening may briefly\npulse DTR and reset some microcontrollers. The Slint UI supports receive-only SocketCAN, preconfigured SLCAN serial\nand preconfigured GVRET binary serial streaming. Physical GVRET attachment and hardware tests are required before
+The decoder itself is a byte-stream component. An explicit **Start GVRET
+stream** button opens a preconfigured serial port read-only, but does not enter
+binary mode (`0xE7`), change bit rates, request device settings, or send CAN
+frames. A GVRET device must already output binary records. Incoming source
+buses are labelled `bus0`, `bus1`, etc. Serial-port opening may briefly
+pulse DTR and reset some microcontrollers. The Slint UI supports receive-only SocketCAN, preconfigured SLCAN serial
+and preconfigured GVRET binary serial streaming. Physical GVRET attachment and hardware tests are required before
 claiming a working GVRET device adapter. The legacy implementation and
 [M2RET protocol specification](https://github.com/collin80/M2RET/blob/master/CommProtocol.txt)
 were consulted for frame layout.
@@ -389,5 +414,15 @@ source interface and start/end microsecond timestamps. Sessions are isolated
 per interface and source, bounded to 1,785-byte payloads, and validated for
 announced packet counts, consecutive sequence numbers, fragment time gaps and
 reserved fields. Final-chunk padding is discarded. There is no CAN output,
-address claiming, RTS/CTS flow control or vehicle control. A read-only CLI can inspect BAM payloads from any supported trace:\n\n~~~sh\ncargo run -p savvycan-core --bin savvycan-j1939-bam -- capture.log 80 can0\n~~~\n\nThe optional source address is hexadecimal, and the optional interface name\nrestricts the trace scan. Output previews the first 48 payload bytes and\nreports invalid/incomplete sessions. The Linux CI artifact includes this\ninspector alongside the ISO-TP CLI. Integration with DBC analysis and the\nSlint diagnostic view remains to do. The frame layout
+address claiming, RTS/CTS flow control or vehicle control. A read-only CLI can inspect BAM payloads from any supported trace:
+
+~~~sh
+cargo run -p savvycan-core --bin savvycan-j1939-bam -- capture.log 80 can0
+~~~
+
+The optional source address is hexadecimal, and the optional interface name
+restricts the trace scan. Output previews the first 48 payload bytes and
+reports invalid/incomplete sessions. The Linux CI artifact includes this
+inspector alongside the ISO-TP CLI. Integration with DBC analysis and the
+Slint diagnostic view remains to do. The frame layout
 is verified against [Linux CAN J1939 example traffic](https://github.com/linux-can/can-utils/blob/master/can-j1939-kickstart.md).
