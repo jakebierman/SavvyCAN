@@ -55,6 +55,7 @@ default typed expression, and RTR requests are never formatted.
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
 | Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
 | Per-interface/CAN-ID/byte `.bytes.csv` activity export | Done; sample counts, distinct values, adjacent value changes and bit flips in capture order |
+| Slint on-screen byte activity inspector | Done; optional interface/ID selection and top 256 byte positions ranked by bit flips |
 | Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
 | Background offline trace import, 1,000-row paging and interface/ID/time/payload filtering | Initial implementation; byte patterns support `??` wildcard and substring matches |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |

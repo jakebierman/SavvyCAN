@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -378,6 +378,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_stats_rows(ModelRc::from(Rc::clone(&stats_model)));
     let bam_model = Rc::new(VecModel::<BamRow>::from(Vec::new()));
     ui.set_bam_rows(ModelRc::from(Rc::clone(&bam_model)));
+    let byte_model = Rc::new(VecModel::<ByteActivityRow>::from(Vec::new()));
+    ui.set_byte_rows(ModelRc::from(Rc::clone(&byte_model)));
     ui.set_frames(ModelRc::from(Rc::clone(&model)));
     let state = Rc::new(RefCell::new(ViewerState::default()));
     let filter = Rc::new(RefCell::new(TraceFilter::default()));
@@ -587,6 +589,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_isotp(true);
                     ui.set_show_stats(false);
                         ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
                     ui.set_status_text(summary.into());
                 }
                 Ok(_) => ui.set_status_text(
@@ -622,8 +625,66 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_isotp(false);
             ui.set_show_stats(true);
             ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
             ui.set_status_text(message.into());
         }
+    });
+
+    // On-demand payload-byte variability inspector. Uses the full retained
+    // trace in capture order; never mutates samples or accesses a CAN device.
+    let weak = ui.as_weak();
+    let state_for_bytes = Rc::clone(&state);
+    let model_for_bytes = Rc::clone(&byte_model);
+    ui.on_inspect_bytes(move |interface, id| {
+        let Some(ui) = weak.upgrade() else { return; };
+        let selector = match TraceFilter::parse(interface.as_str(), id.as_str()) {
+            Ok(query) => query,
+            Err(error) => {
+                ui.set_status_text(format!("Invalid byte activity selector: {error}").into());
+                return;
+            }
+        };
+        let state = state_for_bytes.borrow();
+        if state.live {
+            ui.set_status_text("Stop live capture before inspecting byte activity.".into());
+            return;
+        }
+        if state.frames.is_empty() {
+            ui.set_status_text("Load a trace before inspecting byte activity.".into());
+            return;
+        }
+        let selected: Vec<CanFrame> = state.frames.iter()
+            .filter(|frame| selector.matches(frame)).cloned().collect();
+        let mut analyzed = analyze_byte_activity(&selected);
+        let all = analyzed.len();
+        analyzed.sort_by(|a, b| b.bit_flips.cmp(&a.bit_flips)
+            .then_with(|| b.changes.cmp(&a.changes))
+            .then_with(|| b.samples.cmp(&a.samples))
+            .then_with(|| a.interface.cmp(&b.interface))
+            .then_with(|| a.id.value().cmp(&b.id.value()))
+            .then_with(|| a.id.is_extended().cmp(&b.id.is_extended()))
+            .then_with(|| a.byte_index.cmp(&b.byte_index)));
+        let rows = analyzed.into_iter().take(256).map(|item| ByteActivityRow {
+            channel: item.interface.into(),
+            can_id: item.id.to_string().into(),
+            position: item.byte_index.to_string().into(),
+            samples: item.samples.to_string().into(),
+            distinct: item.distinct_values.to_string().into(),
+            changes: item.changes.to_string().into(),
+            flips: item.bit_flips.to_string().into(),
+            last: format!("{:02X}", item.last_value).into(),
+        }).collect::<Vec<_>>();
+        let shown = rows.len();
+        model_for_bytes.set_vec(rows);
+        let message = format!(
+            "{all} byte positions • {shown} displayed by bit activity • export .bytes.csv for full report"
+        );
+        ui.set_byte_summary(message.clone().into());
+        ui.set_show_isotp(false);
+        ui.set_show_stats(false);
+        ui.set_show_bam(false);
+        ui.set_show_bytes(true);
+        ui.set_status_text(message.into());
     });
 
     let weak = ui.as_weak();
@@ -678,6 +739,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_show_isotp(false);
                         ui.set_show_stats(false);
                         ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }
@@ -731,6 +793,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_isotp(false);
             ui.set_show_stats(false);
             ui.set_show_bam(true);
+            ui.set_show_bytes(false);
             ui.set_status_text(summary.into());
         }
     });
@@ -793,6 +856,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_isotp(false);
                     ui.set_show_stats(false);
                         ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive SLCAN serial • preconfigured/auto-streaming adapter required".into()
@@ -864,6 +928,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_isotp(false);
                     ui.set_show_stats(false);
                     ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive GVRET serial • device must already emit binary F1 frames".into()
@@ -922,6 +987,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_show_isotp(false);
                 ui.set_show_stats(false);
                 ui.set_show_bam(false);
+                    ui.set_show_bytes(false);
                 ui.set_status_text(message.into());
             }
             Some(Ok(Err(message))) => {

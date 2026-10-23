@@ -45,6 +45,17 @@ export struct BamRow {
     payload: string,
 }
 
+export struct ByteActivityRow {
+    channel: string,
+    can-id: string,
+    position: string,
+    samples: string,
+    distinct: string,
+    changes: string,
+    flips: string,
+    last: string,
+}
+
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
     preferred-width: 1720px;
@@ -71,6 +82,11 @@ export component AppWindow inherits Window {
     in-out property <bool> show-isotp: false;
     in-out property <bool> show-stats: false;
     in-out property <bool> show-bam: false;
+    in-out property <bool> show-bytes: false;
+    in-out property <string> byte-interface: "";
+    in-out property <string> byte-id: "";
+    in property <[ByteActivityRow]> byte-rows: [];
+    in property <string> byte-summary: "";
     in-out property <string> bam-interface: "";
     in-out property <string> bam-source: "";
     in property <string> isotp-summary: "No ISO-TP inspection performed";
@@ -98,6 +114,7 @@ export component AppWindow inherits Window {
     callback inspect-isotp(string, string);
     callback open-statistics();
     callback inspect-bam(string, string);
+    callback inspect-bytes(string, string);
 
     VerticalBox {
         padding: 16px;
@@ -278,6 +295,7 @@ export component AppWindow inherits Window {
                     root.show-isotp = false;
                     root.show-stats = false;
                     root.show-bam = false;
+                    root.show-bytes = false;
                 }
             }
         }
@@ -298,6 +316,22 @@ export component AppWindow inherits Window {
             }
         }
 
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.byte-interface;
+                placeholder-text: "Byte activity interface (blank = all)";
+            }
+            LineEdit {
+                text <=> root.byte-id;
+                placeholder-text: "Byte activity ID / range / PGN (blank = all)";
+            }
+            Button {
+                text: "Inspect byte activity";
+                clicked => { root.inspect-bytes(root.byte-interface, root.byte-id); }
+            }
+        }
+
         if root.show-isotp : Text {
             text: root.isotp-summary;
             color: #9cdbc1;
@@ -315,13 +349,19 @@ export component AppWindow inherits Window {
             font-size: 13px;
         }
 
+        if root.show-bytes : Text {
+            text: root.byte-summary;
+            color: #9cdbc1;
+            font-size: 13px;
+        }
+
         Text {
             text: root.status-text;
             color: #9fcaee;
             font-size: 13px;
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam : Rectangle {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes : Rectangle {
             height: 34px;
             background: #243247;
             HorizontalBox {
@@ -355,6 +395,23 @@ export component AppWindow inherits Window {
             }
         }
 
+
+        if root.show-bytes : Rectangle {
+            height: 34px;
+            background: #243247;
+            HorizontalBox {
+                padding-left: 8px;
+                spacing: 8px;
+                Text { text: "Interface"; width: 130px; color: #f2f6ff; }
+                Text { text: "CAN ID"; width: 140px; color: #f2f6ff; }
+                Text { text: "Byte"; width: 80px; color: #f2f6ff; }
+                Text { text: "Samples"; width: 110px; color: #f2f6ff; }
+                Text { text: "Distinct values"; width: 155px; color: #f2f6ff; }
+                Text { text: "Changed pairs"; width: 155px; color: #f2f6ff; }
+                Text { text: "Bit flips"; width: 120px; color: #f2f6ff; }
+                Text { text: "Last value (hex)"; color: #f2f6ff; }
+            }
+        }
 
         if root.show-stats : Rectangle {
             height: 34px;
@@ -392,7 +449,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam : ListView {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes : ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
                 width: parent.width;
@@ -452,6 +509,26 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.show-bytes : ListView {
+            for byte[i] in root.byte-rows: Rectangle {
+                height: 30px;
+                width: parent.width;
+                background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
+                HorizontalBox {
+                    padding-left: 8px;
+                    spacing: 8px;
+                    Text { text: byte.channel; width: 130px; color: #c5d7eb; }
+                    Text { text: byte.can-id; width: 140px; color: #68d9d5; }
+                    Text { text: byte.position; width: 80px; color: #d5e1ee; }
+                    Text { text: byte.samples; width: 110px; color: #f2f6ff; }
+                    Text { text: byte.distinct; width: 155px; color: #d5e1ee; }
+                    Text { text: byte.changes; width: 155px; color: #e3b86b; }
+                    Text { text: byte.flips; width: 120px; color: #e3b86b; }
+                    Text { text: byte.last; color: #9cdbc1; }
+                }
+            }
+        }
+
         if root.show-stats : ListView {
             for stat[i] in root.stats-rows: Rectangle {
                 height: 30px;
@@ -482,7 +559,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "Offline paging • Export includes all retained frames • ISO-TP inspection uses full selected-ID trace • Receive-only";
+            text: "Offline paging • Export full capture or matched frames • Protocol and byte inspections use retained history • Receive-only";
             color: #8195aa;
             font-size: 12px;
         }
