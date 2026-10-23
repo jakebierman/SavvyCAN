@@ -139,7 +139,7 @@ pub fn plot_path(points: &[(u64, f64)], max_points: usize) -> Result<PlotPath, S
     let last = valid.last().expect("nonempty").0;
     let minimum = valid.iter().map(|point| point.1).fold(f64::INFINITY, f64::min);
     let maximum = valid.iter().map(|point| point.1).fold(f64::NEG_INFINITY, f64::max);
-    render_path(valid, max_points, first, last, minimum, maximum)
+    render_path(&valid, max_points, first, last, minimum, maximum)
 }
 
 /// Plot samples against *explicit shared axes*. Unlike `plot_path`, this
@@ -158,11 +158,37 @@ pub fn plot_path_on_axes(
         .collect();
     if valid.is_empty() { return Err("No finite numeric samples within the plot window.".into()); }
     valid.sort_by_key(|point| point.0);
-    render_path(valid, max_points, x_start, x_end, y_min, y_max)
+    render_path(&valid, max_points, x_start, x_end, y_min, y_max)
+}
+
+/// Fast path for cached series that are already sorted by ascending X.
+/// Unlike `plot_path_on_axes`, this uses binary search to restrict work to
+/// the visible viewport. The caller must sort the series once before using it;
+/// equal X coordinates (including duplicated timestamps) are supported.
+/// Non-finite values are excluded just as in the general plotting API.
+pub fn plot_path_on_axes_sorted(
+    sorted_points: &[(u64, f64)], max_points: usize,
+    x_start: u64, x_end: u64, y_min: f64, y_max: f64,
+) -> Result<PlotPath, String> {
+    if x_start >= x_end { return Err("Plot window end must follow its start.".into()); }
+    if !y_min.is_finite() || !y_max.is_finite() || y_min > y_max {
+        return Err("Plot Y bounds must be finite and ordered.".into());
+    }
+    let from = sorted_points.partition_point(|(x, _)| *x < x_start);
+    let to = sorted_points.partition_point(|(x, _)| *x <= x_end);
+    let visible = &sorted_points[from..to];
+    if visible.is_empty() { return Err("No finite numeric samples within the plot window.".into()); }
+    if visible.iter().all(|(_, y)| y.is_finite()) {
+        return render_path(visible, max_points, x_start, x_end, y_min, y_max);
+    }
+    let finite: Vec<_> = visible.iter().copied()
+        .filter(|(_, y)| y.is_finite()).collect();
+    if finite.is_empty() { return Err("No finite numeric samples within the plot window.".into()); }
+    render_path(&finite, max_points, x_start, x_end, y_min, y_max)
 }
 
 fn render_path(
-    valid: Vec<(u64, f64)>, max_points: usize,
+    valid: &[(u64, f64)], max_points: usize,
     axis_start: u64, axis_end: u64, axis_min: f64, axis_max: f64,
 ) -> Result<PlotPath, String> {
     let first_x = valid.first().expect("nonempty").0;
@@ -171,7 +197,7 @@ fn render_path(
     let max_y = valid.iter().map(|point| point.1).fold(f64::NEG_INFINITY, f64::max);
     let budget = max_points.clamp(4, 4_096);
     let selected = if valid.len() <= budget {
-        valid.clone()
+        valid.to_vec()
     } else {
         let mut selected = Vec::with_capacity(budget);
         selected.push(valid[0]);
@@ -327,6 +353,30 @@ mod tests {
         assert!(plot_path_on_axes(&samples, 100, 1_001, 1_001, 0.0, 1.0).is_err());
         assert!(plot_path_on_axes(&samples, 100, 3_000, 4_000, 0.0, 1.0).is_err());
         assert!(plot_path_on_axes(&samples, 100, 0, 1_000, f64::NAN, 1.0).is_err());
+    }
+
+    #[test]
+    fn cached_sorted_plot_matches_general_plot_on_sparse_and_duplicate_x() {
+        let mut samples = (0..10_000).map(|x| (x / 2, (x % 97) as f64)).collect::<Vec<_>>();
+        samples[4_002].1 = 9_999.0;
+        samples[4_003].1 = -9_999.0;
+        let regular = plot_path_on_axes(&samples, 80, 1_900, 2_100, -10_000.0, 10_000.0).unwrap();
+        let cached = plot_path_on_axes_sorted(&samples, 80, 1_900, 2_100, -10_000.0, 10_000.0).unwrap();
+        assert_eq!(regular, cached);
+        assert_eq!(cached.source_points, 402);
+        assert!(cached.plotted_points <= 80);
+        assert!(cached.commands.contains("0.02"));
+        assert!(plot_path_on_axes_sorted(&samples, 80, 6_000, 7_000, 0.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn cached_sorted_plot_skips_nonfinite_samples_without_losing_endpoints() {
+        let samples = [(1, f64::NAN), (2, 2.0), (2, f64::INFINITY), (3, -1.0)];
+        let path = plot_path_on_axes_sorted(&samples, 20, 1, 3, -1.0, 2.0).unwrap();
+        assert_eq!(path.source_points, 2);
+        assert_eq!((path.first_x, path.last_x), (2, 3));
+        assert!(plot_path_on_axes_sorted(&samples, 20, 1, 3, f64::NAN, 2.0).is_err());
+        assert!(plot_path_on_axes_sorted(&samples, 20, 3, 3, 0.0, 2.0).is_err());
     }
 
 }

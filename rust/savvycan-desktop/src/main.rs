@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, extract_numeric_series_batch, plot_path_on_axes, HorizontalAxis, NumericSeries, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series_batch, plot_path_on_axes_sorted, HorizontalAxis, NumericSeries, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -468,6 +468,88 @@ fn navigate_plot_window(window: PlotNavigation, action: &str) -> Result<(u64, u6
     Ok(bounds)
 }
 
+/// Wheel zoom anchors the point under the pointer, not the viewport centre.
+/// Calculations are relative to the first sample to retain precision even
+/// for large absolute microsecond timestamps.
+fn zoom_plot_at(window: PlotNavigation, wheel_delta: f64, fraction: f64) -> (u64, u64) {
+    if !wheel_delta.is_finite() || !fraction.is_finite() || wheel_delta == 0.0 {
+        return (window.start, window.end);
+    }
+    let last = window.last.max(window.first.saturating_add(1));
+    let full = last - window.first;
+    let span = window.end.saturating_sub(window.start).max(1).min(full);
+    let fraction = fraction.clamp(0.0, 1.0);
+    // Mouse wheels report roughly 120 units per notch; trackpads send smaller deltas.
+    let steps = (wheel_delta.abs() / 120.0).clamp(0.2, 6.0);
+    let factor = 1.4_f64.powf(if wheel_delta > 0.0 { steps } else { -steps });
+    let width = ((span as f64 * factor).round() as u64).clamp(1, full);
+    let anchor = (window.start - window.first) as f64 + fraction * span as f64;
+    let offset = (anchor - fraction * width as f64)
+        .round().clamp(0.0, (full - width) as f64) as u64;
+    let start = window.first + offset;
+    (start, start + width)
+}
+
+/// Dragging right moves the visible window left (content follows the pointer).
+fn pan_plot_by_fraction(window: PlotNavigation, drag_fraction: f64) -> (u64, u64) {
+    if !drag_fraction.is_finite() || drag_fraction == 0.0 {
+        return (window.start, window.end);
+    }
+    let last = window.last.max(window.first.saturating_add(1));
+    let full = last - window.first;
+    let span = window.end.saturating_sub(window.start).max(1).min(full);
+    let offset = ((window.start - window.first) as f64 - drag_fraction * span as f64)
+        .round().clamp(0.0, (full - span) as f64) as u64;
+    let start = window.first + offset;
+    (start, start + span)
+}
+
+fn plot_cursor_readout(session: &PlotSession, window: PlotNavigation, fraction: f64) -> String {
+    if !fraction.is_finite() || fraction < 0.0 {
+        return "Hover the plot to inspect decoded signal samples.".into();
+    }
+    let fraction = fraction.clamp(0.0, 1.0);
+    let x = window.start.saturating_add(
+        ((window.end - window.start) as f64 * fraction).round() as u64);
+    let unit = if session.axis == HorizontalAxis::TimestampMicroseconds { "s" }
+        else { "frames" };
+    let mut fields = vec![format!(
+        "Cursor +{} {unit}", plot_relative_offset(x, session.first, session.axis))];
+    for signal in &session.series {
+        let from = signal.points.partition_point(|(time, _)| *time < window.start);
+        let to = signal.points.partition_point(|(time, _)| *time <= window.end);
+        let visible = &signal.points[from..to];
+        if visible.is_empty() {
+            fields.push(format!("{}: —", signal.signal));
+            continue;
+        }
+        let right = visible.partition_point(|(time, _)| *time < x);
+        let best = if right == 0 { &visible[0] }
+            else if right == visible.len() { &visible[right - 1] }
+            else if visible[right - 1].0.abs_diff(x) <= visible[right].0.abs_diff(x) {
+                &visible[right - 1]
+            } else { &visible[right] };
+        let suffix = if signal.unit.is_empty() { String::new() }
+            else { format!(" {}", signal.unit) };
+        fields.push(format!("{}: {:.3}{} (+{} {unit})", signal.signal, best.1,
+            suffix, plot_relative_offset(best.0, session.first, session.axis)));
+    }
+    fields.join("  |  ")
+}
+
+/// Apply a new viewport without decoding CAN frames again.
+fn redraw_plot_viewport(
+    ui: &AppWindow, session: &PlotSession, old: PlotNavigation,
+    start: u64, end: u64,
+) -> Result<String, String> {
+    let label = draw_plot_session(ui, session, start, end)?;
+    ui.set_plot_window_from(plot_relative_offset(start, old.first, old.axis).into());
+    ui.set_plot_window_through(plot_relative_offset(end, old.first, old.axis).into());
+    ui.set_plot_cursor_fraction(-1.0);
+    ui.set_plot_cursor_summary("Hover the plot to inspect decoded signal samples.".into());
+    Ok(label)
+}
+
 fn plot_relative_offset(value: u64, first: u64, axis: HorizontalAxis) -> String {
     let relative = value.saturating_sub(first);
     match axis {
@@ -492,7 +574,9 @@ fn draw_plot_session(
     ui: &AppWindow, session: &PlotSession, x_start: u64, x_end: u64,
 ) -> Result<String, String> {
     let ranges = session.series.iter().map(|signal| {
-        signal.points.iter().filter(|(x, _)| *x >= x_start && *x <= x_end)
+        let from = signal.points.partition_point(|(x, _)| *x < x_start);
+        let to = signal.points.partition_point(|(x, _)| *x <= x_end);
+        signal.points[from..to].iter()
             .fold(None, |acc: Option<(f64, f64, usize)>, (_, value)| {
                 Some(match acc {
                     Some((min, max, count)) => (min.min(*value), max.max(*value), count + 1),
@@ -500,9 +584,6 @@ fn draw_plot_session(
                 })
             })
     }).collect::<Vec<_>>();
-    if ranges.iter().all(Option::is_none) {
-        return Err("No decoded signal samples inside this plot window.".into());
-    }
     let shared_min = ranges.iter().flatten().map(|(min, _, _)| *min)
         .fold(f64::INFINITY, f64::min);
     let shared_max = ranges.iter().flatten().map(|(_, max, _)| *max)
@@ -518,7 +599,7 @@ fn draw_plot_session(
         let (lower, upper) = if session.independent {
             (minimum, maximum)
         } else { (shared_min, shared_max) };
-        let plot = plot_path_on_axes(&signal.points, 800,
+        let plot = plot_path_on_axes_sorted(&signal.points, 800,
             x_start, x_end, lower, upper)?;
         commands[index] = plot.commands;
         all_samples += count;
@@ -1040,7 +1121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_status_text("Load a DBC before plotting decoded signals.".into());
             return;
         };
-        let series = match extract_numeric_series_batch(
+        let mut series = match extract_numeric_series_batch(
             &state.frames, dbc, &selector, &selected_names) {
             Ok(series) => series,
             Err(error) => {
@@ -1048,6 +1129,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
         };
+        // Imported traces may contain out-of-order timestamps. Sort once per
+        // selection so every subsequent pan/zoom/cursor lookup is viewport-local.
+        for signal in &mut series { signal.points.sort_by_key(|point| point.0); }
         let axis = series[0].axis;
         if series.iter().any(|value| value.axis != axis) {
             ui.set_status_text("Selected signals have incompatible time bases; choose signals with consistent timestamps.".into());
@@ -1081,6 +1165,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         *nav_for_plot.borrow_mut() = Some(PlotNavigation {
             first, last, start: x_start, end: x_end, axis,
         });
+        ui.set_plot_cursor_fraction(-1.0);
+        ui.set_plot_cursor_summary("Hover the plot to inspect decoded signal samples.".into());
         ui.set_status_text(label.into());
     });
 
@@ -1098,12 +1184,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok((start, end)) => {
                 let cache = cache_for_controls.borrow();
                 let Some(session) = cache.as_ref() else { return; };
-                match draw_plot_session(&ui, session, start, end) {
+                match redraw_plot_viewport(&ui, session, window, start, end) {
                     Ok(label) => {
-                        ui.set_plot_window_from(
-                            plot_relative_offset(start, window.first, window.axis).into());
-                        ui.set_plot_window_through(
-                            plot_relative_offset(end, window.first, window.axis).into());
                         *nav_for_controls.borrow_mut() = Some(PlotNavigation {
                             start, end, ..window
                         });
@@ -1114,6 +1196,63 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Err(error) => ui.set_status_text(error.into()),
         }
+    });
+
+    let weak = ui.as_weak();
+    let nav_for_wheel = Rc::clone(&plot_navigation);
+    let cache_for_wheel = Rc::clone(&plot_cache);
+    ui.on_zoom_plot(move |delta, fraction| {
+        let Some(ui) = weak.upgrade() else { return; };
+        if !ui.get_show_plot() { return; }
+        let Some(window) = *nav_for_wheel.borrow() else { return; };
+        let (start, end) = zoom_plot_at(window, delta as f64, fraction as f64);
+        if (start, end) == (window.start, window.end) { return; }
+        let cache = cache_for_wheel.borrow();
+        let Some(session) = cache.as_ref() else { return; };
+        match redraw_plot_viewport(&ui, session, window, start, end) {
+            Ok(label) => {
+                *nav_for_wheel.borrow_mut() = Some(PlotNavigation { start, end, ..window });
+                ui.set_status_text(label.into());
+            }
+            Err(error) => ui.set_status_text(error.into()),
+        }
+    });
+
+    let weak = ui.as_weak();
+    let nav_for_drag = Rc::clone(&plot_navigation);
+    let cache_for_drag = Rc::clone(&plot_cache);
+    ui.on_drag_plot(move |fraction| {
+        let Some(ui) = weak.upgrade() else { return; };
+        if !ui.get_show_plot() { return; }
+        let Some(window) = *nav_for_drag.borrow() else { return; };
+        let (start, end) = pan_plot_by_fraction(window, fraction as f64);
+        if (start, end) == (window.start, window.end) { return; }
+        let cache = cache_for_drag.borrow();
+        let Some(session) = cache.as_ref() else { return; };
+        match redraw_plot_viewport(&ui, session, window, start, end) {
+            Ok(label) => {
+                *nav_for_drag.borrow_mut() = Some(PlotNavigation { start, end, ..window });
+                ui.set_status_text(label.into());
+            }
+            Err(error) => ui.set_status_text(error.into()),
+        }
+    });
+
+    let weak = ui.as_weak();
+    let nav_for_cursor = Rc::clone(&plot_navigation);
+    let cache_for_cursor = Rc::clone(&plot_cache);
+    ui.on_inspect_plot(move |fraction| {
+        let Some(ui) = weak.upgrade() else { return; };
+        if !ui.get_show_plot() { return; }
+        let Some(window) = *nav_for_cursor.borrow() else { return; };
+        let cache = cache_for_cursor.borrow();
+        let Some(session) = cache.as_ref() else { return; };
+        let fraction = fraction as f64;
+        ui.set_plot_cursor_fraction(
+            if fraction.is_finite() && fraction >= 0.0 {
+                fraction.clamp(0.0, 1.0) as f32
+            } else { -1.0 });
+        ui.set_plot_cursor_summary(plot_cursor_readout(session, window, fraction).into());
     });
 
     let weak = ui.as_weak();
@@ -1604,6 +1743,47 @@ mod export_view_tests {
         window.end = 100;
         assert_eq!(navigate_plot_window(window, "left").unwrap(), (0, 100));
         assert!(navigate_plot_window(window, "unknown").is_err());
+    }
+
+    #[test]
+    fn wheel_zoom_preserves_pointer_anchor_and_clamps_at_edges() {
+        let window = PlotNavigation {
+            first: 1_700_000_000_000_000, last: 1_700_000_000_010_000,
+            start: 1_700_000_000_002_000, end: 1_700_000_000_006_000,
+            axis: HorizontalAxis::TimestampMicroseconds,
+        };
+        let (start, end) = zoom_plot_at(window, -120.0, 0.25);
+        assert!(start > window.start && end < window.end);
+        let before_anchor = window.start - window.first + 1_000;
+        let after_anchor = start - window.first + ((end - start) as f64 * 0.25).round() as u64;
+        assert!(before_anchor.abs_diff(after_anchor) <= 1);
+        assert_eq!(zoom_plot_at(window, 1e8, 0.5), (window.first, window.last));
+        assert_eq!(zoom_plot_at(window, f64::NAN, 0.5), (window.start, window.end));
+        let edge = PlotNavigation { start: window.first, end: window.first + 2_000, ..window };
+        assert_eq!(pan_plot_by_fraction(edge, 0.9), (edge.start, edge.end));
+        assert_eq!(pan_plot_by_fraction(edge, -0.5), (edge.start + 1_000, edge.end + 1_000));
+    }
+
+    #[test]
+    fn cursor_uses_nearest_visible_samples_on_sorted_sparse_series() {
+        let session = PlotSession {
+            series: vec![NumericSeries {
+                signal: "RPM".into(), unit: "rpm".into(),
+                axis: HorizontalAxis::FrameIndex,
+                points: vec![(10, 100.0), (20, 200.0), (30, 300.0)],
+                decode_errors: 0,
+            }],
+            first: 10, last: 30, axis: HorizontalAxis::FrameIndex, independent: true,
+        };
+        let window = PlotNavigation {
+            first: 10, last: 30, start: 14, end: 25,
+            axis: HorizontalAxis::FrameIndex,
+        };
+        assert!(plot_cursor_readout(&session, window, 0.0).contains("RPM: 200.000 rpm"));
+        assert!(plot_cursor_readout(&session, window, 1.0).contains("RPM: 200.000 rpm"));
+        let empty = PlotNavigation { start: 21, end: 25, ..window };
+        assert!(plot_cursor_readout(&session, empty, 0.5).contains("RPM: —"));
+        assert!(plot_cursor_readout(&session, window, -1.0).starts_with("Hover"));
     }
 
     #[test]

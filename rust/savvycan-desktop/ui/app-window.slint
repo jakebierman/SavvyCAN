@@ -99,6 +99,8 @@ export component AppWindow inherits Window {
     in property <string> plot-legend-b: "";
     in property <string> plot-legend-c: "";
     in property <string> plot-summary: "";
+    in property <float> plot-cursor-fraction: -1;
+    in property <string> plot-cursor-summary: "Hover the plot to inspect decoded signal samples.";
     in-out property <string> byte-interface: "";
     in-out property <string> byte-id: "";
     in property <[ByteActivityRow]> byte-rows: [];
@@ -133,6 +135,9 @@ export component AppWindow inherits Window {
     callback inspect-bytes(string, string);
     callback plot-signal-series(string, string, string, string, string, bool);
     callback navigate-plot(string);
+    callback zoom-plot(float, float);
+    callback drag-plot(float);
+    callback inspect-plot(float);
     callback play-replay(string);
     callback pause-replay();
     callback step-replay();
@@ -617,7 +622,7 @@ export component AppWindow inherits Window {
             Button { text: "Zoom −"; clicked => { root.navigate-plot("out"); } }
             Button { text: "Fit all"; clicked => { root.navigate-plot("fit"); } }
             Text {
-                text: "Navigation stays within the loaded trace";
+                text: "Drag to pan • Wheel/trackpad to zoom at pointer • Hover for sample values";
                 color: #8195aa;
                 font-size: 12px;
             }
@@ -686,6 +691,54 @@ export component AppWindow inherits Window {
                 stroke: #d6a8ef;
                 stroke-width: 2px;
             }
+            if root.plot-cursor-fraction >= 0 : Rectangle {
+                x: 20px + (parent.width - 40px) * root.plot-cursor-fraction;
+                y: 20px;
+                width: 1px;
+                height: parent.height - 40px;
+                background: #c8d7e9;
+            }
+            plot-touch := TouchArea {
+                x: 20px; y: 20px;
+                width: parent.width - 40px;
+                height: parent.height - 40px;
+                mouse-cursor: crosshair;
+                property <length> last-x: 0px;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        self.last-x = self.mouse-x;
+                    }
+                }
+                moved => {
+                    if (self.width > 0px) {
+                        root.drag-plot((self.mouse-x - self.last-x) / self.width);
+                        self.last-x = self.mouse-x;
+                    }
+                }
+                changed mouse-x => {
+                    if (self.has-hover && !self.pressed && self.width > 0px) {
+                        root.inspect-plot(self.mouse-x / self.width);
+                    }
+                }
+                changed has-hover => {
+                    if (!self.has-hover) {
+                        root.inspect-plot(-1);
+                    }
+                }
+                scroll-event(event) => {
+                    if (self.width > 0px) {
+                        root.zoom-plot(event.delta-y / 1px, self.mouse-x / self.width);
+                        accept
+                    } else { reject }
+                }
+            }
+        }
+
+        if root.show-plot : Text {
+            text: root.plot-cursor-summary;
+            color: #c5d7eb;
+            font-size: 13px;
+            wrap: word-wrap;
         }
 
         if root.show-bytes : ListView {
