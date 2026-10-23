@@ -21,6 +21,8 @@ pub enum IdFilter {
 pub struct TraceFilter {
     pub interface: Option<String>,
     pub id: Option<IdFilter>,
+    pub from_us: Option<u64>,
+    pub through_us: Option<u64>,
 }
 
 fn hex(raw: &str) -> Result<u32, FilterError> {
@@ -98,10 +100,48 @@ fn parse_id_filter(raw: &str) -> Result<Option<IdFilter>, FilterError> {
     Ok(Some(IdFilter::Exact(typed_id(numeric, extended)?)))
 }
 
+
+/// Parse a non-negative seconds timestamp with at most six fractional digits.
+/// Avoid floating-point rounding of capture microseconds.
+fn parse_time(raw: &str) -> Result<Option<u64>, FilterError> {
+    let raw = raw.trim();
+    if raw.is_empty() { return Ok(None); }
+    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    if whole.is_empty() || !whole.bytes().all(|c| c.is_ascii_digit())
+        || (!fraction.is_empty() && !fraction.bytes().all(|c| c.is_ascii_digit()))
+        || fraction.len() > 6 || raw.ends_with('.') || raw.matches('.').count() > 1
+    {
+        return Err(FilterError(format!(
+            "invalid timestamp '{raw}': enter non-negative seconds with up to six decimals"
+        )));
+    }
+    let seconds = whole.parse::<u64>()
+        .map_err(|_| FilterError("timestamp exceeds u64 range".into()))?;
+    let millis = if fraction.is_empty() { 0 } else {
+        fraction.parse::<u64>().map_err(|_| FilterError("invalid timestamp fraction".into()))?
+            * 10_u64.pow(6 - fraction.len() as u32)
+    };
+    seconds.checked_mul(1_000_000).and_then(|us| us.checked_add(millis))
+        .map(Some).ok_or_else(|| FilterError("timestamp exceeds u64 microsecond range".into()))
+}
+
 impl TraceFilter {
     /// Blank fields match all; IDs are hexadecimal. S: and X: force 11/29-bit
     /// IDs; ranges, masked IDs and PGN:xxxx J1939 groups are also accepted.
     pub fn parse(interface: &str, raw_id: &str) -> Result<Self, FilterError> {
+        Self::parse_with_time(interface, raw_id, "", "")
+    }
+
+    /// Optional inclusive seconds bounds are parsed exactly to microseconds.
+    /// Frames lacking timestamps do not match a bounded time search.
+    pub fn parse_with_time(interface: &str, raw_id: &str, from: &str, through: &str)
+        -> Result<Self, FilterError>
+    {
+        let from_us = parse_time(from)?;
+        let through_us = parse_time(through)?;
+        if from_us.zip(through_us).is_some_and(|(start, end)| start > end) {
+            return Err(FilterError("start time exceeds end time".into()));
+        }
         let interface = interface.trim();
         if !interface.is_empty() && !interface.chars().all(|c|
             c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
@@ -110,11 +150,17 @@ impl TraceFilter {
         Ok(Self {
             interface: (!interface.is_empty()).then(|| interface.to_owned()),
             id: parse_id_filter(raw_id)?,
+            from_us,
+            through_us,
         })
     }
 
     pub fn matches(&self, frame: &CanFrame) -> bool {
-        self.interface.as_ref().is_none_or(|iface| &frame.interface == iface)
+        (self.from_us.is_none() && self.through_us.is_none()
+            || frame.timestamp_us.is_some_and(|timestamp|
+                self.from_us.is_none_or(|start| timestamp >= start)
+                && self.through_us.is_none_or(|end| timestamp <= end)))
+            && self.interface.as_ref().is_none_or(|iface| &frame.interface == iface)
             && self.id.is_none_or(|query| match query {
                 IdFilter::Exact(id) => frame.id == id,
                 IdFilter::Range { first, last } =>
@@ -128,7 +174,7 @@ impl TraceFilter {
             })
     }
 
-    pub fn is_empty(&self) -> bool { self.interface.is_none() && self.id.is_none() }
+    pub fn is_empty(&self) -> bool { self.interface.is_none() && self.id.is_none() && self.from_us.is_none() && self.through_us.is_none() }
 }
 
 #[cfg(test)]
@@ -203,5 +249,39 @@ mod extended_filter_tests {
             "X:123-456/1FF", "PGN:40000", "PGN:EA01", "PGN:ZZZZ", "1A/7ZZ"] {
             assert!(TraceFilter::parse("", id).is_err(), "{id} should fail");
         }
+    }
+}
+
+#[cfg(test)]
+mod timestamp_filter_tests {
+    use super::*;
+    use crate::{FdFlags, FrameKind};
+
+    fn frame(time: Option<u64>) -> CanFrame {
+        CanFrame::new(time, "can0", CanId::Standard(0x123), FrameKind::Data,
+            vec![1], false, FdFlags::default()).unwrap()
+    }
+
+    #[test]
+    fn inclusive_microsecond_bounds_and_unknown_timestamp_policy() {
+        let filter = TraceFilter::parse_with_time("can0", "S:123", "1.000001", "2.2").unwrap();
+        assert!(!filter.matches(&frame(Some(1_000_000))));
+        assert!(filter.matches(&frame(Some(1_000_001))));
+        assert!(filter.matches(&frame(Some(2_200_000))));
+        assert!(!filter.matches(&frame(Some(2_200_001))));
+        assert!(!filter.matches(&frame(None)));
+        assert!(!filter.is_empty());
+        assert!(TraceFilter::parse_with_time("", "", "", "").unwrap().matches(&frame(None)));
+    }
+
+    #[test]
+    fn time_filter_rejects_imprecise_negative_and_overflow_inputs() {
+        for raw in ["-1", ".2", "2.", "1.0000001", "1e2", "1,2",
+            "12.abc", "18446744073709551615", "1.2.3"] {
+            assert!(TraceFilter::parse_with_time("", "", raw, "").is_err(), "{raw}");
+        }
+        assert!(TraceFilter::parse_with_time("", "", "5.000001", "5").is_err());
+        assert_eq!(parse_time("0.000010").unwrap(), Some(10));
+        assert_eq!(parse_time("10").unwrap(), Some(10_000_000));
     }
 }

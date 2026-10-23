@@ -53,7 +53,7 @@ default typed expression, and RTR requests are never formatted.
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
 | Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
-| Offline trace statistics, 1,000-row paging and interface/ID filtering | Done |
+| Offline trace statistics, 1,000-row paging and interface/ID/time filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
@@ -176,9 +176,10 @@ frames and flags, subject to candump's Rx/Tx-direction limitation described abov
 
 ## Non-destructive trace filtering
 
-The interface and CAN ID filters apply to the displayed rows, without changing
+The interface, CAN ID and optional timestamp bounds apply to the displayed rows, without changing
 the loaded frames or export data. Export includes every retained frame, not
 just the current filter or page. Leave either input blank to match all.
+The start/end timestamp inputs are inclusive seconds, with up to six decimal places; frames with unknown timestamps do not match time-bounded searches. Clear the bounds to show them again.
 CAN IDs use hexadecimal; `S:123` and `X:123` distinguish 11/29-bit IDs even
 when the numeric value is identical. You can also filter `S:100-1FF` ranges,
 `X:18FF0000/1FFF0000` ID/mask combinations, and J1939 PGNs such as `PGN:F004`

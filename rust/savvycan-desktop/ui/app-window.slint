@@ -26,6 +26,8 @@ export component AppWindow inherits Window {
     in-out property <string> live-interface: "can0";
     in-out property <string> filter-interface: "";
     in-out property <string> filter-id: "";
+    in-out property <string> filter-from: "";
+    in-out property <string> filter-through: "";
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <string> page-text: "No trace loaded";
     in property <[FrameRow]> frames: [];
@@ -33,7 +35,7 @@ export component AppWindow inherits Window {
     callback export-trace(string);
     callback start-live(string, string, string, string);
     callback stop-live();
-    callback apply-filter(string, string);
+    callback apply-filter(string, string, string, string);
     callback previous-page();
     callback next-page();
 
@@ -120,9 +122,18 @@ export component AppWindow inherits Window {
                 text <=> root.filter-id;
                 placeholder-text: "Filter CAN ID / range / mask / PGN (S:123, X:18FF0000/1FFF0000)";
             }
+            LineEdit {
+                text <=> root.filter-from;
+                placeholder-text: "From time (seconds)";
+            }
+            LineEdit {
+                text <=> root.filter-through;
+                placeholder-text: "Through time (seconds)";
+            }
             Button {
                 text: "Apply filter";
-                clicked => { root.apply-filter(root.filter-interface, root.filter-id); }
+                clicked => { root.apply-filter(root.filter-interface, root.filter-id,
+                    root.filter-from, root.filter-through); }
             }
         }
 

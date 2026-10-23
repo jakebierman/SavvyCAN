@@ -272,9 +272,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_for_filter = Rc::clone(&state);
     let model_for_filter = Rc::clone(&model);
     let filter_for_apply = Rc::clone(&filter);
-    ui.on_apply_filter(move |interface, id| {
+    ui.on_apply_filter(move |interface, id, from, through| {
         if let Some(ui) = weak.upgrade() {
-            match TraceFilter::parse(interface.as_str(), id.as_str()) {
+            match TraceFilter::parse_with_time(interface.as_str(), id.as_str(),
+                from.as_str(), through.as_str()) {
                 Ok(new_filter) => {
                     let mut state = state_for_filter.borrow_mut();
                     state.page_offset = 0;
