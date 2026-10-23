@@ -68,6 +68,7 @@ default typed expression, and RTR requests are never formatted.
 | Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
 | Background offline trace import, 1,000-row paging and interface/ID/time/payload filtering | Initial implementation; byte patterns support `??` wildcard and substring matches |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
+| Read-only Slint DBC catalog, search across message/signal metadata and ordered interface associations | Initial support: 1,000 visible rows, complete match counts; editor and round-trip writes pending |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
 | DBC J1939 PGN matching | Initial support; enabled by a DBC global protocol attribute; exact ID preferred |
@@ -154,6 +155,30 @@ and explicit adapter capability validation.
 
 Build/test workflows are separate from the existing Qt release process.
 Do not merge or replace C++ binaries until parity is measured and verified.
+
+## Read-only DBC catalog
+
+Enter one or more DBC files in the DBC associations field, optionally scoped
+to interfaces as described below. Use **DBC catalog** to browse the loaded
+messages and signals without opening a CAN trace. The adjacent search box
+accepts case-insensitive, whitespace-separated terms; all terms must match
+somewhere in the interface scope, explicit standard/extended CAN ID (for
+example S:123), message name, sender, signal name, bit layout, type, scale,
+unit or multiplex condition. Press DBC catalog again after changing the query.
+
+Each signal has its own row; messages with no signals are also listed.
+Interface-scoped databases are displayed first, followed by global fallback
+databases. Priority is one-based within each scope. CAN IDs and message
+metadata are kept separate even when multiple databases define the same ID.
+Results are sorted deterministically by scope, database priority and CAN ID,
+while preserving the signal declaration order. The table renders up to 1,000
+matching rows and reports the full match count. Searches re-read the specified
+files, so externally edited DBCs are visible on the next search.
+
+This is **inspection only**: no DBC edits, serialization, file writes, adapter
+configuration or CAN transmissions are performed. A future editor must preserve
+unrecognized DBC directives, comments and original formatting before offering
+round-trip saving. This catalog is not yet a full SavvyCAN DBC editor.
 
 ## Typed formatter rules file
 

@@ -57,6 +57,21 @@ export struct ByteActivityRow {
     last: string,
 }
 
+export struct DbcCatalogRow {
+    scope: string,
+    priority: string,
+    can-id: string,
+    message: string,
+    length: string,
+    sender: string,
+    signal: string,
+    layout: string,
+    kind: string,
+    scale: string,
+    unit: string,
+    multiplex: string,
+}
+
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
     preferred-width: 1720px;
@@ -85,6 +100,10 @@ export component AppWindow inherits Window {
     in-out property <bool> show-bam: false;
     in-out property <bool> show-bytes: false;
     in-out property <bool> show-plot: false;
+    in-out property <bool> show-dbc: false;
+    in-out property <string> dbc-query: "";
+    in property <[DbcCatalogRow]> dbc-rows: [];
+    in property <string> dbc-summary: "";
     in-out property <string> plot-interface: "";
     in-out property <string> plot-id: "S:123";
     in-out property <string> plot-signal: "RPM";
@@ -119,6 +138,7 @@ export component AppWindow inherits Window {
     callback open-trace(string, string, string, string);
     callback browse-trace();
     callback browse-dbc();
+    callback browse-dbc-catalog(string, string);
     callback browse-rules();
     callback browse-export();
     callback export-trace(string, bool);
@@ -172,6 +192,15 @@ export component AppWindow inherits Window {
                 placeholder-text: "DBC associations: file.dbc;can0=other.dbc";
             }
             Button { text: "DBC files"; clicked => { root.browse-dbc(); } }
+            LineEdit {
+                text <=> root.dbc-query;
+                placeholder-text: "DBC search: ID / message / signal";
+                width: 195px;
+            }
+            Button {
+                text: "DBC catalog";
+                clicked => { root.browse-dbc-catalog(root.dbc-path, root.dbc-query); }
+            }
             Button {
                 text: "Open trace";
                 clicked => { root.open-trace(root.file-path, root.dbc-path, root.format-spec, root.rules-path); }
@@ -341,6 +370,7 @@ export component AppWindow inherits Window {
                     root.show-bam = false;
                     root.show-bytes = false;
                     root.show-plot = false;
+                    root.show-dbc = false;
                 }
             }
         }
@@ -452,6 +482,12 @@ export component AppWindow inherits Window {
             font-size: 13px;
         }
 
+        if root.show-dbc : Text {
+            text: root.dbc-summary;
+            color: #9cdbc1;
+            font-size: 13px;
+        }
+
         if root.show-plot : Text {
             text: root.plot-summary;
             color: #9cdbc1;
@@ -464,7 +500,7 @@ export component AppWindow inherits Window {
             font-size: 13px;
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot : Rectangle {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot && !root.show-dbc : Rectangle {
             height: 34px;
             background: #243247;
             HorizontalBox {
@@ -480,6 +516,27 @@ export component AppWindow inherits Window {
                 Text { text: "Message"; width: 165px; color: #f2f6ff; }
                 Text { text: "DBC signals"; width: 350px; color: #f2f6ff; }
                 Text { text: "Typed values"; color: #f2f6ff; }
+            }
+        }
+
+        if root.show-dbc : Rectangle {
+            height: 34px;
+            background: #243247;
+            HorizontalBox {
+                padding-left: 8px;
+                spacing: 8px;
+                Text { text: "Scope"; width: 100px; color: #f2f6ff; }
+                Text { text: "Priority"; width: 65px; color: #f2f6ff; }
+                Text { text: "CAN ID"; width: 110px; color: #f2f6ff; }
+                Text { text: "Message"; width: 160px; color: #f2f6ff; }
+                Text { text: "DLC"; width: 50px; color: #f2f6ff; }
+                Text { text: "Sender"; width: 115px; color: #f2f6ff; }
+                Text { text: "Signal"; width: 165px; color: #f2f6ff; }
+                Text { text: "Bit layout"; width: 110px; color: #f2f6ff; }
+                Text { text: "Type"; width: 85px; color: #f2f6ff; }
+                Text { text: "Scale"; width: 160px; color: #f2f6ff; }
+                Text { text: "Unit"; width: 80px; color: #f2f6ff; }
+                Text { text: "Multiplex"; color: #f2f6ff; }
             }
         }
 
@@ -553,7 +610,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot : ListView {
+        if !root.show-isotp && !root.show-stats && !root.show-bam && !root.show-bytes && !root.show-plot && !root.show-dbc : ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
                 width: parent.width;
@@ -571,6 +628,30 @@ export component AppWindow inherits Window {
                     Text { text: frame.message-name; width: 165px; color: #e3b86b; }
                     Text { text: frame.decoded-values; width: 350px; color: #9cdbc1; }
                     Text { text: frame.typed-values; color: #d9bbec; }
+                }
+            }
+        }
+
+        if root.show-dbc : ListView {
+            for entry[i] in root.dbc-rows: Rectangle {
+                height: 30px;
+                width: parent.width;
+                background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
+                HorizontalBox {
+                    padding-left: 8px;
+                    spacing: 8px;
+                    Text { text: entry.scope; width: 100px; color: #c5d7eb; }
+                    Text { text: entry.priority; width: 65px; color: #d5e1ee; }
+                    Text { text: entry.can-id; width: 110px; color: #68d9d5; }
+                    Text { text: entry.message; width: 160px; color: #e3b86b; }
+                    Text { text: entry.length; width: 50px; color: #f2f6ff; }
+                    Text { text: entry.sender; width: 115px; color: #d5e1ee; }
+                    Text { text: entry.signal; width: 165px; color: #9cdbc1; }
+                    Text { text: entry.layout; width: 110px; color: #c5d7eb; }
+                    Text { text: entry.kind; width: 85px; color: #d5e1ee; }
+                    Text { text: entry.scale; width: 160px; color: #d5e1ee; }
+                    Text { text: entry.unit; width: 80px; color: #9cdbc1; }
+                    Text { text: entry.multiplex; color: #d9bbec; }
                 }
             }
         }

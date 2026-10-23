@@ -633,6 +633,7 @@ fn draw_plot_session(
     ui.set_show_bam(false);
     ui.set_show_bytes(false);
     ui.set_show_plot(true);
+    ui.set_show_dbc(false);
     Ok(label)
 }
 
@@ -647,6 +648,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model = Rc::new(VecModel::<FrameRow>::from(Vec::new()));
     let isotp_model = Rc::new(VecModel::<IsoTpRow>::from(Vec::new()));
     ui.set_isotp_rows(ModelRc::from(Rc::clone(&isotp_model)));
+    let dbc_model = Rc::new(VecModel::<DbcCatalogRow>::from(Vec::new()));
+    ui.set_dbc_rows(ModelRc::from(Rc::clone(&dbc_model)));
     let stats_model = Rc::new(VecModel::<StatsRow>::from(Vec::new()));
     ui.set_stats_rows(ModelRc::from(Rc::clone(&stats_model)));
     let bam_model = Rc::new(VecModel::<BamRow>::from(Vec::new()));
@@ -689,6 +692,59 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_dbc_path(paths.into());
             }
         }
+    });
+
+    // Read-only catalog can be opened without loading a CAN trace. Reparse
+    // explicitly on each search so edits to the source DBC are not hidden by
+    // a stale cache. Search never modifies the file or decoder state.
+    let weak = ui.as_weak();
+    let model_for_dbc = Rc::clone(&dbc_model);
+    ui.on_browse_dbc_catalog(move |paths, query| {
+        let Some(ui) = weak.upgrade() else { return; };
+        if paths.trim().is_empty() {
+            ui.set_status_text("Select one or more DBC files before browsing the catalog.".into());
+            return;
+        }
+        let context = match decode_context(paths.as_str(), "", "") {
+            Ok(context) => context,
+            Err(error) => {
+                ui.set_status_text(format!("Cannot read DBC catalog: {error}").into());
+                return;
+            }
+        };
+        let Some(stack) = context.dbc else {
+            ui.set_status_text("No DBC files were loaded.".into());
+            return;
+        };
+        let (entries, total) = stack.catalog_rows(query.as_str(), 1_000);
+        let shown = entries.len();
+        let rows = entries.into_iter().map(|entry| DbcCatalogRow {
+            scope: entry.scope.into(),
+            priority: entry.database_order.to_string().into(),
+            can_id: entry.id.into(),
+            message: entry.message.into(),
+            length: entry.length.to_string().into(),
+            sender: entry.sender.into(),
+            signal: entry.signal.into(),
+            layout: entry.layout.into(),
+            kind: entry.kind.into(),
+            scale: entry.scale.into(),
+            unit: entry.unit.into(),
+            multiplex: entry.multiplex.into(),
+        }).collect::<Vec<_>>();
+        model_for_dbc.set_vec(rows);
+        let summary = format!(
+            "{total} matching DBC message/signal rows • {shown} displayed • {} databases • read-only",
+            stack.total_databases()
+        );
+        ui.set_dbc_summary(summary.clone().into());
+        ui.set_show_isotp(false);
+        ui.set_show_stats(false);
+        ui.set_show_bam(false);
+        ui.set_show_bytes(false);
+        ui.set_show_plot(false);
+        ui.set_show_dbc(true);
+        ui.set_status_text(summary.into());
     });
 
     let weak = ui.as_weak();
@@ -894,6 +950,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_show_bam(false);
         ui.set_show_bytes(false);
         ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
         ui.set_status_text(format!("Playing offline trace at {speed}x (never transmits CAN).").into());
     });
 
@@ -934,6 +991,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_show_bam(false);
         ui.set_show_bytes(false);
         ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
         ui.set_status_text("Offline replay stepped one matching frame.".into());
     });
 
@@ -981,6 +1039,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
                     ui.set_status_text(summary.into());
                 }
                 Ok(_) => ui.set_status_text(
@@ -1018,6 +1077,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
             ui.set_status_text(message.into());
         }
     });
@@ -1309,6 +1369,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }
@@ -1364,6 +1425,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_show_bam(true);
             ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
             ui.set_status_text(summary.into());
         }
     });
@@ -1428,6 +1490,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive SLCAN serial • preconfigured/auto-streaming adapter required".into()
@@ -1501,6 +1564,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive GVRET serial • device must already emit binary F1 frames".into()
@@ -1561,6 +1625,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_show_bam(false);
                     ui.set_show_bytes(false);
                     ui.set_show_plot(false);
+                    ui.set_show_dbc(false);
                 ui.set_status_text(message.into());
             }
             Some(Ok(Err(message))) => {
