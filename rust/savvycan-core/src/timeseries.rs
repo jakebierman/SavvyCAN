@@ -69,20 +69,46 @@ pub struct PlotPath {
 }
 
 /// Build an SVG polyline in a fixed 1000-by-300 logical coordinate system.
-/// Slint can scale the Path to the actual widget size. Large series are
-/// downsampled by contiguous min/max buckets to preserve narrow peaks.
-/// Non-finite readings are ignored and timestamps are sorted stably.
+/// Large series use min/max buckets so narrow spikes survive downsampling.
 pub fn plot_path(points: &[(u64, f64)], max_points: usize) -> Result<PlotPath, String> {
     let mut valid: Vec<(u64, f64)> = points.iter().copied()
         .filter(|(_, value)| value.is_finite()).collect();
     if valid.is_empty() { return Err("No finite numeric samples to plot.".into()); }
     valid.sort_by_key(|point| point.0);
+    let first = valid.first().expect("nonempty").0;
+    let last = valid.last().expect("nonempty").0;
+    let minimum = valid.iter().map(|point| point.1).fold(f64::INFINITY, f64::min);
+    let maximum = valid.iter().map(|point| point.1).fold(f64::NEG_INFINITY, f64::max);
+    render_path(valid, max_points, first, last, minimum, maximum)
+}
+
+/// Plot samples against *explicit shared axes*. Unlike `plot_path`, this
+/// keeps different DBC signals aligned to exactly the same X coordinates.
+/// The X interval is inclusive, and points outside it never enter the path.
+pub fn plot_path_on_axes(
+    points: &[(u64, f64)], max_points: usize,
+    x_start: u64, x_end: u64, y_min: f64, y_max: f64,
+) -> Result<PlotPath, String> {
+    if x_start >= x_end { return Err("Plot window end must follow its start.".into()); }
+    if !y_min.is_finite() || !y_max.is_finite() || y_min > y_max {
+        return Err("Plot Y bounds must be finite and ordered.".into());
+    }
+    let mut valid: Vec<(u64, f64)> = points.iter().copied()
+        .filter(|(time, value)| x_start <= *time && *time <= x_end && value.is_finite())
+        .collect();
+    if valid.is_empty() { return Err("No finite numeric samples within the plot window.".into()); }
+    valid.sort_by_key(|point| point.0);
+    render_path(valid, max_points, x_start, x_end, y_min, y_max)
+}
+
+fn render_path(
+    valid: Vec<(u64, f64)>, max_points: usize,
+    axis_start: u64, axis_end: u64, axis_min: f64, axis_max: f64,
+) -> Result<PlotPath, String> {
     let first_x = valid.first().expect("nonempty").0;
     let last_x = valid.last().expect("nonempty").0;
-    let min_y = valid.iter().map(|point| point.1)
-        .fold(f64::INFINITY, f64::min);
-    let max_y = valid.iter().map(|point| point.1)
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = valid.iter().map(|point| point.1).fold(f64::INFINITY, f64::min);
+    let max_y = valid.iter().map(|point| point.1).fold(f64::NEG_INFINITY, f64::max);
     let budget = max_points.clamp(4, 4_096);
     let selected = if valid.len() <= budget {
         valid.clone()
@@ -111,17 +137,17 @@ pub fn plot_path(points: &[(u64, f64)], max_points: usize) -> Result<PlotPath, S
         selected.push(*valid.last().expect("nonempty"));
         selected
     };
-    let span_x = last_x.saturating_sub(first_x);
-    let span_y = max_y - min_y;
+    let span_x = axis_end.saturating_sub(axis_start);
+    let span_y = axis_max - axis_min;
     let mut commands = String::with_capacity(selected.len() * 20);
     for (index, &(time, value)) in selected.iter().enumerate() {
         let x = if span_x > 0 {
-            (time.saturating_sub(first_x) as f64 / span_x as f64) * 1_000.0
+            (time.saturating_sub(axis_start) as f64 / span_x as f64) * 1_000.0
         } else if selected.len() > 1 {
             index as f64 / (selected.len() - 1) as f64 * 1_000.0
         } else { 500.0 };
         let y = if span_y.is_finite() && span_y > 0.0 {
-            ((max_y - value) / span_y * 300.0).clamp(0.0, 300.0)
+            ((axis_max - value) / span_y * 300.0).clamp(0.0, 300.0)
         } else { 150.0 };
         let command = if index == 0 { 'M' } else { 'L' };
         write!(&mut commands, "{command} {x:.2} {y:.2} ")
@@ -195,4 +221,30 @@ mod tests {
         assert_eq!(single.commands, "M 500.00 150.00");
         assert!(plot_path(&[(1, f64::NAN), (2, f64::INFINITY)], 20).is_err());
     }
+    #[test]
+    fn shared_axes_align_different_series_in_time() {
+        let a = plot_path_on_axes(&[(100, 0.0), (200, 10.0)], 100,
+            100, 200, 0.0, 10.0).unwrap();
+        let b = plot_path_on_axes(&[(150, 100.0), (200, 200.0)], 100,
+            100, 200, 100.0, 200.0).unwrap();
+        assert_eq!(a.commands, "M 0.00 300.00 L 1000.00 0.00");
+        assert_eq!(b.commands, "M 500.00 300.00 L 1000.00 0.00");
+        assert_eq!(b.first_x, 150);
+    }
+
+    #[test]
+    fn explicit_plot_window_clips_and_preserves_extremes() {
+        let mut samples = (0..2_000).map(|x| (x, 0.0)).collect::<Vec<_>>();
+        samples[750].1 = 500.0;
+        samples[755].1 = -500.0;
+        let graph = plot_path_on_axes(&samples, 40, 500, 1_000, -500.0, 500.0).unwrap();
+        assert_eq!(graph.source_points, 501);
+        assert!(graph.plotted_points <= 40);
+        assert!(graph.commands.contains("0.00"));
+        assert!(graph.commands.contains("300.00"));
+        assert!(plot_path_on_axes(&samples, 100, 1_001, 1_001, 0.0, 1.0).is_err());
+        assert!(plot_path_on_axes(&samples, 100, 3_000, 4_000, 0.0, 1.0).is_err());
+        assert!(plot_path_on_axes(&samples, 100, 0, 1_000, f64::NAN, 1.0).is_err());
+    }
+
 }

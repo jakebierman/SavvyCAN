@@ -38,7 +38,7 @@ pub use pcap::write_socketcan_pcap;
 pub use pcapng::write_socketcan_pcapng;
 pub use trace_stats::{analyze_ids, write_id_stats_csv, IdStatistics};
 pub use byte_activity::{analyze_byte_activity, analyze_byte_activity_matching, write_byte_activity_csv, write_byte_activity_csv_matching, ByteActivity};
-pub use timeseries::{extract_numeric_series, plot_path, HorizontalAxis, NumericSeries, PlotPath};
+pub use timeseries::{extract_numeric_series, plot_path, plot_path_on_axes, HorizontalAxis, NumericSeries, PlotPath};
 pub use replay::{OfflineReplay, ReplayClock};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
