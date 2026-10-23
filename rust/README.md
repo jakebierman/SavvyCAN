@@ -55,7 +55,7 @@ default typed expression, and RTR requests are never formatted.
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
 | Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
 | Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
-| Offline trace statistics, 1,000-row paging and interface/ID/time filtering | Done |
+| Background offline trace import, 1,000-row paging and interface/ID/time filtering | Initial implementation |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
@@ -73,7 +73,7 @@ default typed expression, and RTR requests are never formatted.
 | GVRET device handshake/activation and TCP, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
-Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
+Offline file loading is performed on a worker thread so large traces do not block the Slint event loop. Opening another file replaces the pending result; live capture starts cancel the pending result. The worker still reads to completion if its result is abandoned, so cooperative cancellation and streaming disk-to-view loading are future improvements.\n\nCapture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1, IXXAT MiniLog
 Vehicle Spy and Cabana CSV text logs, plus binary SocketCAN PCAP and PCAPNG captures. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot

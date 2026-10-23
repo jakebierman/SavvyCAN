@@ -341,6 +341,8 @@ fn stop_capture(flag: &Rc<RefCell<Option<Arc<AtomicBool>>>>) {
     }
 }
 
+type ImportResult = Result<(ViewerState, String), String>;
+
 fn main() -> Result<(), Box<dyn Error>> {
     const OFFLINE_ROWS: usize = 1_000;
     const LIVE_ROWS: usize = 2_000;
@@ -360,35 +362,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capture_flag: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::new(RefCell::new(None));
     let receiver: Rc<RefCell<Option<mpsc::Receiver<Result<CanFrame, ReceiveError>>>>> =
         Rc::new(RefCell::new(None));
+    let import_rx: Rc<RefCell<Option<mpsc::Receiver<ImportResult>>>> =
+        Rc::new(RefCell::new(None));
 
     let weak = ui.as_weak();
-    let state_for_open = Rc::clone(&state);
-    let model_for_open = Rc::clone(&model);
-    let flag_for_open = Rc::clone(&capture_flag);
-    let receiver_for_open = Rc::clone(&receiver);
-    let filter_for_open = Rc::clone(&filter);
+    let import_for_open = Rc::clone(&import_rx);
     ui.on_open_trace(move |path, dbc_path, format_spec, rules_path| {
         if let Some(ui) = weak.upgrade() {
             if path.trim().is_empty() {
                 ui.set_status_text("Enter a CAN trace path first.".into());
-            } else {
-                match open_trace(path.as_str(), dbc_path.as_str(),
-                    format_spec.as_str(), rules_path.as_str()) {
-                    Ok((new_state, message)) => {
-                        stop_capture(&flag_for_open);
-                        *receiver_for_open.borrow_mut() = None;
-                        let filter = filter_for_open.borrow();
-                        model_for_open.set_vec(visible_rows(&new_state, &filter, OFFLINE_ROWS));
-                        ui.set_page_text(offline_page_text(&new_state, &filter, OFFLINE_ROWS).into());
-                        *state_for_open.borrow_mut() = new_state;
-                        ui.set_show_isotp(false);
-                        ui.set_show_stats(false);
-                        ui.set_show_bam(false);
-                        ui.set_status_text(message.into());
-                    }
-                    Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
-                }
+                return;
             }
+            let (sender, rx) = mpsc::sync_channel(1);
+            *import_for_open.borrow_mut() = Some(rx);
+            let (path, dbc_path, format_spec, rules_path) = (
+                path.to_string(), dbc_path.to_string(), format_spec.to_string(),
+                rules_path.to_string()
+            );
+            std::thread::spawn(move || {
+                let result = open_trace(&path, &dbc_path, &format_spec, &rules_path)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(result);
+            });
+            ui.set_status_text("Loading CAN trace and decoding context in background…".into());
         }
     });
 
@@ -554,6 +550,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_for_start = Rc::clone(&model);
     let flag_for_start = Rc::clone(&capture_flag);
     let receiver_for_start = Rc::clone(&receiver);
+    let import_for_start = Rc::clone(&import_rx);
     ui.on_start_live(move |interface, dbc_path, format_spec, rules_path| {
         if let Some(ui) = weak.upgrade() {
             #[cfg(target_os = "linux")]
@@ -566,6 +563,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Ok(context) => {
                         stop_capture(&flag_for_start);
                         *receiver_for_start.borrow_mut() = None;
+                        *import_for_start.borrow_mut() = None;
                         let (sender, rx) = mpsc::sync_channel(4_096);
                         let running = Arc::new(AtomicBool::new(true));
                         let worker_running = Arc::clone(&running);
@@ -663,6 +661,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_for_slcan = Rc::clone(&model);
     let flag_for_slcan = Rc::clone(&capture_flag);
     let receiver_for_slcan = Rc::clone(&receiver);
+    let import_for_slcan = Rc::clone(&import_rx);
     ui.on_start_slcan(move |port, baud_text, interface, dbc_path, format_spec, rules_path| {
         if let Some(ui) = weak.upgrade() {
             let baud = match baud_text.trim().parse::<u32>() {
@@ -680,6 +679,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(context) => {
                     stop_capture(&flag_for_slcan);
                     *receiver_for_slcan.borrow_mut() = None;
+                    *import_for_slcan.borrow_mut() = None;
                     let (sender, rx) = mpsc::sync_channel(4_096);
                     let running = Arc::new(AtomicBool::new(true));
                     let worker_running = Arc::clone(&running);
@@ -732,6 +732,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_for_gvret = Rc::clone(&model);
     let flag_for_gvret = Rc::clone(&capture_flag);
     let receiver_for_gvret = Rc::clone(&receiver);
+    let import_for_gvret = Rc::clone(&import_rx);
     ui.on_start_gvret_serial(move |port, baud_text, dbc_path, format_spec, rules_path| {
         if let Some(ui) = weak.upgrade() {
             let baud = match baud_text.trim().parse::<u32>() {
@@ -749,6 +750,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(context) => {
                     stop_capture(&flag_for_gvret);
                     *receiver_for_gvret.borrow_mut() = None;
+                    *import_for_gvret.borrow_mut() = None;
                     let (sender, rx) = mpsc::sync_channel(4_096);
                     let running = Arc::new(AtomicBool::new(true));
                     let worker_running = Arc::clone(&running);
@@ -819,9 +821,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_for_timer = Rc::clone(&model);
     let flag_for_timer = Rc::clone(&capture_flag);
     let filter_for_timer = Rc::clone(&filter);
+    let import_for_timer = Rc::clone(&import_rx);
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(ui) = weak.upgrade() else { return; };
+        let pending_import = {
+            let guard = import_for_timer.borrow();
+            guard.as_ref().map(|rx| rx.try_recv())
+        };
+        match pending_import {
+            Some(Ok(Ok((new_state, message)))) => {
+                *import_for_timer.borrow_mut() = None;
+                stop_capture(&flag_for_timer);
+                *receiver_for_timer.borrow_mut() = None;
+                let filter = filter_for_timer.borrow();
+                model_for_timer.set_vec(visible_rows(&new_state, &filter, OFFLINE_ROWS));
+                ui.set_page_text(offline_page_text(&new_state, &filter, OFFLINE_ROWS).into());
+                *state_for_timer.borrow_mut() = new_state;
+                ui.set_show_isotp(false);
+                ui.set_show_stats(false);
+                ui.set_show_bam(false);
+                ui.set_status_text(message.into());
+            }
+            Some(Ok(Err(message))) => {
+                *import_for_timer.borrow_mut() = None;
+                ui.set_status_text(format!("Could not import trace: {message}").into());
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                *import_for_timer.borrow_mut() = None;
+                ui.set_status_text("Import worker exited without a result.".into());
+            }
+            _ => {}
+        }
         let mut received = 0usize;
         let mut error_text = None;
         let mut disconnected = false;
@@ -881,15 +912,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_dbc_path(dbc.clone().into());
         ui.set_format_spec(format_spec.clone().into());
         ui.set_rules_path(rules_path.clone().into());
-        match open_trace(&path, &dbc, &format_spec, &rules_path) {
-            Ok((new_state, message)) => {
-                model.set_vec(visible_rows(&new_state, &filter.borrow(), OFFLINE_ROWS));
-                ui.set_page_text(offline_page_text(&new_state, &filter.borrow(), OFFLINE_ROWS).into());
-                *state.borrow_mut() = new_state;
-                ui.set_status_text(message.into());
-            }
-            Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
-        }
+        let (sender, rx) = mpsc::sync_channel(1);
+        *import_rx.borrow_mut() = Some(rx);
+        std::thread::spawn(move || {
+            let result = open_trace(&path, &dbc, &format_spec, &rules_path)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        ui.set_status_text("Loading startup CAN trace in background…".into());
     }
     ui.run()?;
     stop_capture(&capture_flag);
