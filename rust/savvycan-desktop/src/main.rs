@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_crtd, write_gvret_csv,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_gvret_csv,
     CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -161,8 +161,10 @@ fn export_trace(path: &str, frames: &[CanFrame]) -> Result<(), Box<dyn Error>> {
         write_crtd(&mut bytes, frames)?;
     } else if lower.ends_with(".csv") {
         write_gvret_csv(&mut bytes, frames)?;
+    } else if lower.ends_with(".log") || lower.ends_with(".candump") {
+        write_candump(&mut bytes, frames)?;
     } else {
-        return Err("Use .crt/.crtd for CRTD or .csv for GVRET CSV export".into());
+        return Err("Use .crt/.crtd, .csv, .log, or .candump for export".into());
     }
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -225,8 +227,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(ui) = weak.upgrade() {
             let state = state_for_export.borrow();
             match export_trace(path.as_str(), &state.frames) {
-                Ok(()) => ui.set_status_text(format!("Exported {} frames to {path}",
-                    state.frames.len()).into()),
+                Ok(()) => {
+                    let candump = path.to_ascii_lowercase().ends_with(".log")
+                        || path.to_ascii_lowercase().ends_with(".candump");
+                    let caveat = if candump { " • candump does not store Rx/Tx direction" } else { "" };
+                    ui.set_status_text(format!("Exported {} frames to {path}{caveat}",
+                        state.frames.len()).into());
+                },
                 Err(error) => ui.set_status_text(format!("Could not export: {error}").into()),
             }
         }

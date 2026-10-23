@@ -45,6 +45,7 @@ default typed expression, and RTR requests are never formatted.
 | CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
+| Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
 | Offline trace statistics, first 25,000 rows and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
@@ -58,7 +59,7 @@ default typed expression, and RTR requests are never formatted.
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
-Microchip and CARBUS Analyzer V2/V3 text logs. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
+Microchip and CARBUS Analyzer V2/V3 text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
@@ -126,12 +127,17 @@ exactly. Neither DBC decoding nor the underlying frame bytes are changed.
 
 ## Export limitations
 
-Select an output path ending in `.crtd`, `.crt`, or `.csv` and click
-**Export trace**. Export is available only for classic CAN data frames with
-known microsecond timestamps, bus numbers and Rx/Tx directions. It rejects
-CAN FD, RTR and missing metadata before creating the output file; an existing
-file is never replaced. The current exporters are intentionally conservative
-because the legacy formats cannot represent every field.
+Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log` or `.candump`
+and click **Export trace**. The `.log`/`.candump` exporter supports classic
+CAN, CAN FD (including BRS/ESI flags), remote requests, interface identities
+and timestamps when present. Candump cannot encode Rx/Tx direction, and that
+metadata is therefore lost on re-import; the UI warns when exporting.
+
+CRTD and GVRET CSV are available only for representable classic CAN data frames
+with known timestamps, bus numbers and Rx/Tx directions. These legacy exporters
+reject CAN FD, RTR and missing metadata rather than silently losing fields.
+All exporters validate before creating an output file and never replace an
+existing path.
 
 ## Read-only live SocketCAN capture
 
@@ -145,8 +151,8 @@ operations are exposed.
 The UI refreshes every 100 ms and renders the latest 2,000 frames. The
 receive queue holds at most 4,096 pending frames. History is capped at 100,000
 received frames; the status line tells you how many older frames have been
-discarded. Export writes only those retained frames and follows the conservative
-legacy-format restrictions described above.
+discarded. Export writes only those retained frames; choose `.log` to retain CAN FD/RTR
+frames and flags, subject to candump's Rx/Tx-direction limitation described above.
 
 ## Non-destructive trace filtering
 

@@ -454,6 +454,39 @@ fn preflight(frames: &[CanFrame], crt: bool) -> Result<(), ExportError> {
     Ok(())
 }
 
+/// Write compact Linux candump text, including CAN FD flags and remote requests.
+/// Standard candump syntax does not encode Rx/Tx direction; that metadata is
+/// intentionally omitted. All other CanFrame fields represented here round-trip.
+pub fn write_candump<W: Write>(mut writer: W, frames: &[CanFrame]) -> Result<(), ExportError> {
+    for (index, frame) in frames.iter().enumerate() {
+        if frame.interface.chars().any(char::is_whitespace) || frame.interface.is_empty() {
+            return Err(ExportError::Unsupported {
+                index, reason: "candump interfaces cannot contain whitespace".into(),
+            });
+        }
+    }
+    for frame in frames {
+        if let Some(us) = frame.timestamp_us {
+            write!(writer, "({}.{:06}) ", us / 1_000_000, us % 1_000_000)?;
+        }
+        write!(writer, "{} {}#", frame.interface, frame.id)?;
+        match frame.kind {
+            FrameKind::RemoteRequest { dlc } => write!(writer, "R{dlc}")?,
+            FrameKind::Data if frame.is_fd => {
+                let flags = u8::from(frame.fd_flags.bitrate_switch)
+                    | (u8::from(frame.fd_flags.error_state_indicator) << 1);
+                write!(writer, "#{flags:X}")?;
+                for byte in &frame.data { write!(writer, "{byte:02X}")?; }
+            }
+            FrameKind::Data => {
+                for byte in &frame.data { write!(writer, "{byte:02X}")?; }
+            }
+        }
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
 /// Write CRTD with microsecond timestamps, preserving bus, frame format and direction.
 /// Unsupported frames are rejected before the first byte is written.
 pub fn write_crtd<W: Write>(mut writer: W, frames: &[CanFrame]) -> Result<(), ExportError> {
@@ -654,6 +687,34 @@ mod tests {
         let error = read_trace(Cursor::new(text)).unwrap_err();
         assert!(error.to_string().contains("line 2"));
         assert!(error.to_string().contains("not yet supported"));
+    }
+
+
+    #[test]
+    fn candump_export_round_trip_classic_fd_rtr_and_timestamp() {
+        let standard = CanFrame::new(Some(1_234_567), "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![0xAA, 0xBB], false, FdFlags::default()).unwrap();
+        let extended_low = CanFrame::new(None, "can1", CanId::Extended(0x123),
+            FrameKind::Data, vec![0xDE, 0xAD], true,
+            FdFlags { bitrate_switch: true, error_state_indicator: true }).unwrap();
+        let remote = CanFrame::new(Some(10), "vcan0", CanId::Standard(0x500),
+            FrameKind::RemoteRequest { dlc: 8 }, vec![], false, FdFlags::default()).unwrap();
+        let originals = vec![standard, extended_low, remote];
+        let mut out = Vec::new();
+        write_candump(&mut out, &originals).unwrap();
+        assert_eq!(read_trace(Cursor::new(out)).unwrap().frames, originals);
+    }
+
+    #[test]
+    fn candump_export_direction_is_not_represented() {
+        let mut sent = CanFrame::new(Some(20), "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![1], false, FdFlags::default()).unwrap();
+        sent.direction = Direction::Transmitted;
+        let mut out = Vec::new();
+        write_candump(&mut out, &[sent]).unwrap();
+        let parsed = read_trace(Cursor::new(out)).unwrap().frames.remove(0);
+        assert_eq!(parsed.direction, Direction::Unknown);
+        assert_eq!(parsed.timestamp_us, Some(20));
     }
 
     #[test]
