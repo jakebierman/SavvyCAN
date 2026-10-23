@@ -1,0 +1,13 @@
+[package]
+name = "savvycan-transports"
+description = "Receive-only CAN adapters for the SavvyCAN Rust migration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+savvycan-core = { path = "../savvycan-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = "4.0.0"

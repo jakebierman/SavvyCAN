@@ -10,6 +10,8 @@ pipeline yet.
 - **savvycan-core**: portable pure-Rust CAN frames, validation, candump import,
   DBC loading and decoding, typed payload formatting, and summary metrics. Shared by Slint, CLI tools,
   tests and future adapters. No Qt, Slint or operating-system-specific code.
+- **savvycan-transports**: receive-only adapter implementations, beginning with
+  Linux SocketCAN (classic, FD and RTR). The adapter exposes no transmit API.
 - **savvycan-desktop**: Slint graphical shell. Currently **offline and read-only**.
   Open a supported CAN trace, optionally load a DBC and a typed format, then browse raw and decoded
   frames. Input errors include source line numbers.
@@ -21,7 +23,7 @@ Install a current stable Rust toolchain and Linux GUI development dependencies.
 From this directory:
 
 ~~~sh
-cargo test -p savvycan-core
+cargo test -p savvycan-core -p savvycan-transports
 cargo run -p savvycan-desktop -- /path/to/candump.log /path/to/signals.dbc "rpm:u16be@0/4[rpm]{1}"
 ~~~
 
@@ -48,7 +50,9 @@ default typed expression, and RTR requests are never formatted.
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
 | BLF, PCAP, CANalyzer, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
-| SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
+| Modular receive-only transport contract and replay mock | Done |
+| Linux SocketCAN classic/FD/RTR receive adapter | Initial support; compiled and unit tested, UI integration pending |
+| GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
@@ -75,7 +79,11 @@ to data frames, never RTR frames. Capture interface and DBC association is still
 global (a single optional DBC), not SavvyCAN's configurable per-bus file
 ordering. Do not assume full DBC compatibility yet.
 
-**Safety:** the Rust GUI has no transmit or device-control path. When those are
+**Safety:** the Rust GUI has no transmit or device-control path. The transport
+trait and SocketCAN adapter are deliberately receive-only; no frame transmission
+API exists in the Rust migration yet. SocketCAN timestamps are currently sampled
+in user space, not kernel/hardware timestamps. The source must be opened by the
+future live-capture UI integration. When those are
 ported, preserve SavvyCAN's read-only default, access/arming/confirmation policy,
 and explicit adapter capability validation.
 

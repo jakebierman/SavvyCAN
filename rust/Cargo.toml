@@ -1,5 +1,5 @@
 [workspace]
-members = ["savvycan-core", "savvycan-desktop"]
+members = ["savvycan-core", "savvycan-desktop", "savvycan-transports"]
 resolver = "2"
 
 [workspace.package]
