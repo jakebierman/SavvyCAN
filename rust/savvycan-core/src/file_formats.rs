@@ -190,7 +190,7 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                     } else if trimmed.starts_with(';') {
                         Ok(None)
                     } else {
-                        let version = pcan_version.ok_or("PCAN TRC missing $FILEVERSION header");
+                        let version = pcan_version.ok_or_else(|| "PCAN TRC missing $FILEVERSION header".to_string());
                         version.and_then(|v| parse_pcan_line(trimmed, v, &pcan_columns))
                     }
                 },
