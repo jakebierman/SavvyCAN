@@ -40,6 +40,7 @@ default typed expression, and RTR requests are never formatted.
 | Linux candump compact and simple bracketed-text log import | Done |
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
+| CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Offline trace statistics and first 25,000 rows in a Slint viewer | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
@@ -50,8 +51,8 @@ default typed expression, and RTR requests are never formatted.
 | SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
-Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER and
-Microchip logs. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
+Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
+Microchip and CARBUS Analyzer V2/V3 text logs. The viewer also exports CRTD and GVRET CSV V2 to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction

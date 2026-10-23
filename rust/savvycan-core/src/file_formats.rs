@@ -12,6 +12,7 @@ pub enum TraceFormat {
     GenericCsv,
     Busmaster,
     Microchip,
+    CarbusAnalyzer,
 }
 
 impl fmt::Display for TraceFormat {
@@ -23,6 +24,7 @@ impl fmt::Display for TraceFormat {
             Self::GenericCsv => "generic ID/data CSV",
             Self::Busmaster => "BUSMASTER log",
             Self::Microchip => "Microchip CAN BUS Analyzer log",
+            Self::CarbusAnalyzer => "CARBUS Analyzer trace",
         })
     }
 }
@@ -85,7 +87,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("***busmaster") {
+    if normalized.starts_with("@ text @") {
+        Ok(TraceFormat::CarbusAnalyzer)
+    } else if normalized.starts_with("***busmaster") {
         Ok(TraceFormat::Busmaster)
     } else if normalized.starts_with("//---") || normalized.starts_with("microchip technology inc") {
         Ok(TraceFormat::Microchip)
@@ -115,44 +119,57 @@ fn detect(first: &str) -> Result<TraceFormat, ImportError> {
 pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
     let mut format = None;
     let mut gvret_v2 = false;
+    let mut carbus_v2 = false;
     let mut frames = Vec::new();
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        let trimmed = line.trim_start_matches('\u{feff}').trim();
-        if trimmed.is_empty() { continue; }
-        if format.is_none() {
-            format = Some(detect(trimmed)?);
-            if format == Some(TraceFormat::GvretCsv) {
-                gvret_v2 = trimmed.split(',').any(|cell| cell.trim().eq_ignore_ascii_case("Dir"));
+    let mut line_number = 0usize;
+    for physical_line in reader.lines() {
+        let physical_line = physical_line?;
+        // Some CARBUS Analyzer files delimit records using CR only.
+        for line in physical_line.split('\r') {
+            line_number += 1;
+            let trimmed = line.trim_start_matches('\u{feff}').trim();
+            if trimmed.is_empty() { continue; }
+            if format.is_none() {
+                format = Some(detect(trimmed)?);
+                if format == Some(TraceFormat::GvretCsv) {
+                    gvret_v2 = trimmed.split(',').any(|cell| cell.trim().eq_ignore_ascii_case("Dir"));
+                }
+                if format == Some(TraceFormat::CarbusAnalyzer) {
+                    carbus_v2 = trimmed.split('@').nth(2).is_some_and(|v| v.trim() == "2");
+                }
             }
-        }
-        let result = match format.expect("selected above") {
-            TraceFormat::Candump => parse_candump_line(trimmed)
-                .map_err(|error| error.to_string()),
-            TraceFormat::Crtd => parse_crtd_line(trimmed),
-            TraceFormat::GvretCsv => {
-                if trimmed.to_ascii_lowercase().starts_with("time stamp,") {
-                    Ok(None)
-                } else { parse_gvret_csv_line(trimmed, gvret_v2) }
+            let result = match format.expect("selected above") {
+                TraceFormat::Candump => parse_candump_line(trimmed)
+                    .map_err(|error| error.to_string()),
+                TraceFormat::Crtd => parse_crtd_line(trimmed),
+                TraceFormat::GvretCsv => {
+                    if trimmed.to_ascii_lowercase().starts_with("time stamp,") {
+                        Ok(None)
+                    } else { parse_gvret_csv_line(trimmed, gvret_v2) }
+                }
+                TraceFormat::GenericCsv => {
+                    if trimmed.to_ascii_lowercase().starts_with("id,data bytes") {
+                        Ok(None)
+                    } else { parse_generic_csv_line(trimmed) }
+                }
+                TraceFormat::Busmaster => {
+                    if trimmed.starts_with("***") { Ok(None) }
+                    else { parse_busmaster_line(trimmed) }
+                }
+                TraceFormat::Microchip => {
+                    if trimmed.starts_with("//") || !trimmed.contains(';') { Ok(None) }
+                    else { parse_microchip_line(trimmed) }
+                }
+                TraceFormat::CarbusAnalyzer => {
+                    if trimmed.starts_with("@ TEXT @") { Ok(None) }
+                    else { parse_carbus_line(trimmed, carbus_v2) }
+                }
+            };
+            match result {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) => {}
+                Err(reason) => return Err(ImportError::Line { number: line_number, reason }),
             }
-            TraceFormat::GenericCsv => {
-                if trimmed.to_ascii_lowercase().starts_with("id,data bytes") {
-                    Ok(None)
-                } else { parse_generic_csv_line(trimmed) }
-            }
-            TraceFormat::Busmaster => {
-                if trimmed.starts_with("***") { Ok(None) }
-                else { parse_busmaster_line(trimmed) }
-            }
-            TraceFormat::Microchip => {
-                if trimmed.starts_with("//") || !trimmed.contains(';') { Ok(None) }
-                else { parse_microchip_line(trimmed) }
-            }
-        };
-        match result {
-            Ok(Some(frame)) => frames.push(frame),
-            Ok(None) => {}
-            Err(reason) => return Err(ImportError::Line { number: index + 1, reason }),
         }
     }
     let format = format.ok_or(ImportError::Empty)?;
@@ -268,6 +285,25 @@ fn parse_generic_csv_line(line: &str) -> Result<Option<CanFrame>, String> {
     Ok(Some(frame(None, "bus0".into(), id, data, Direction::Unknown)?))
 }
 
+
+
+fn parse_carbus_line(line: &str, version_2: bool) -> Result<Option<CanFrame>, String> {
+    let values: Vec<&str> = line.split_whitespace().collect();
+    if values.len() < 5 { return Err("CARBUS Analyzer record has fewer than five columns".into()); }
+    let timestamp = values[0].replace(',', "").parse::<u64>()
+        .map_err(|_| "invalid CARBUS timestamp")?;
+    let timestamp = if version_2 {
+        timestamp.checked_mul(1000).ok_or("CARBUS timestamp overflow")?
+    } else { timestamp };
+    let bus = values[1].parse::<u16>().map_err(|_| "invalid CARBUS channel")?;
+    let id = parse_hex_id(values[3], false)?;
+    let len = usize::from_str_radix(values[4], 16).map_err(|_| "invalid CARBUS length")?;
+    if len > 8 { return Err("CARBUS classic data length exceeds 8".into()); }
+    if values.len() < 5 + len { return Err("CARBUS payload shorter than length".into()); }
+    let bytes = values[5..5+len].iter().map(|v| parse_hex_byte(v))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(frame(Some(timestamp), format!("bus{bus}"), id, bytes, Direction::Received)?))
+}
 
 fn parse_busmaster_line(line: &str) -> Result<Option<CanFrame>, String> {
     let words: Vec<&str> = line.split_whitespace().collect();
@@ -509,6 +545,22 @@ mod tests {
         assert_eq!(parsed.frames[0].direction, Direction::Transmitted);
         assert_eq!(parsed.frames[0].interface, "bus1");
         assert!(read_trace(Cursor::new("***BUSMASTER Ver 3***\n00:00:00:020 Rx 0 123 s 2 11\n")).is_err());
+    }
+
+
+    #[test]
+    fn carbus_analyzer_v2_cr_line_endings_and_us_timestamp() {
+        let text = include_str!("../../../examples/CarBusAnalyzer.trc");
+        let result = load(text);
+        assert_eq!(result.format, TraceFormat::CarbusAnalyzer);
+        assert!(result.frames.len() > 20);
+        assert_eq!(result.frames[0].timestamp_us, Some(46_016_000));
+        assert_eq!(result.frames[0].id, CanId::Standard(0x45a));
+        assert_eq!(result.frames[0].data, vec![0x5A, 0x04, 0, 0, 0, 0, 0, 0]);
+        let converted = text.replace('\n', "\r");
+        assert_eq!(load(&converted).frames, result.frames);
+        let v3 = load("@ TEXT @ 3 @ 0 @\n46,016 0 0004 7FF 1 AA\n");
+        assert_eq!(v3.frames[0].timestamp_us, Some(46_016));
     }
 
     #[test]
