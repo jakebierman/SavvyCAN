@@ -16,6 +16,7 @@ pub enum TraceFormat {
     VectorAsc,
     PcanTrc,
     IxxatMinilog,
+    VehicleSpy,
 }
 
 impl fmt::Display for TraceFormat {
@@ -31,6 +32,7 @@ impl fmt::Display for TraceFormat {
             Self::VectorAsc => "Vector CANalyzer ASC (classic)",
             Self::PcanTrc => "PEAK PCAN TRC",
             Self::IxxatMinilog => "IXXAT MiniLog CSV",
+            Self::VehicleSpy => "Vehicle Spy CSV",
         })
     }
 }
@@ -93,7 +95,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("ascii trace ixxat") {
+    if normalized.starts_with("line,") && normalized.contains("abs time") && normalized.contains("b1") {
+        Ok(TraceFormat::VehicleSpy)
+    } else if normalized.starts_with("ascii trace ixxat") {
         Ok(TraceFormat::IxxatMinilog)
     } else if normalized.starts_with(";$fileversion=") {
         Ok(TraceFormat::PcanTrc)
@@ -180,6 +184,7 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                 }
                 TraceFormat::VectorAsc => parse_vector_asc_line(trimmed),
                 TraceFormat::IxxatMinilog => parse_ixxat_line(trimmed),
+                TraceFormat::VehicleSpy => parse_vehicle_spy_line(trimmed),
                 TraceFormat::PcanTrc => {
                     if let Some(value) = trimmed.strip_prefix(";$FILEVERSION=") {
                         pcan_version = match value.trim().trim_end_matches(';') {
@@ -395,6 +400,75 @@ fn pcan_fd_dlc_bytes(dlc: usize) -> Result<usize, String> {
     LENGTHS.get(dlc).copied().ok_or("PCAN CAN FD DLC exceeds 15".into())
 }
 
+
+
+/// Read CSV cells with escaped quotes; descriptions may contain commas.
+fn quoted_csv_cells(line: &str) -> Result<Vec<String>, String> {
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                cells.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if in_quotes {
+        return Err("unclosed quoted Vehicle Spy CSV field".into());
+    }
+    cells.push(current);
+    Ok(cells)
+}
+
+fn parse_vehicle_spy_line(line: &str) -> Result<Option<CanFrame>, String> {
+    if line.to_ascii_lowercase().starts_with("line,") {
+        return Ok(None);
+    }
+    let columns = quoted_csv_cells(line)?;
+    if columns.len() < 23 {
+        return Err("Vehicle Spy frame requires at least 23 columns".into());
+    }
+    // The source 'Abs Time' is already seconds; never synthesize a wall clock.
+    let timestamp = parse_timestamp(columns[1].trim())?;
+    let direction = match columns[5].trim().to_ascii_uppercase().as_str() {
+        "T" => Direction::Transmitted,
+        "F" => Direction::Received,
+        _ => return Err("Vehicle Spy Tx field must be T or F".into()),
+    };
+    if columns[10].trim().eq_ignore_ascii_case("T") {
+        return Err("Vehicle Spy remote requests need a DLC unavailable in this CSV row".into());
+    }
+    let extended = match columns[11].trim().to_ascii_uppercase().as_str() {
+        "T" => true,
+        "F" => false,
+        _ => return Err("Vehicle Spy Xtd field must be T or F".into()),
+    };
+    let id = parse_hex_id(columns[9].trim(), extended)?;
+    if !extended && id.is_extended() {
+        return Err("Vehicle Spy standard frame ID exceeds 7FF".into());
+    }
+    let mut data = Vec::new();
+    let mut reached_padding = false;
+    for cell in &columns[12..20] {
+        if cell.trim().is_empty() {
+            reached_padding = true;
+        } else {
+            if reached_padding {
+                return Err("Vehicle Spy payload contains a byte after a blank position".into());
+            }
+            data.push(parse_hex_byte(cell.trim())?);
+        }
+    }
+    Ok(Some(frame(Some(timestamp), "bus0".into(), id, data, direction)?))
+}
 
 fn ixxat_clock_us(raw: &str) -> Result<u64, String> {
     let parts: Vec<&str> = raw.split(':').collect();
@@ -1073,6 +1147,33 @@ mod tests {
         assert!(read_trace(Cursor::new(flags)).unwrap_err().to_string().contains("flags"));
         let bytes = format!("{prefix}\"0:0:2.000\",\"00000123\",\"Std\",\"\",\"GG\"\n");
         assert!(read_trace(Cursor::new(bytes)).unwrap_err().to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn vehicle_spy_csv_preserves_timestamp_tx_rx_id_width_and_quoted_commas() {
+        let input = "Line,Abs Time(Sec),Rel Time (Sec),Status,Er,Tx,Description,Network,Node,Arb ID,Remote,Xtd,B1,B2,B3,B4,B5,B6,B7,B8,Value,Trigger,Signals\n\
+            Line,Abs Time(Sec),Rel Time (Sec),Status,Er,Tx,Description,Network,Node,Arb ID,Remote,Xtd,B1,B2,B3,B4,B5,B6,B7,B8,Value,Trigger,Signals\n\
+            2,2550.368293675,0.003818,67371008,F,F,\"HS CAN, ECU\",HS CAN,,119,F,F,00,00,00,00,00,00,0D,8B,,,\n\
+            3,2551.000000000,0.003818,67371008,F,T,HS CAN,HS CAN,,119,F,T,11,,,,,,,,,,,\n";
+        let trace = load(input);
+        assert_eq!(trace.format, TraceFormat::VehicleSpy);
+        assert_eq!(trace.frames.len(), 2);
+        assert_eq!(trace.frames[0].timestamp_us, Some(2_550_368_293));
+        assert_eq!(trace.frames[0].id, CanId::Standard(0x119));
+        assert_eq!(trace.frames[0].data, vec![0, 0, 0, 0, 0, 0, 0x0D, 0x8B]);
+        assert_eq!(trace.frames[0].direction, Direction::Received);
+        assert_eq!(trace.frames[1].id, CanId::Extended(0x119));
+        assert_eq!(trace.frames[1].direction, Direction::Transmitted);
+        assert_eq!(trace.frames[1].data, vec![0x11]);
+    }
+
+    #[test]
+    fn vehicle_spy_invalid_data_and_missing_columns_fail() {
+        let header = "Line,Abs Time(Sec),B1\n";
+        let missing = format!("{header}1,1.000000,0,0,F,F,a,b,,119,F,F,11\n");
+        assert!(read_trace(Cursor::new(missing)).is_err());
+        let bad_quote = format!("{header}1,1.000000,0,0,F,F,\"broken,b,,119,F,F,11,,,,,,,,,,,\n");
+        assert!(read_trace(Cursor::new(bad_quote)).is_err());
     }
 
     #[test]
