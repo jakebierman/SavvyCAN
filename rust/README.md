@@ -46,6 +46,7 @@ default typed expression, and RTR requests are never formatted.
 | PEAK PCAN `.trc` (1.1/1.2/1.3/2.0/2.1) | Initial support: classic, CAN FD DLC mapping, RTR and Rx/Tx |
 | IXXAT MiniLog quoted CSV | Initial support, compatible with legacy SavvyCAN writer (Std/Ext ID and time of day) |
 | Vehicle Spy CSV | Initial support: quoted descriptions, ID width, direction, payload and sub-second timestamps |
+| Cabana CSV (`time,addr,bus,data`) | Initial support; preserves bus, decimal ID and timestamp with microsecond precision |
 | SocketCAN classic PCAP (linktype 227) | Initial import/export support: classic CAN, CAN FD, RTR, micro/nanosecond reads |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
@@ -67,7 +68,7 @@ default typed expression, and RTR requests are never formatted.
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1, IXXAT MiniLog
-and Vehicle Spy CSV text logs, plus binary SocketCAN PCAP captures. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
+Vehicle Spy and Cabana CSV text logs, plus binary SocketCAN PCAP captures. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
@@ -271,3 +272,12 @@ viewers even when the source trace used a relative clock.
 PCAP has no standard per-frame interface or Rx/Tx field for this linktype,
 so imports default to `bus0` and direction unknown. Truncated records,
 error frames, unexpected linktypes and pcapng are rejected explicitly.
+
+## Cabana CSV import
+
+Cabana traces using `time,addr,bus,data` are parsed with decimal CAN IDs,
+bus numbers and hexadecimal payload bytes. The recorded timestamp is retained
+as seconds/microseconds rather than being rebased to the first frame.
+As this CSV does not explicitly identify CAN FD frames or their flags,
+payloads beyond eight bytes are rejected until a verified format extension
+is available. Direction is unknown rather than assumed received.

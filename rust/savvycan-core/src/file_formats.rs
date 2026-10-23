@@ -18,6 +18,7 @@ pub enum TraceFormat {
     IxxatMinilog,
     VehicleSpy,
     SocketCanPcap,
+    CabanaCsv,
 }
 
 impl fmt::Display for TraceFormat {
@@ -35,6 +36,7 @@ impl fmt::Display for TraceFormat {
             Self::IxxatMinilog => "IXXAT MiniLog CSV",
             Self::VehicleSpy => "Vehicle Spy CSV",
             Self::SocketCanPcap => "SocketCAN PCAP",
+            Self::CabanaCsv => "Cabana CSV",
         })
     }
 }
@@ -97,7 +99,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("line,") && normalized.contains("abs time") && normalized.contains("b1") {
+    if normalized.starts_with("time,addr,bus,data") {
+        Ok(TraceFormat::CabanaCsv)
+    } else if normalized.starts_with("line,") && normalized.contains("abs time") && normalized.contains("b1") {
         Ok(TraceFormat::VehicleSpy)
     } else if normalized.starts_with("ascii trace ixxat") {
         Ok(TraceFormat::IxxatMinilog)
@@ -193,6 +197,11 @@ pub fn read_trace<R: BufRead>(mut reader: R) -> Result<ImportedTrace, ImportErro
                 TraceFormat::VectorAsc => parse_vector_asc_line(trimmed),
                 TraceFormat::IxxatMinilog => parse_ixxat_line(trimmed),
                 TraceFormat::VehicleSpy => parse_vehicle_spy_line(trimmed),
+                TraceFormat::CabanaCsv => {
+                    if trimmed.to_ascii_lowercase().starts_with("time,addr,bus,data") {
+                        Ok(None)
+                    } else { parse_cabana_csv_line(trimmed) }
+                },
                 TraceFormat::SocketCanPcap => unreachable!("binary PCAP was detected first"),
                 TraceFormat::PcanTrc => {
                     if let Some(value) = trimmed.strip_prefix(";$FILEVERSION=") {
@@ -412,6 +421,35 @@ fn pcan_fd_dlc_bytes(dlc: usize) -> Result<usize, String> {
 
 
 /// Read CSV cells with escaped quotes; descriptions may contain commas.
+
+fn parse_cabana_csv_line(line: &str) -> Result<Option<CanFrame>, String> {
+    let columns: Vec<&str> = line.split(',').map(str::trim).collect();
+    if columns.len() != 4 {
+        return Err("Cabana CSV requires time,addr,bus,data columns".into());
+    }
+    let timestamp_us = parse_timestamp(columns[0])?;
+    let numeric_id = columns[1].parse::<u32>()
+        .map_err(|_| "Cabana CAN ID must be decimal")?;
+    let id = if numeric_id <= u32::from(CanId::MAX_STANDARD) {
+        CanId::standard(numeric_id as u16)
+    } else { CanId::extended(numeric_id) }.map_err(|err| err.to_string())?;
+    let bus = columns[2].parse::<u16>().map_err(|_| "invalid Cabana bus number")?;
+    let raw = columns[3];
+    if raw.len() % 2 != 0 || !raw.is_ascii() {
+        return Err("Cabana payload must contain pairs of hexadecimal digits".into());
+    }
+    let mut data = Vec::with_capacity(raw.len() / 2);
+    for byte in raw.as_bytes().chunks_exact(2) {
+        let hex = std::str::from_utf8(byte).expect("ASCII checked");
+        data.push(parse_hex_byte(hex)?);
+    }
+    if data.len() > 8 {
+        return Err("Cabana format does not encode CAN FD flags; payload above 8 bytes rejected".into());
+    }
+    Ok(Some(frame(Some(timestamp_us), format!("bus{bus}"),
+        id, data, Direction::Unknown)?))
+}
+
 fn quoted_csv_cells(line: &str) -> Result<Vec<String>, String> {
     let mut cells = Vec::new();
     let mut current = String::new();
@@ -1183,6 +1221,29 @@ mod tests {
         assert!(read_trace(Cursor::new(missing)).is_err());
         let bad_quote = format!("{header}1,1.000000,0,0,F,F,\"broken,b,,119,F,F,11,,,,,,,,,,,\n");
         assert!(read_trace(Cursor::new(bad_quote)).is_err());
+    }
+
+    #[test]
+    fn cabana_csv_preserves_decimal_ids_bus_bytes_and_microseconds() {
+        let text = "time,addr,bus,data\n123.456789123,291,0,AABBCC\n\
+            124.000001,419385573,1,0102030405060708\n";
+        let trace = load(text);
+        assert_eq!(trace.format, TraceFormat::CabanaCsv);
+        assert_eq!(trace.frames.len(), 2);
+        assert_eq!(trace.frames[0].timestamp_us, Some(123_456_789));
+        assert_eq!(trace.frames[0].id, CanId::Standard(291));
+        assert_eq!(trace.frames[0].data, vec![0xaa, 0xbb, 0xcc]);
+        assert_eq!(trace.frames[0].direction, Direction::Unknown);
+        assert_eq!(trace.frames[1].id, CanId::Extended(419385573));
+        assert_eq!(trace.frames[1].interface, "bus1");
+    }
+
+    #[test]
+    fn cabana_rejects_odd_hex_and_unmarked_can_fd() {
+        let input = "time,addr,bus,data\n1.0,291,0,AAB\n";
+        assert!(read_trace(Cursor::new(input)).unwrap_err().to_string().contains("pairs"));
+        let input = "time,addr,bus,data\n1.0,291,0,000102030405060708\n";
+        assert!(read_trace(Cursor::new(input)).unwrap_err().to_string().contains("CAN FD"));
     }
 
     #[test]
