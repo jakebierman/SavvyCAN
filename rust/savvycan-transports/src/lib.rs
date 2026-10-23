@@ -9,7 +9,7 @@ mod linux {
         CanFrame, CanId, CanReceive, Direction, FdFlags, FrameKind,
         ReceiveCapabilities, ReceiveDescriptor, ReceiveError,
     };
-    use socketcan::{CanAnyFrame, CanFdSocket, EmbeddedFrame, Frame, Socket};
+    use socketcan::{CanAnyFrame, CanFdSocket, EmbeddedFrame, Frame, Socket, SocketOptions};
     use std::io::ErrorKind;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +18,7 @@ mod linux {
     pub struct SocketCanReceive {
         socket: CanFdSocket,
         descriptor: ReceiveDescriptor,
+        kernel_timestamp: bool,
     }
 
     impl SocketCanReceive {
@@ -25,8 +26,12 @@ mod linux {
             if interface.is_empty() { return Err(ReceiveError::Protocol("interface cannot be empty".into())); }
             let socket = CanFdSocket::open(interface)
                 .map_err(|err| ReceiveError::Io(err.to_string()))?;
+            // Prefer the kernel's receive timestamp, falling back to user-space
+            // time when SO_TIMESTAMPNS is unavailable on this system.
+            let kernel_timestamp = socket.set_recv_timestamp(true).is_ok();
             Ok(Self {
                 socket,
+                kernel_timestamp,
                 descriptor: ReceiveDescriptor {
                     name: "Linux SocketCAN".into(),
                     interface: interface.to_owned(),
@@ -42,9 +47,16 @@ mod linux {
         fn descriptor(&self) -> &ReceiveDescriptor { &self.descriptor }
 
         fn receive(&mut self, timeout: Duration) -> Result<Option<CanFrame>, ReceiveError> {
-            match self.socket.read_frame_timeout(timeout) {
-                Ok(frame) => {
-                    let timestamp_us = SystemTime::now().duration_since(UNIX_EPOCH).ok()
+            let result = if self.kernel_timestamp {
+                self.socket.set_read_timeout(timeout)
+                    .and_then(|_| self.socket.read_frame_with_timestamp())
+            } else {
+                self.socket.read_frame_timeout(timeout)
+                    .map(|frame| (frame, SystemTime::now()))
+            };
+            match result {
+                Ok((frame, time)) => {
+                    let timestamp_us = time.duration_since(UNIX_EPOCH).ok()
                         .and_then(|since_epoch| u64::try_from(since_epoch.as_micros()).ok());
                     map_frame(&self.descriptor.interface, timestamp_us, frame).map(Some)
                 }

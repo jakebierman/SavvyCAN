@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_crtd, write_gvret_csv,
-    CanFrame, DbcDatabase, DecodedSignal, FrameKind, PayloadFormatter,
+    CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
 use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
@@ -23,7 +23,7 @@ slint::include_modules!();
 
 #[derive(Default)]
 struct DecodeContext {
-    dbc: Option<DbcDatabase>,
+    dbc: Option<DbcStack>,
     formatter: Option<PayloadFormatter>,
     rules: Option<PayloadFormatRouter>,
 }
@@ -39,8 +39,25 @@ struct ViewerState {
 fn decode_context(dbc_path: &str, format_spec: &str, rules_path: &str)
     -> Result<DecodeContext, Box<dyn Error>>
 {
-    let dbc = if dbc_path.trim().is_empty() { None }
-        else { Some(DbcDatabase::parse(&std::fs::read_to_string(dbc_path)?)?) };
+    let dbc = if dbc_path.trim().is_empty() {
+        None
+    } else {
+        let mut stack = DbcStack::new();
+        for entry in dbc_path.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
+            let (scope, path) = entry.split_once('=').unwrap_or(("*", entry));
+            let scope = scope.trim();
+            let path = path.trim();
+            if path.is_empty() { return Err("DBC association requires a file path".into()); }
+            let dbc = DbcDatabase::parse(&std::fs::read_to_string(path)?)?;
+            if scope == "*" {
+                stack.add_global(dbc);
+            } else {
+                if scope.is_empty() { return Err("DBC interface cannot be empty".into()); }
+                stack.add_for_interface(scope, dbc);
+            }
+        }
+        Some(stack)
+    };
     let formatter = if format_spec.trim().is_empty() { None }
         else { Some(PayloadFormatter::compile(format_spec, false)?) };
     let rules = if rules_path.trim().is_empty() { None }
@@ -126,7 +143,9 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
         "{} frames • {} interface/ID pairs • {} classic • {} FD • {} RTR • {}{}{}{}",
         summary.frames, summary.unique_identifiers, summary.classic_frames,
         summary.fd_frames, summary.remote_requests, imported.format,
-        if context.dbc.is_some() { " • DBC loaded" } else { "" },
+        if let Some(stack) = &context.dbc {
+            if stack.total_databases() == 1 { " • 1 DBC" } else { " • multiple DBCs" }
+        } else { "" },
         if context.formatter.is_some() { " • default formatter" } else { "" },
         if context.rules.is_some() { " • per-ID rules" } else { "" },
     );

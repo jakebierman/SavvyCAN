@@ -47,7 +47,8 @@ default typed expression, and RTR requests are never formatted.
 | Offline trace statistics, first 25,000 rows and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
-| DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
+| Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
+| DBC J1939/GMLAN PGN profile matching | Not yet |
 | BLF, PCAP, CANalyzer, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
@@ -75,14 +76,14 @@ DBC parsing covers BO_, SG_, VAL_, SIG_VALTYPE_, and SG_MUL_VAL_ directives.
 Other metadata is not imported yet. A malformed supported directive or
 out-of-range signal is reported rather than silently producing a value.
 Extended ID flags use the standard DBC bit-31 convention. Decoding only applies
-to data frames, never RTR frames. Capture interface and DBC association is still
-global (a single optional DBC), not SavvyCAN's configurable per-bus file
-ordering. Do not assume full DBC compatibility yet.
+to data frames, never RTR frames. DBC associations now support an ordered global list plus per-interface files,
+with interface matches searched before globals. This still lacks J1939/GMLAN
+PGN matching and other advanced DBC profile behavior.
 
 **Safety:** the Rust GUI has no transmit or device-control path. The transport
 trait and SocketCAN adapter are deliberately receive-only; no frame transmission
-API exists in the Rust migration yet. SocketCAN timestamps are currently sampled
-in user space, not kernel/hardware timestamps. The Slint viewer can open a
+API exists in the Rust migration yet. SocketCAN uses kernel software timestamps where supported, with a
+user-space fallback. Hardware timestamp support remains pending. The Slint viewer can open a
 Linux SocketCAN interface in a worker thread and stop it without blocking the UI.
 Its input queue is bounded; the live display shows the latest 2,000 frames and
 live capture retains at most 100,000 frames for export, explicitly reporting
@@ -163,3 +164,17 @@ run's **Artifacts** section and mark the extracted executable as executable.
 This is a developer preview and still requires compatible Linux runtime GUI
 libraries; it is not a packaged release or an alternative to the existing
 Qt/C++ SavvyCAN distributions.
+
+## Multiple DBC associations
+
+Enter semicolon-separated DBC sources in the DBC path field. A bare path adds
+a global fallback database. Prefix a path with an interface name and `=` to
+associate it with that interface. For example:
+
+~~~text
+/path/general.dbc;can0=/path/powertrain.dbc;can0=/path/auxiliary.dbc;can1=/path/chassis.dbc
+~~~
+
+The first database defining a matching CAN ID wins, with interface-specific
+databases searched before the globals. Existing DBC decoders and typed payload
+formats remain independent.
