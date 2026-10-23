@@ -4,6 +4,7 @@ export struct FrameRow {
     timestamp: string,
     channel: string,
     can-id: string,
+    direction: string,
     format: string,
     length: string,
     payload: string,
@@ -370,6 +371,7 @@ export component AppWindow inherits Window {
                 Text { text: "Timestamp"; width: 158px; color: #f2f6ff; }
                 Text { text: "Interface"; width: 85px; color: #f2f6ff; }
                 Text { text: "CAN ID"; width: 100px; color: #f2f6ff; }
+                Text { text: "Rx/Tx"; width: 60px; color: #f2f6ff; }
                 Text { text: "Format"; width: 75px; color: #f2f6ff; }
                 Text { text: "DLC"; width: 42px; color: #f2f6ff; }
                 Text { text: "Payload"; width: 235px; color: #f2f6ff; }
@@ -460,6 +462,7 @@ export component AppWindow inherits Window {
                     Text { text: frame.timestamp; width: 158px; color: #b9d2ed; }
                     Text { text: frame.channel; width: 85px; color: #c5d7eb; }
                     Text { text: frame.can-id; width: 100px; color: #68d9d5; }
+                    Text { text: frame.direction; width: 60px; color: #d5e1ee; }
                     Text { text: frame.format; width: 75px; color: #d5e1ee; }
                     Text { text: frame.length; width: 42px; color: #d5e1ee; }
                     Text { text: frame.payload; width: 235px; color: #e5edf5; }

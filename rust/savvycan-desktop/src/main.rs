@@ -11,7 +11,7 @@ use std::time::Duration;
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
     analyze_ids, analyze_byte_activity, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
-    CanReceive, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
+    CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
 use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
@@ -109,6 +109,11 @@ fn row(frame: &CanFrame, context: &DecodeContext) -> FrameRow {
         timestamp: timestamp.into(),
         channel: frame.interface.clone().into(),
         can_id: frame.id.to_string().into(),
+        direction: match frame.direction {
+            Direction::Received => "Rx",
+            Direction::Transmitted => "Tx",
+            Direction::Unknown => "—",
+        }.into(),
         format: format.into(),
         length: frame.len().to_string().into(),
         payload: payload.into(),

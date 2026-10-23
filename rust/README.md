@@ -39,6 +39,7 @@ default typed expression, and RTR requests are never formatted.
 | --- | --- |
 | Validated 11/29-bit identifiers, classic CAN and CAN FD payloads | Done |
 | Per-interface identity, microsecond timestamps, FD flags and RTR | Done |
+| Rx/Tx/unknown direction in Slint trace frame rows | Done when source records direction; missing direction remains unknown |
 | Linux candump compact and simple bracketed-text log import | Done |
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
