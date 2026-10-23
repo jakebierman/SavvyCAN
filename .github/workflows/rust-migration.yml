@@ -49,3 +49,14 @@ jobs:
             rust/target/debug/savvycan-j1939-bam
           if-no-files-found: error
           retention-days: 7
+
+  windows:
+    name: Check Windows Slint desktop
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust/Slint Windows target
+        run: cargo check --manifest-path rust/Cargo.toml -p savvycan-desktop
+      - name: Test Rust/Slint Windows data logic
+        run: cargo test --manifest-path rust/Cargo.toml -p savvycan-desktop
