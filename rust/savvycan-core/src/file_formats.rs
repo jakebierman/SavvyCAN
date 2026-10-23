@@ -14,6 +14,7 @@ pub enum TraceFormat {
     Microchip,
     CarbusAnalyzer,
     VectorAsc,
+    PcanTrc,
 }
 
 impl fmt::Display for TraceFormat {
@@ -27,6 +28,7 @@ impl fmt::Display for TraceFormat {
             Self::Microchip => "Microchip CAN BUS Analyzer log",
             Self::CarbusAnalyzer => "CARBUS Analyzer trace",
             Self::VectorAsc => "Vector CANalyzer ASC (classic)",
+            Self::PcanTrc => "PEAK PCAN TRC",
         })
     }
 }
@@ -89,7 +91,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with("date ") || normalized.starts_with("base hex ") {
+    if normalized.starts_with(";$fileversion=") {
+        Ok(TraceFormat::PcanTrc)
+    } else if normalized.starts_with("date ") || normalized.starts_with("base hex ") {
         Ok(TraceFormat::VectorAsc)
     } else if normalized.starts_with("@ text @") {
         Ok(TraceFormat::CarbusAnalyzer)
@@ -124,6 +128,8 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
     let mut format = None;
     let mut gvret_v2 = false;
     let mut carbus_v2 = false;
+    let mut pcan_version: Option<u8> = None;
+    let mut pcan_columns: Vec<String> = Vec::new();
     let mut frames = Vec::new();
     let mut line_number = 0usize;
     for physical_line in reader.lines() {
@@ -169,6 +175,25 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                     else { parse_carbus_line(trimmed, carbus_v2) }
                 }
                 TraceFormat::VectorAsc => parse_vector_asc_line(trimmed),
+                TraceFormat::PcanTrc => {
+                    if let Some(value) = trimmed.strip_prefix(";$FILEVERSION=") {
+                        pcan_version = match value.trim().trim_end_matches(';') {
+                            "1.1" => Some(11), "1.2" => Some(12), "1.3" => Some(13),
+                            "2.0" => Some(20), "2.1" => Some(21),
+                            _ => return Err(ImportError::Line { number: line_number,
+                                reason: format!("unsupported PCAN TRC version '{value}'") }),
+                        };
+                        Ok(None)
+                    } else if let Some(value) = trimmed.strip_prefix(";$COLUMNS=") {
+                        pcan_columns = value.split(',').map(|v| v.trim().to_owned()).collect();
+                        validate_pcan_columns(&pcan_columns).map(|()| None)
+                    } else if trimmed.starts_with(';') {
+                        Ok(None)
+                    } else {
+                        let version = pcan_version.ok_or("PCAN TRC missing $FILEVERSION header");
+                        version.and_then(|v| parse_pcan_line(trimmed, v, &pcan_columns))
+                    }
+                },
             };
             match result {
                 Ok(Some(frame)) => frames.push(frame),
@@ -292,6 +317,192 @@ fn parse_generic_csv_line(line: &str) -> Result<Option<CanFrame>, String> {
 
 
 
+
+
+fn pcan_millis_to_us(raw: &str) -> Result<u64, String> {
+    let (ms, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("invalid PCAN millisecond timestamp '{raw}'"));
+    }
+    let base = ms.parse::<u64>().map_err(|_| format!("invalid PCAN timestamp '{raw}'"))?;
+    let micro_fraction = if fraction.is_empty() { 0 } else {
+        fraction.parse::<u64>().map_err(|_| "invalid PCAN sub-millisecond digits")?
+            * 10_u64.pow((3 - fraction.len()) as u32)
+    };
+    base.checked_mul(1000).and_then(|v| v.checked_add(micro_fraction))
+        .ok_or_else(|| "PCAN timestamp outside u64 range".into())
+}
+
+fn pcan_id(raw: &str) -> Result<CanId, String> {
+    if raw.len() != 4 && raw.len() != 8 {
+        return Err("PCAN CAN IDs must be exactly four or eight hexadecimal digits".into());
+    }
+    let id = parse_hex_id(raw, raw.len() == 8)?;
+    if raw.len() == 4 && id.is_extended() {
+        return Err("PCAN four-digit CAN ID exceeds the standard range".into());
+    }
+    Ok(id)
+}
+
+fn pcan_frame(
+    timestamp: u64, bus: String, id: CanId, direction: Direction,
+    kind: FrameKind, payload: Vec<u8>, fd_flags: FdFlags, is_fd: bool,
+) -> Result<Option<CanFrame>, String> {
+    let mut result = CanFrame::new(Some(timestamp), bus, id, kind, payload, is_fd, fd_flags)
+        .map_err(|e| e.to_string())?;
+    result.direction = direction;
+    Ok(Some(result))
+}
+
+fn pcan_direction(text: &str) -> Result<Direction, String> {
+    match text {
+        "Rx" => Ok(Direction::Received),
+        "Tx" => Ok(Direction::Transmitted),
+        _ => Err(format!("invalid PCAN direction '{text}'")),
+    }
+}
+
+fn validate_pcan_columns(cols: &[String]) -> Result<(), String> {
+    for name in cols {
+        if !matches!(name.as_str(), "N" | "O" | "T" | "B" | "I" | "d" | "R" | "l" | "L" | "D") {
+            return Err(format!("unsupported PCAN TRC column '{name}'"));
+        }
+    }
+    for required in ["O", "T", "I", "d", "D"] {
+        if !cols.iter().any(|c| c == required) {
+            return Err(format!("PCAN TRC $COLUMNS missing '{required}'"));
+        }
+    }
+    if !cols.iter().any(|c| c == "l" || c == "L") {
+        return Err("PCAN TRC needs a data length or DLC column".into());
+    }
+    if !cols.last().is_some_and(|c| c == "D") {
+        return Err("PCAN TRC data column must be last".into());
+    }
+    if cols.iter().collect::<std::collections::HashSet<_>>().len() != cols.len() {
+        return Err("duplicate PCAN TRC column".into());
+    }
+    Ok(())
+}
+
+fn pcan_fd_dlc_bytes(dlc: usize) -> Result<usize, String> {
+    const LENGTHS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
+    LENGTHS.get(dlc).copied().ok_or("PCAN CAN FD DLC exceeds 15".into())
+}
+
+fn parse_pcan_line(line: &str, version: u8, columns: &[String]) -> Result<Option<CanFrame>, String> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() { return Ok(None); }
+    if version < 20 {
+        if !words[0].ends_with(')') {
+            return Err("PCAN 1.x record must start with a numbered 'N)' field".into());
+        }
+        let timestamp = pcan_millis_to_us(*words.get(1).ok_or("PCAN timestamp missing")?)?;
+        let (bus, type_pos) = if version >= 12 {
+            let number = words.get(2).ok_or("PCAN bus number missing")?
+                .parse::<u16>().map_err(|_| "invalid PCAN bus number")?;
+            if !(1..=16).contains(&number) { return Err("PCAN bus must be 1..16".into()); }
+            (format!("bus{}", number - 1), 3)
+        } else { ("bus0".into(), 2) };
+        let type_field = *words.get(type_pos).ok_or("PCAN message type missing")?;
+        let direction = match type_field {
+            "Rx" | "Tx" => pcan_direction(type_field)?,
+            "Warng" | "Error" => return Ok(None), // not representable as a CAN data frame
+            _ => return Err(format!("unknown PCAN 1.x message type '{type_field}'")),
+        };
+        let id = pcan_id(words.get(type_pos + 1).ok_or("PCAN CAN ID missing")?)?;
+        let len_pos = type_pos + if version >= 13 { 3 } else { 2 };
+        let length = words.get(len_pos).ok_or("PCAN DLC missing")?
+            .parse::<u8>().map_err(|_| "invalid PCAN DLC")?;
+        if length > 8 { return Err("PCAN J1939 large messages require reassembly support".into()); }
+        let data = &words[len_pos + 1..];
+        if data == ["RTR"] {
+            return pcan_frame(timestamp, bus, id, direction, FrameKind::RemoteRequest { dlc: length },
+                Vec::new(), FdFlags::default(), false);
+        }
+        if data.len() != usize::from(length) {
+            return Err(format!("PCAN DLC {length} does not match {} payload bytes", data.len()));
+        }
+        let payload = data.iter().map(|word| parse_hex_byte(word))
+            .collect::<Result<Vec<_>, _>>()?;
+        return pcan_frame(timestamp, bus, id, direction, FrameKind::Data,
+            payload, FdFlags::default(), false);
+    }
+
+    if columns.is_empty() { return Err("PCAN 2.x missing $COLUMNS header".into()); }
+    let mut timestamp = None;
+    let mut bus = "bus0".to_string();
+    let mut id = None;
+    let mut direction = None;
+    let mut kind = "";
+    let mut data_length = None;
+    let mut dlc = None;
+    let mut data_start = None;
+    for (position, column) in columns.iter().enumerate() {
+        if column == "D" {
+            data_start = Some(position);
+            break;
+        }
+        let value = *words.get(position).ok_or("PCAN record has fewer fields than $COLUMNS")?;
+        match column.as_str() {
+            "N" | "R" => {}
+            "O" => timestamp = Some(pcan_millis_to_us(value)?),
+            "T" => {
+                kind = value;
+                if matches!(kind, "ER" | "ST" | "EC" | "EV") { return Ok(None); }
+            }
+            "B" => {
+                let number = value.parse::<u8>().map_err(|_| "invalid PCAN bus number")?;
+                if !(1..=16).contains(&number) { return Err("PCAN bus must be 1..16".into()); }
+                bus = format!("bus{}", number - 1);
+            }
+            "I" => id = Some(pcan_id(value)?),
+            "d" => direction = Some(pcan_direction(value)?),
+            "l" => data_length = Some(value.parse::<usize>()
+                .map_err(|_| "invalid PCAN data length")?),
+            "L" => dlc = Some(value.parse::<usize>()
+                .map_err(|_| "invalid PCAN DLC")?),
+            other => return Err(format!("unsupported PCAN column '{other}'")),
+        }
+    }
+    let fd_flags = match kind {
+        "DT" | "RR" => FdFlags::default(),
+        "FD" | "FB" | "FE" | "BI" => FdFlags {
+            bitrate_switch: matches!(kind, "FB" | "BI"),
+            error_state_indicator: matches!(kind, "FE" | "BI"),
+        },
+        _ => return Err(format!("unsupported PCAN 2.x message type '{kind}'")),
+    };
+    let is_fd = matches!(kind, "FD" | "FB" | "FE" | "BI");
+    let wire_len = dlc.map(|n| if is_fd { pcan_fd_dlc_bytes(n) }
+        else if n <= 8 { Ok(n) } else { Err("PCAN classic CAN DLC exceeds 8".into()) })
+        .transpose()?;
+    if let (Some(actual), Some(expected)) = (data_length, wire_len) {
+        if actual != expected {
+            return Err(format!("PCAN data length {actual} conflicts with DLC ({expected} bytes)"));
+        }
+    }
+    let length = data_length.or(wire_len).ok_or("PCAN data length missing")?;
+    let start = data_start.ok_or("PCAN data column missing")?;
+    let raw_data = &words[start..];
+    let frame_kind = if kind == "RR" {
+        if !raw_data.is_empty() { return Err("PCAN RTR must not contain payload bytes".into()); }
+        let dlc: u8 = length.try_into().map_err(|_| "PCAN RTR length exceeds u8")?;
+        FrameKind::RemoteRequest { dlc }
+    } else {
+        if raw_data.len() != length {
+            return Err(format!("PCAN data length {length} does not match {} bytes", raw_data.len()));
+        }
+        FrameKind::Data
+    };
+    let payload = if matches!(frame_kind, FrameKind::Data) {
+        raw_data.iter().map(|word| parse_hex_byte(word))
+            .collect::<Result<Vec<_>, _>>()?
+    } else { Vec::new() };
+    pcan_frame(timestamp.ok_or("PCAN timestamp missing")?, bus,
+        id.ok_or("PCAN CAN ID missing")?, direction.ok_or("PCAN direction missing")?,
+        frame_kind, payload, fd_flags, is_fd)
+}
 
 fn parse_vector_asc_line(line: &str) -> Result<Option<CanFrame>, String> {
     let normalized = line.to_ascii_lowercase();
@@ -715,6 +926,69 @@ mod tests {
         let parsed = read_trace(Cursor::new(out)).unwrap().frames.remove(0);
         assert_eq!(parsed.direction, Direction::Unknown);
         assert_eq!(parsed.timestamp_us, Some(20));
+    }
+
+    #[test]
+    fn pcan_legacy_versions_preserve_bus_timestamp_id_and_rtr() {
+        let old = ";$FILEVERSION=1.1\n;$STARTTIME=37704.5364870833\n\
+            1) 1059.9 Rx 0300 2 AA BB\n\
+            2) 1352.7 Tx 0100 3 RTR\n";
+        let one = load(old);
+        assert_eq!(one.format, TraceFormat::PcanTrc);
+        assert_eq!(one.frames.len(), 2);
+        assert_eq!(one.frames[0].timestamp_us, Some(1_059_900));
+        assert_eq!(one.frames[0].interface, "bus0");
+        assert_eq!(one.frames[0].data, vec![0xAA, 0xBB]);
+        assert_eq!(one.frames[1].direction, Direction::Transmitted);
+        assert_eq!(one.frames[1].kind, FrameKind::RemoteRequest { dlc: 3 });
+
+        let two = load(";$FILEVERSION=1.2\n1) 1298.945 2 Tx 00000400 2 00 00\n");
+        assert_eq!(two.frames[0].timestamp_us, Some(1_298_945));
+        assert_eq!(two.frames[0].interface, "bus1");
+        assert_eq!(two.frames[0].id, CanId::Extended(0x400));
+
+        let three = load(";$FILEVERSION=1.3\n1) 1298.945 2 Rx 0400 - 2 00 01\n");
+        assert_eq!(three.frames[0].interface, "bus1");
+        assert_eq!(three.frames[0].id, CanId::Standard(0x400));
+    }
+
+    #[test]
+    fn pcan_2_x_supports_can_fd_brs_esi_and_remote_requests() {
+        let v20 = ";$FILEVERSION=2.0\n;$COLUMNS=N,O,T,I,d,l,D\n\
+             1 1334.416 FB 00000500 Tx 12 01 02 03 04 05 06 07 08 09 0A 0B 0C\n\
+             2 1336.543 RR 0100 Rx 3\n";
+        let parsed = load(v20);
+        assert_eq!(parsed.frames.len(), 2);
+        assert_eq!(parsed.frames[0].timestamp_us, Some(1_334_416));
+        assert_eq!(parsed.frames[0].id, CanId::Extended(0x500));
+        assert_eq!(parsed.frames[0].direction, Direction::Transmitted);
+        assert!(parsed.frames[0].is_fd);
+        assert!(parsed.frames[0].fd_flags.bitrate_switch);
+        assert!(!parsed.frames[0].fd_flags.error_state_indicator);
+        assert_eq!(parsed.frames[0].data.len(), 12);
+        assert_eq!(parsed.frames[1].kind, FrameKind::RemoteRequest { dlc: 3 });
+
+        let v21 = ";$FILEVERSION=2.1\n;$COLUMNS=N,O,T,B,I,d,R,L,D\n\
+             1 1334.416 BI 2 0500 Rx - 9 01 02 03 04 05 06 07 08 09 0A 0B 0C\n\
+             2 1334.522 ER 2 - Rx - 5 04 00 02 00 00\n";
+        let parsed = load(v21);
+        assert_eq!(parsed.frames.len(), 1);
+        assert_eq!(parsed.frames[0].interface, "bus1");
+        assert_eq!(parsed.frames[0].id, CanId::Standard(0x500));
+        assert_eq!(parsed.frames[0].data.len(), 12);
+        assert!(parsed.frames[0].fd_flags.bitrate_switch);
+        assert!(parsed.frames[0].fd_flags.error_state_indicator);
+    }
+
+    #[test]
+    fn pcan_invalid_versions_and_length_mismatches_fail_explicitly() {
+        let bad_version = read_trace(Cursor::new(";$FILEVERSION=3.0\n")).unwrap_err();
+        assert!(bad_version.to_string().contains("unsupported PCAN TRC version"));
+        let bad_dlc = read_trace(Cursor::new(
+            ";$FILEVERSION=2.1\n;$COLUMNS=N,O,T,B,I,d,R,L,D\n\
+              1 1334.416 FD 1 0500 Rx - 9 01 02\n"
+        )).unwrap_err();
+        assert!(bad_dlc.to_string().contains("length 12"));
     }
 
     #[test]

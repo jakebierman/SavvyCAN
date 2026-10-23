@@ -43,6 +43,7 @@ default typed expression, and RTR requests are never formatted.
 | CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
 | CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
+| PEAK PCAN `.trc` (1.1/1.2/1.3/2.0/2.1) | Initial support: classic, CAN FD DLC mapping, RTR and Rx/Tx |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
@@ -52,7 +53,7 @@ default typed expression, and RTR requests are never formatted.
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
 | DBC J1939 PGN matching | Initial support; enabled by a DBC global protocol attribute; exact ID preferred |
 | GMLAN and other DBC protocol profiles | Not yet |
-| BLF, PCAP, Vector CAN FD ASC, PCAN and other source formats | Not yet |
+| BLF, PCAP, Vector CAN FD ASC and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
@@ -60,11 +61,15 @@ default typed expression, and RTR requests are never formatted.
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
-Microchip and CARBUS Analyzer V2/V3 text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
+Microchip, CARBUS Analyzer V2/V3 and PEAK PCAN TRC 1.1–2.1 text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
-and retains those values as unknown.
+and retains those values as unknown. PEAK PCAN event/status/error rows are
+skipped because the current CAN-frame model does not represent them. Extended
+J1939 records above 64 payload bytes cannot be imported before protocol
+reassembly is implemented; unsupported future PCAN TRC versions are rejected
+with an explicit error.
 
 The pure-Rust typed formatter supports integer/float byte order, signed values,
 text, individual bits, masks and shifts, arithmetic, units, fixed precision,
