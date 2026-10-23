@@ -48,7 +48,7 @@ default typed expression, and RTR requests are never formatted.
 | Vehicle Spy CSV | Initial support: quoted descriptions, ID width, direction, payload and sub-second timestamps |
 | Cabana CSV (`time,addr,bus,data`) | Initial support; preserves bus, decimal ID and timestamp with microsecond precision |
 | SocketCAN classic PCAP (linktype 227) | Initial import/export support: classic CAN, CAN FD, RTR, micro/nanosecond reads |
-| SocketCAN PCAPNG (linktype 227) | Initial import support: multiple interfaces, endian sections, timestamps and Rx/Tx flags |
+| SocketCAN PCAPNG (linktype 227) | Initial import/export: multiple interfaces, endian sections, timestamps and Rx/Tx flags |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
@@ -147,7 +147,7 @@ exactly. Neither DBC decoding nor the underlying frame bytes are changed.
 ## Export limitations
 
 Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log`, `.candump`,
-`.pcap`, `.stats.csv` or `.signals.csv`
+`.pcap`, `.pcapng`, `.stats.csv` or `.signals.csv`
 and click **Export trace**. The `.log`/`.candump` exporter supports classic
 CAN, CAN FD (including BRS/ESI flags), remote requests, interface identities
 and timestamps when present. Candump cannot encode Rx/Tx direction, and that
@@ -369,7 +369,9 @@ signed `if_tsoffset`, and Enhanced Packet Block inbound/outbound flags.
 CAN FD, classic CAN and RTR use the same validated packet representation as
 classic PCAP. Unknown metadata blocks are skipped; unknown linktypes, legacy
 Simple Packet Blocks (no timestamp), truncated records and unsupported packet
-sizes are explicitly rejected. Captures are imported read-only; writing
-`.pcapng` and multiple PCAPNG linktypes remain planned. A modern
+sizes are explicitly rejected. PCAPNG can also be exported to a **new** `.pcapng` file, preserving
+multiple CAN interfaces, Rx/Tx direction, FD/RTR and timestamps. Source frames
+without timestamps cannot round-trip and are rejected. Support for additional
+linktypes and timestamp-less Simple Packet Blocks remains planned. A modern
 [IETF PCAPNG draft](https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)
 was used to validate the format.

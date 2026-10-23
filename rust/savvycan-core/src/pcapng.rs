@@ -2,10 +2,11 @@
 //! Handles sections, per-interface timestamp resolutions and Enhanced
 //! Packet Blocks. Unsupported linktypes are rejected rather than decoded
 //! under a guessed packet layout.
-use crate::file_formats::{ImportError, ImportedTrace, TraceFormat};
-use crate::{Direction, CanFrame};
+use crate::file_formats::{ExportError, ImportError, ImportedTrace, TraceFormat};
+use crate::{Direction, CanFrame, FrameKind};
 use crate::pcap::parse_frame;
-use std::io::Read;
+use std::collections::HashMap;
+use std::io::{Read, Write};
 
 const SECTION_MAGIC: [u8; 4] = [0x0a, 0x0d, 0x0d, 0x0a];
 const MAX_BLOCK: usize = 16 * 1024 * 1024;
@@ -223,6 +224,103 @@ pub fn read_socketcan_pcapng<R: Read>(mut reader: R)
     Ok(ImportedTrace { format: TraceFormat::SocketCanPcapNg, frames })
 }
 
+
+/// Export PCAPNG with one Interface Description Block per source interface.
+/// Unlike classic PCAP, both bus and Rx/Tx direction can be preserved.
+/// Timestamps must be known; no placeholder values are fabricated.
+pub fn write_socketcan_pcapng<W: Write>(
+    mut writer: W, frames: &[CanFrame],
+) -> Result<(), ExportError> {
+    let mut interface_index: HashMap<&str, u32> = HashMap::new();
+    let mut interfaces: Vec<&str> = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        if frame.timestamp_us.is_none() {
+            return Err(ExportError::Unsupported {
+                index, reason: "SocketCAN PCAPNG export requires frame timestamps".into(),
+            });
+        }
+        if frame.interface.len() > u16::MAX as usize {
+            return Err(ExportError::Unsupported {
+                index, reason: "PCAPNG interface name is too long".into(),
+            });
+        }
+        if !interface_index.contains_key(frame.interface.as_str()) {
+            let next = u32::try_from(interfaces.len()).map_err(|_| ExportError::Unsupported {
+                index, reason: "too many PCAPNG interfaces".into(),
+            })?;
+            interface_index.insert(frame.interface.as_str(), next);
+            interfaces.push(frame.interface.as_str());
+        }
+    }
+
+    fn option(out: &mut Vec<u8>, code: u16, value: &[u8]) {
+        out.extend_from_slice(&code.to_le_bytes());
+        out.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        out.extend_from_slice(value);
+        while out.len() % 4 != 0 { out.push(0); }
+    }
+    fn block<W: Write>(
+        writer: &mut W, block_type: u32, content: &[u8],
+    ) -> Result<(), std::io::Error> {
+        let length = (content.len() + 12) as u32;
+        writer.write_all(&block_type.to_le_bytes())?;
+        writer.write_all(&length.to_le_bytes())?;
+        writer.write_all(content)?;
+        writer.write_all(&length.to_le_bytes())
+    }
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&0x1a2b3c4d_u32.to_le_bytes());
+    header.extend_from_slice(&1_u16.to_le_bytes());
+    header.extend_from_slice(&0_u16.to_le_bytes());
+    header.extend_from_slice(&(-1_i64).to_le_bytes());
+    block(&mut writer, 0x0a0d0d0a, &header)?;
+
+    for &name in &interfaces {
+        let mut body = Vec::new();
+        body.extend_from_slice(&227_u16.to_le_bytes());
+        body.extend_from_slice(&0_u16.to_le_bytes());
+        body.extend_from_slice(&72_u32.to_le_bytes());
+        option(&mut body, 2, name.as_bytes());
+        option(&mut body, 9, &[6]); // microseconds (10^-6)
+        option(&mut body, 0, &[]);
+        block(&mut writer, 1, &body)?;
+    }
+
+    for frame in frames {
+        let index = interface_index[frame.interface.as_str()];
+        let timestamp = frame.timestamp_us.expect("prevalidated");
+        let length = if frame.is_fd { 72_u32 } else { 16_u32 };
+        let mut body = Vec::with_capacity(20 + length as usize + 16);
+        body.extend_from_slice(&index.to_le_bytes());
+        body.extend_from_slice(&((timestamp >> 32) as u32).to_le_bytes());
+        body.extend_from_slice(&(timestamp as u32).to_le_bytes());
+        body.extend_from_slice(&length.to_le_bytes());
+        body.extend_from_slice(&length.to_le_bytes());
+        let mut wire = [0_u8; 72];
+        let mut id = frame.id.value();
+        if frame.id.is_extended() { id |= 0x8000_0000; }
+        if matches!(frame.kind, FrameKind::RemoteRequest { .. }) { id |= 0x4000_0000; }
+        wire[..4].copy_from_slice(&id.to_be_bytes());
+        wire[4] = frame.len() as u8;
+        if frame.is_fd {
+            wire[5] = u8::from(frame.fd_flags.bitrate_switch)
+                | (u8::from(frame.fd_flags.error_state_indicator) << 1);
+        }
+        wire[8..8 + frame.data.len()].copy_from_slice(&frame.data);
+        body.extend_from_slice(&wire[..length as usize]);
+        let direction = match frame.direction {
+            Direction::Received => 1_u32,
+            Direction::Transmitted => 2_u32,
+            Direction::Unknown => 0_u32,
+        };
+        if direction != 0 { option(&mut body, 2, &direction.to_le_bytes()); }
+        option(&mut body, 0, &[]);
+        block(&mut writer, 6, &body)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +402,44 @@ mod tests {
             assert_eq!(trace.frames[1].direction, Direction::Transmitted);
             assert_eq!(trace.frames[1].kind, FrameKind::Data);
         }
+    }
+
+
+    #[test]
+    fn pcapng_writer_round_trips_multiple_buses_direction_fd_and_rtr() {
+        use crate::{CanId, FdFlags};
+        let mut classic = CanFrame::new(
+            Some(123_456_000), "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![0xaa, 0xbb], false, FdFlags::default()
+        ).unwrap();
+        classic.direction = Direction::Received;
+        let mut fd = CanFrame::new(
+            Some(123_456_007), "can1", CanId::Extended(0x18ff50e5),
+            FrameKind::Data, vec![0x11; 64], true,
+            FdFlags { bitrate_switch: true, error_state_indicator: true }
+        ).unwrap();
+        fd.direction = Direction::Transmitted;
+        let rtr = CanFrame::new(
+            Some(123_456_012), "can0", CanId::Standard(0x456),
+            FrameKind::RemoteRequest { dlc: 8 }, vec![], false, FdFlags::default()
+        ).unwrap();
+        let original = [classic, fd, rtr];
+        let mut output = Vec::new();
+        write_socketcan_pcapng(&mut output, &original).unwrap();
+        let parsed = read_socketcan_pcapng(Cursor::new(output)).unwrap();
+        assert_eq!(parsed.frames, original);
+    }
+
+    #[test]
+    fn pcapng_writer_rejects_unknown_time_before_io() {
+        use crate::{CanId, FdFlags};
+        let frame = CanFrame::new(
+            None, "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![], false, FdFlags::default()
+        ).unwrap();
+        let mut output = Vec::new();
+        assert!(write_socketcan_pcapng(&mut output, &[frame]).is_err());
+        assert!(output.is_empty());
     }
 
     #[test]

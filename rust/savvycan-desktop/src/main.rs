@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap, write_socketcan_pcapng,
     analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
@@ -269,11 +269,14 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
     } else if lower.ends_with(".log") || lower.ends_with(".candump") {
         write_candump(&mut bytes, &state.frames)?;
         None
+    } else if lower.ends_with(".pcapng") {
+        write_socketcan_pcapng(&mut bytes, &state.frames)?;
+        None
     } else if lower.ends_with(".pcap") {
         write_socketcan_pcap(&mut bytes, &state.frames)?;
         None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .stats.csv or .signals.csv for export".into());
+        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .pcapng, .stats.csv or .signals.csv for export".into());
     };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;

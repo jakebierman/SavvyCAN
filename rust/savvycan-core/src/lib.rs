@@ -30,6 +30,7 @@ pub use dbc_stack::DbcStack;
 pub use signal_export::{write_decoded_csv, SignalExportError};
 pub use isotp::{describe_uds_like_payload, IsoTpAssembler, IsoTpError, IsoTpPacket};
 pub use pcap::write_socketcan_pcap;
+pub use pcapng::write_socketcan_pcapng;
 pub use trace_stats::{analyze_ids, write_id_stats_csv, IdStatistics};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
