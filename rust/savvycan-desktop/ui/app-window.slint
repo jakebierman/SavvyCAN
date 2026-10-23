@@ -36,6 +36,15 @@ export struct StatsRow {
     hz: string,
 }
 
+export struct BamRow {
+    timestamp: string,
+    channel: string,
+    source: string,
+    pgn: string,
+    length: string,
+    payload: string,
+}
+
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
     preferred-width: 1720px;
@@ -59,9 +68,14 @@ export component AppWindow inherits Window {
     in-out property <string> isotp-id: "S:7E8";
     in-out property <bool> show-isotp: false;
     in-out property <bool> show-stats: false;
+    in-out property <bool> show-bam: false;
+    in-out property <string> bam-interface: "";
+    in-out property <string> bam-source: "";
     in property <string> isotp-summary: "No ISO-TP inspection performed";
     in property <[IsoTpRow]> isotp-rows: [];
     in property <[StatsRow]> stats-rows: [];
+    in property <[BamRow]> bam-rows: [];
+    in property <string> bam-summary: "";
     in property <string> stats-summary: "";
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <string> page-text: "No trace loaded";
@@ -76,6 +90,7 @@ export component AppWindow inherits Window {
     callback next-page();
     callback inspect-isotp(string, string);
     callback open-statistics();
+    callback inspect-bam(string, string);
 
     VerticalBox {
         padding: 16px;
@@ -123,7 +138,7 @@ export component AppWindow inherits Window {
             }
             LineEdit {
                 text <=> root.export-path;
-                placeholder-text: "New export (.crtd, .csv, .log, .pcap, .pcapng, .stats.csv, .signals.csv)";
+                placeholder-text: "New export (.crtd, .csv, .log, .pcap, .stats.csv, .signals.csv)";
             }
             Button {
                 text: "Export trace";
@@ -238,15 +253,38 @@ export component AppWindow inherits Window {
                 clicked => {
                     root.show-isotp = false;
                     root.show-stats = false;
+                    root.show-bam = false;
                 }
             }
         }
+
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.bam-interface;
+                placeholder-text: "J1939 BAM interface (blank = all)";
+            }
+            LineEdit {
+                text <=> root.bam-source;
+                placeholder-text: "J1939 source address hex (e.g. 80; blank = all)";
+            }
+            Button {
+                text: "Inspect J1939 BAM";
+                clicked => { root.inspect-bam(root.bam-interface, root.bam-source); }
+            }
+        }
+
         if root.show-isotp : Text {
             text: root.isotp-summary;
             color: #9cdbc1;
             font-size: 13px;
         }
 
+        if root.show-bam : Text {
+            text: root.bam-summary;
+            color: #9cdbc1;
+            font-size: 13px;
+        }
         if root.show-stats : Text {
             text: root.stats-summary;
             color: #9cdbc1;
@@ -259,7 +297,7 @@ export component AppWindow inherits Window {
             font-size: 13px;
         }
 
-        if !root.show-isotp && !root.show-stats : Rectangle {
+        if !root.show-isotp && !root.show-stats && !root.show-bam : Rectangle {
             height: 34px;
             background: #243247;
             HorizontalBox {
@@ -314,7 +352,23 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.show-isotp && !root.show-stats : ListView {
+
+        if root.show-bam : Rectangle {
+            height: 34px;
+            background: #243247;
+            HorizontalBox {
+                padding-left: 8px;
+                spacing: 8px;
+                Text { text: "End timestamp"; width: 158px; color: #f2f6ff; }
+                Text { text: "Interface"; width: 110px; color: #f2f6ff; }
+                Text { text: "Source ECU"; width: 100px; color: #f2f6ff; }
+                Text { text: "Target PGN"; width: 110px; color: #f2f6ff; }
+                Text { text: "Bytes"; width: 65px; color: #f2f6ff; }
+                Text { text: "Reassembled J1939 broadcast data (first 64 bytes)"; color: #f2f6ff; }
+            }
+        }
+
+        if !root.show-isotp && !root.show-stats && !root.show-bam : ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
                 width: parent.width;
@@ -354,6 +408,25 @@ export component AppWindow inherits Window {
             }
         }
 
+
+
+        if root.show-bam : ListView {
+            for message[i] in root.bam-rows: Rectangle {
+                height: 30px;
+                width: parent.width;
+                background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
+                HorizontalBox {
+                    padding-left: 8px;
+                    spacing: 8px;
+                    Text { text: message.timestamp; width: 158px; color: #b9d2ed; }
+                    Text { text: message.channel; width: 110px; color: #c5d7eb; }
+                    Text { text: message.source; width: 100px; color: #68d9d5; }
+                    Text { text: message.pgn; width: 110px; color: #e3b86b; }
+                    Text { text: message.length; width: 65px; color: #f2f6ff; }
+                    Text { text: message.payload; color: #9cdbc1; }
+                }
+            }
+        }
 
         if root.show-stats : ListView {
             for stat[i] in root.stats-rows: Rectangle {

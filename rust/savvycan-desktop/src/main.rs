@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap, write_socketcan_pcapng,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
     analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
@@ -174,6 +174,60 @@ fn traffic_statistics_rows(frames: &[CanFrame], limit: usize) -> (Vec<StatsRow>,
     (rows, all)
 }
 
+
+fn passive_bam_rows(
+    state: &ViewerState, interface: &str, source: Option<u8>, limit: usize,
+) -> (Vec<BamRow>, String) {
+    let mut assembler = J1939BamAssembler::new();
+    let mut rows = VecDeque::new();
+    let mut reconstructed = 0usize;
+    let mut invalid = 0usize;
+    let mut examples = Vec::new();
+    for (index, frame) in state.frames.iter().enumerate() {
+        if !interface.is_empty() && frame.interface != interface { continue; }
+        if let Some(source) = source {
+            if !matches!(frame.id, savvycan_core::CanId::Extended(raw) if (raw & 0xff) as u8 == source) {
+                continue;
+            }
+        }
+        match assembler.push(frame) {
+            Ok(Some(packet)) => {
+                reconstructed += 1;
+                let preview = packet.payload.iter().take(64)
+                    .map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+                let payload = if packet.payload.len() > 64 {
+                    format!("{preview} … ({} more bytes)", packet.payload.len() - 64)
+                } else { preview };
+                if rows.len() == limit { rows.pop_front(); }
+                let timestamp = packet.end_timestamp_us
+                    .map(|us| format!("{}.{:06}", us / 1_000_000, us % 1_000_000))
+                    .unwrap_or_else(|| "—".into());
+                rows.push_back(BamRow {
+                    timestamp: timestamp.into(),
+                    channel: packet.interface.into(),
+                    source: format!("{:02X}", packet.source).into(),
+                    pgn: format!("{:05X}", packet.pgn).into(),
+                    length: packet.payload.len().to_string().into(),
+                    payload: payload.into(),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                invalid += 1;
+                if examples.len() < 3 { examples.push(format!("frame {}: {error}", index + 1)); }
+            }
+        }
+    }
+    let trailing = if examples.is_empty() { String::new() }
+        else { format!(" • examples: {}", examples.join("; ")) };
+    let summary = format!(
+        "Passive J1939 BAM • {reconstructed} messages • {invalid} invalid/orphan packets • \
+         {} incomplete sessions • latest {} shown{trailing}",
+        assembler.pending_count(), rows.len()
+    );
+    (rows.into_iter().collect(), summary)
+}
+
 fn passive_isotp_rows(
     state: &ViewerState, filter: &TraceFilter, limit: usize,
 ) -> (Vec<IsoTpRow>, String) {
@@ -269,14 +323,11 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
     } else if lower.ends_with(".log") || lower.ends_with(".candump") {
         write_candump(&mut bytes, &state.frames)?;
         None
-    } else if lower.ends_with(".pcapng") {
-        write_socketcan_pcapng(&mut bytes, &state.frames)?;
-        None
     } else if lower.ends_with(".pcap") {
         write_socketcan_pcap(&mut bytes, &state.frames)?;
         None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .pcapng, .stats.csv or .signals.csv for export".into());
+        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .stats.csv or .signals.csv for export".into());
     };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -301,6 +352,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.set_isotp_rows(ModelRc::from(Rc::clone(&isotp_model)));
     let stats_model = Rc::new(VecModel::<StatsRow>::from(Vec::new()));
     ui.set_stats_rows(ModelRc::from(Rc::clone(&stats_model)));
+    let bam_model = Rc::new(VecModel::<BamRow>::from(Vec::new()));
+    ui.set_bam_rows(ModelRc::from(Rc::clone(&bam_model)));
     ui.set_frames(ModelRc::from(Rc::clone(&model)));
     let state = Rc::new(RefCell::new(ViewerState::default()));
     let filter = Rc::new(RefCell::new(TraceFilter::default()));
@@ -330,6 +383,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         *state_for_open.borrow_mut() = new_state;
                         ui.set_show_isotp(false);
                         ui.set_show_stats(false);
+                        ui.set_show_bam(false);
                         ui.set_status_text(message.into());
                     }
                     Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
@@ -455,6 +509,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui.set_isotp_summary(summary.clone().into());
                     ui.set_show_isotp(true);
                     ui.set_show_stats(false);
+                        ui.set_show_bam(false);
                     ui.set_status_text(summary.into());
                 }
                 Ok(_) => ui.set_status_text(
@@ -489,6 +544,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_stats_summary(message.clone().into());
             ui.set_show_isotp(false);
             ui.set_show_stats(true);
+            ui.set_show_bam(false);
             ui.set_status_text(message.into());
         }
     });
@@ -542,6 +598,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         model_for_start.clear();
                         ui.set_show_isotp(false);
                         ui.set_show_stats(false);
+                        ui.set_show_bam(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }
@@ -557,6 +614,47 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+
+
+    let weak = ui.as_weak();
+    let state_for_bam = Rc::clone(&state);
+    let model_for_bam = Rc::clone(&bam_model);
+    ui.on_inspect_bam(move |interface, source_text| {
+        if let Some(ui) = weak.upgrade() {
+            let source = if source_text.trim().is_empty() {
+                None
+            } else {
+                let text = source_text.trim();
+                let stripped = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"))
+                    .unwrap_or(text);
+                match u8::from_str_radix(stripped, 16) {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        ui.set_status_text(
+                            "BAM source address must be one hexadecimal byte (e.g. 80).".into()
+                        );
+                        return;
+                    }
+                }
+            };
+            let state = state_for_bam.borrow();
+            if state.live {
+                ui.set_status_text("Stop live capture before inspecting J1939 BAM.".into());
+                return;
+            }
+            if state.frames.is_empty() {
+                ui.set_status_text("Load a trace before inspecting J1939 BAM.".into());
+                return;
+            }
+            let (rows, summary) = passive_bam_rows(&state, interface.trim(), source, 2_000);
+            model_for_bam.set_vec(rows);
+            ui.set_bam_summary(summary.clone().into());
+            ui.set_show_isotp(false);
+            ui.set_show_stats(false);
+            ui.set_show_bam(true);
+            ui.set_status_text(summary.into());
+        }
+    });
 
     // Explicit, preconfigured serial listener. The decoder does not send
     // CAN frames, device configuration or SLCAN open-channel commands.
@@ -613,6 +711,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     model_for_slcan.clear();
                     ui.set_show_isotp(false);
                     ui.set_show_stats(false);
+                        ui.set_show_bam(false);
                     ui.set_page_text("Live: latest 2,000 matching rows".into());
                     ui.set_status_text(
                         "Opening passive SLCAN serial • preconfigured/auto-streaming adapter required".into()
