@@ -1,5 +1,5 @@
 //! Non-destructive CAN-frame filtering for offline and live viewers.
-use crate::{CanFrame, CanId};
+use crate::{CanFrame, CanId, FrameKind};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,8 @@ pub struct TraceFilter {
     pub id: Option<IdFilter>,
     pub from_us: Option<u64>,
     pub through_us: Option<u64>,
+    /// Optional contiguous byte pattern; None elements match any byte.
+    pub payload: Option<Vec<Option<u8>>>,
 }
 
 fn hex(raw: &str) -> Result<u32, FilterError> {
@@ -125,6 +127,36 @@ fn parse_time(raw: &str) -> Result<Option<u64>, FilterError> {
         .map(Some).ok_or_else(|| FilterError("timestamp exceeds u64 microsecond range".into()))
 }
 
+/// Parse a payload subsequence as byte pairs, with optional ?? wildcard bytes.
+/// Whitespace, commas and underscores are ignored: "22 F1 ??", "22F1??".
+fn parse_payload(raw: &str) -> Result<Option<Vec<Option<u8>>>, FilterError> {
+    let stripped: String = raw.chars()
+        .filter(|character| !character.is_ascii_whitespace() && *character != ','
+            && *character != '_')
+        .collect();
+    if stripped.is_empty() { return Ok(None); }
+    if stripped.len() % 2 != 0 {
+        return Err(FilterError("payload filter requires complete hex byte pairs (or ??)".into()));
+    }
+    if stripped.len() > 128 {
+        return Err(FilterError("payload pattern exceeds 64 CAN FD bytes".into()));
+    }
+    let bytes = stripped.as_bytes();
+    let mut pattern = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        if pair == b"??" {
+            pattern.push(None);
+        } else {
+            let pair = std::str::from_utf8(pair)
+                .map_err(|_| FilterError("payload pattern must contain ASCII hex or ??".into()))?;
+            let byte = u8::from_str_radix(pair, 16)
+                .map_err(|_| FilterError(format!("invalid payload hex byte '{pair}'")))?;
+            pattern.push(Some(byte));
+        }
+    }
+    Ok(Some(pattern))
+}
+
 impl TraceFilter {
     /// Blank fields match all; IDs are hexadecimal. S: and X: force 11/29-bit
     /// IDs; ranges, masked IDs and PGN:xxxx J1939 groups are also accepted.
@@ -137,6 +169,15 @@ impl TraceFilter {
     pub fn parse_with_time(interface: &str, raw_id: &str, from: &str, through: &str)
         -> Result<Self, FilterError>
     {
+        Self::parse_with_time_and_payload(interface, raw_id, from, through, "")
+    }
+
+    /// Hex byte subsequences are matched against data frames only. Each
+    /// wildcard ?? consumes exactly one payload byte.
+    pub fn parse_with_time_and_payload(
+        interface: &str, raw_id: &str, from: &str, through: &str, payload: &str,
+    ) -> Result<Self, FilterError> {
+        let payload = parse_payload(payload)?;
         let from_us = parse_time(from)?;
         let through_us = parse_time(through)?;
         if from_us.zip(through_us).is_some_and(|(start, end)| start > end) {
@@ -152,6 +193,7 @@ impl TraceFilter {
             id: parse_id_filter(raw_id)?,
             from_us,
             through_us,
+            payload,
         })
     }
 
@@ -161,6 +203,13 @@ impl TraceFilter {
                 self.from_us.is_none_or(|start| timestamp >= start)
                 && self.through_us.is_none_or(|end| timestamp <= end)))
             && self.interface.as_ref().is_none_or(|iface| &frame.interface == iface)
+            && self.payload.as_ref().is_none_or(|pattern| {
+                matches!(frame.kind, FrameKind::Data) &&
+                    frame.data.windows(pattern.len()).any(|window| {
+                        pattern.iter().zip(window).all(|(target, actual)|
+                            target.is_none_or(|byte| byte == *actual))
+                    })
+            })
             && self.id.is_none_or(|query| match query {
                 IdFilter::Exact(id) => frame.id == id,
                 IdFilter::Range { first, last } =>
@@ -174,7 +223,7 @@ impl TraceFilter {
             })
     }
 
-    pub fn is_empty(&self) -> bool { self.interface.is_none() && self.id.is_none() && self.from_us.is_none() && self.through_us.is_none() }
+    pub fn is_empty(&self) -> bool { self.interface.is_none() && self.id.is_none() && self.from_us.is_none() && self.through_us.is_none() && self.payload.is_none() }
 }
 
 #[cfg(test)]
@@ -283,5 +332,46 @@ mod timestamp_filter_tests {
         assert!(TraceFilter::parse_with_time("", "", "5.000001", "5").is_err());
         assert_eq!(parse_time("0.000010").unwrap(), Some(10));
         assert_eq!(parse_time("10").unwrap(), Some(10_000_000));
+    }
+}
+
+#[cfg(test)]
+mod payload_filter_tests {
+    use super::*;
+    use crate::{FdFlags, FrameKind};
+
+    fn frame(kind: FrameKind, bytes: Vec<u8>, is_fd: bool) -> CanFrame {
+        CanFrame::new(Some(10), "can0", CanId::Standard(0x123),
+            kind, bytes, is_fd, FdFlags::default()).unwrap()
+    }
+
+    #[test]
+    fn matching_subsequence_and_wildcards_respect_length_and_frame_kind() {
+        let filter = TraceFilter::parse_with_time_and_payload(
+            "can0", "S:123", "", "", "22 f1 ?? 90").unwrap();
+        assert!(filter.matches(&frame(FrameKind::Data,
+            vec![0x00, 0x22, 0xf1, 0xa0, 0x90, 0xff], false)));
+        assert!(!filter.matches(&frame(FrameKind::Data,
+            vec![0x22, 0xf1, 0x90], false)));
+        assert!(!filter.matches(&frame(FrameKind::Data,
+            vec![0x22, 0xf1, 0x80, 0x91], false)));
+        assert!(!filter.matches(&frame(FrameKind::RemoteRequest { dlc: 4 },
+            vec![], false)));
+        let exact = TraceFilter::parse_with_time_and_payload("", "", "", "", "22F1A090")
+            .unwrap();
+        assert!(exact.matches(&frame(FrameKind::Data,
+            vec![0x00, 0x22, 0xf1, 0xa0, 0x90, 0xff], true)));
+        assert!(!exact.is_empty());
+    }
+
+    #[test]
+    fn byte_pattern_parser_rejects_invalid_and_unbounded_patterns() {
+        for raw in ["A", "?0", "0?", "GG", "00-11", "00 XX", "0??"] {
+            assert!(parse_payload(raw).is_err(), "{raw}");
+        }
+        assert!(parse_payload(&"aa".repeat(65)).is_err());
+        assert_eq!(parse_payload("  ").unwrap(), None);
+        assert_eq!(parse_payload("01,??_fF").unwrap(),
+            Some(vec![Some(1), None, Some(255)]));
     }
 }

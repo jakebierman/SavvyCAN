@@ -478,10 +478,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_for_filter = Rc::clone(&state);
     let model_for_filter = Rc::clone(&model);
     let filter_for_apply = Rc::clone(&filter);
-    ui.on_apply_filter(move |interface, id, from, through| {
+    ui.on_apply_filter(move |interface, id, from, through, payload| {
         if let Some(ui) = weak.upgrade() {
-            match TraceFilter::parse_with_time(interface.as_str(), id.as_str(),
-                from.as_str(), through.as_str()) {
+            match TraceFilter::parse_with_time_and_payload(interface.as_str(), id.as_str(),
+                from.as_str(), through.as_str(), payload.as_str()) {
                 Ok(new_filter) => {
                     let mut state = state_for_filter.borrow_mut();
                     state.page_offset = 0;

@@ -64,6 +64,7 @@ export component AppWindow inherits Window {
     in-out property <string> filter-id: "";
     in-out property <string> filter-from: "";
     in-out property <string> filter-through: "";
+    in-out property <string> filter-payload: "";
     in-out property <string> isotp-interface: "";
     in-out property <string> isotp-id: "S:7E8";
     in-out property <bool> show-isotp: false;
@@ -90,7 +91,7 @@ export component AppWindow inherits Window {
     callback stop-live();
     callback start-slcan(string, string, string, string, string, string);
     callback start-gvret-serial(string, string, string, string, string);
-    callback apply-filter(string, string, string, string);
+    callback apply-filter(string, string, string, string, string);
     callback previous-page();
     callback next-page();
     callback inspect-isotp(string, string);
@@ -219,10 +220,14 @@ export component AppWindow inherits Window {
                 text <=> root.filter-through;
                 placeholder-text: "Through time (seconds)";
             }
+            LineEdit {
+                text <=> root.filter-payload;
+                placeholder-text: "Payload contains hex bytes (22 F1 ?? 90)";
+            }
             Button {
                 text: "Apply filter";
                 clicked => { root.apply-filter(root.filter-interface, root.filter-id,
-                    root.filter-from, root.filter-through); }
+                    root.filter-from, root.filter-through, root.filter-payload); }
             }
         }
 
