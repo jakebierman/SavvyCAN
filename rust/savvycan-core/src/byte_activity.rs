@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use crate::{CanFrame, CanId, FrameKind};
+use crate::{CanFrame, CanId, FrameKind, TraceFilter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ByteActivity {
@@ -37,7 +37,8 @@ impl Default for Group {
     }
 }
 
-pub fn analyze_byte_activity(frames: &[CanFrame]) -> Vec<ByteActivity> {
+/// Analyze borrowed frames without duplicating the capture in memory.
+fn analyze_from<'a>(frames: impl Iterator<Item = &'a CanFrame>) -> Vec<ByteActivity> {
     let mut groups: HashMap<(String, CanId), Group> = HashMap::new();
     for frame in frames {
         if !matches!(frame.kind, FrameKind::Data) { continue; }
@@ -78,6 +79,18 @@ pub fn analyze_byte_activity(frames: &[CanFrame]) -> Vec<ByteActivity> {
     result
 }
 
+pub fn analyze_byte_activity(frames: &[CanFrame]) -> Vec<ByteActivity> {
+    analyze_from(frames.iter())
+}
+
+/// Apply the same non-destructive query as the trace viewer, without cloning
+/// large CAN payload buffers. A matching RTR frame still supplies no bytes.
+pub fn analyze_byte_activity_matching(
+    frames: &[CanFrame], filter: &TraceFilter,
+) -> Vec<ByteActivity> {
+    analyze_from(frames.iter().filter(|frame| filter.matches(frame)))
+}
+
 fn csv_field(raw: &str) -> String {
     let safe = if raw.trim_start().chars().next().is_some_and(
         |c| matches!(c, '=' | '+' | '-' | '@')
@@ -90,7 +103,20 @@ fn csv_field(raw: &str) -> String {
 pub fn write_byte_activity_csv<W: Write>(
     mut writer: W, frames: &[CanFrame],
 ) -> Result<usize, io::Error> {
-    let rows = analyze_byte_activity(frames);
+    write_byte_activity_rows(&mut writer, analyze_byte_activity(frames))
+}
+
+/// Export selected interface/CAN-ID/time/payload records without cloning all
+/// matching frames. A header is written even when nothing matches.
+pub fn write_byte_activity_csv_matching<W: Write>(
+    mut writer: W, frames: &[CanFrame], filter: &TraceFilter,
+) -> Result<usize, io::Error> {
+    write_byte_activity_rows(&mut writer, analyze_byte_activity_matching(frames, filter))
+}
+
+fn write_byte_activity_rows<W: Write>(
+    mut writer: W, rows: Vec<ByteActivity>,
+) -> Result<usize, io::Error> {
     writeln!(writer,
         "interface,id,extended,byte_index,samples,distinct_values,changes,bit_flips,last_value_hex"
     )?;
@@ -148,6 +174,23 @@ mod tests {
         let rows = analyze_byte_activity(&frames);
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.samples == 1));
+    }
+
+    #[test]
+    fn borrowed_filter_and_csv_match_the_full_capture_equivalent() {
+        let frames = vec![
+            frame("can0", CanId::Standard(0x123), vec![0, 1], false),
+            frame("can0", CanId::Standard(0x456), vec![2, 3], false),
+            frame("can0", CanId::Standard(0x123), vec![1, 1], false),
+        ];
+        let query = TraceFilter::parse("", "S:123").unwrap();
+        let matching = analyze_byte_activity_matching(&frames, &query);
+        assert_eq!(matching.len(), 2);
+        assert_eq!(matching[0].changes, 1);
+        let mut out = Vec::new();
+        let count = write_byte_activity_csv_matching(&mut out, &frames, &query).unwrap();
+        assert_eq!(count, 2);
+        assert!(!String::from_utf8(out).unwrap().contains("456"));
     }
 
     #[test]

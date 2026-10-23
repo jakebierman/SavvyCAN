@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -658,9 +658,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_status_text("Load a trace before inspecting byte activity.".into());
             return;
         }
-        let selected: Vec<CanFrame> = state.frames.iter()
-            .filter(|frame| selector.matches(frame)).cloned().collect();
-        let mut analyzed = analyze_byte_activity(&selected);
+        let mut analyzed = analyze_byte_activity_matching(&state.frames, &selector);
         let all = analyzed.len();
         analyzed.sort_by(|a, b| b.bit_flips.cmp(&a.bit_flips)
             .then_with(|| b.changes.cmp(&a.changes))

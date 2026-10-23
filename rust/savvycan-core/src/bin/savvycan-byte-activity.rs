@@ -1,5 +1,5 @@
 //! Read-only command-line byte-activity analysis for CAN captures.
-use savvycan_core::{read_trace, write_byte_activity_csv, TraceFilter};
+use savvycan_core::{read_trace, write_byte_activity_csv_matching, TraceFilter};
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufReader};
@@ -21,11 +21,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     if args.next().is_some() { return Err(HELP.into()); }
     let filter = TraceFilter::parse(&interface, &id)?;
     let imported = read_trace(BufReader::new(File::open(path)?))?;
-    let selected = imported.frames.into_iter()
-        .filter(|frame| filter.matches(frame)).collect::<Vec<_>>();
-    let rows = write_byte_activity_csv(io::stdout().lock(), &selected)?;
-    eprintln!("Wrote {rows} interface/CAN-ID/byte activity rows from {} frames.",
-        selected.len());
+    let matched_count = imported.frames.iter().filter(|frame| filter.matches(frame)).count();
+    let rows = write_byte_activity_csv_matching(
+        io::stdout().lock(), &imported.frames, &filter)?;
+    eprintln!("Wrote {rows} interface/CAN-ID/byte activity rows from {matched_count} frames.");
     Ok(())
 }
 
