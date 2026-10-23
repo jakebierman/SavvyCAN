@@ -7,18 +7,21 @@ export struct FrameRow {
     format: string,
     length: string,
     payload: string,
+    message-name: string,
+    decoded-values: string,
 }
 
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
-    preferred-width: 1180px;
-    preferred-height: 720px;
+    preferred-width: 1480px;
+    preferred-height: 760px;
     background: #101722;
 
     in-out property <string> file-path: "";
+    in-out property <string> dbc-path: "";
     in property <string> status-text: "Enter a candump log path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
-    callback open-trace(string);
+    callback open-trace(string, string);
 
     VerticalBox {
         padding: 16px;
@@ -32,7 +35,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "Rust / Slint — offline CAN trace viewer";
+            text: "Rust / Slint — CAN trace and DBC decoder";
             color: #8da4bf;
             font-size: 14px;
         }
@@ -41,11 +44,15 @@ export component AppWindow inherits Window {
             spacing: 8px;
             LineEdit {
                 text <=> root.file-path;
-                placeholder-text: "Enter the path to a candump .log file";
+                placeholder-text: "Path to candump .log file";
+            }
+            LineEdit {
+                text <=> root.dbc-path;
+                placeholder-text: "Optional .dbc file";
             }
             Button {
                 text: "Open trace";
-                clicked => { root.open-trace(root.file-path); }
+                clicked => { root.open-trace(root.file-path, root.dbc-path); }
             }
         }
 
@@ -61,12 +68,14 @@ export component AppWindow inherits Window {
             HorizontalBox {
                 padding-left: 8px;
                 spacing: 8px;
-                Text { text: "Timestamp"; width: 165px; color: #f2f6ff; }
-                Text { text: "Interface"; width: 105px; color: #f2f6ff; }
-                Text { text: "CAN ID"; width: 120px; color: #f2f6ff; }
-                Text { text: "Format"; width: 95px; color: #f2f6ff; }
-                Text { text: "DLC"; width: 55px; color: #f2f6ff; }
-                Text { text: "Payload"; color: #f2f6ff; }
+                Text { text: "Timestamp"; width: 158px; color: #f2f6ff; }
+                Text { text: "Interface"; width: 85px; color: #f2f6ff; }
+                Text { text: "CAN ID"; width: 100px; color: #f2f6ff; }
+                Text { text: "Format"; width: 75px; color: #f2f6ff; }
+                Text { text: "DLC"; width: 42px; color: #f2f6ff; }
+                Text { text: "Payload"; width: 235px; color: #f2f6ff; }
+                Text { text: "Message"; width: 165px; color: #f2f6ff; }
+                Text { text: "Decoded signals"; color: #f2f6ff; }
             }
         }
 
@@ -78,18 +87,20 @@ export component AppWindow inherits Window {
                 HorizontalBox {
                     padding-left: 8px;
                     spacing: 8px;
-                    Text { text: frame.timestamp; width: 165px; color: #b9d2ed; }
-                    Text { text: frame.channel; width: 105px; color: #c5d7eb; }
-                    Text { text: frame.can-id; width: 120px; color: #68d9d5; }
-                    Text { text: frame.format; width: 95px; color: #d5e1ee; }
-                    Text { text: frame.length; width: 55px; color: #d5e1ee; }
-                    Text { text: frame.payload; color: #e5edf5; }
+                    Text { text: frame.timestamp; width: 158px; color: #b9d2ed; }
+                    Text { text: frame.channel; width: 85px; color: #c5d7eb; }
+                    Text { text: frame.can-id; width: 100px; color: #68d9d5; }
+                    Text { text: frame.format; width: 75px; color: #d5e1ee; }
+                    Text { text: frame.length; width: 42px; color: #d5e1ee; }
+                    Text { text: frame.payload; width: 235px; color: #e5edf5; }
+                    Text { text: frame.message-name; width: 165px; color: #e3b86b; }
+                    Text { text: frame.decoded-values; color: #9cdbc1; }
                 }
             }
         }
 
         Text {
-            text: "Offline and read-only • No CAN hardware or frame transmission in this preview";
+            text: "Offline and read-only • DBC decoding never transmits or writes to a CAN device";
             color: #8195aa;
             font-size: 12px;
         }

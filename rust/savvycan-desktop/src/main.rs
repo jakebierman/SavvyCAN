@@ -2,12 +2,23 @@ use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 
-use savvycan_core::{read_candump, summarize, CanFrame, FrameKind};
+use savvycan_core::{
+    read_candump, summarize, CanFrame, DbcDatabase, DecodedSignal, FrameKind,
+};
 use slint::{ModelRc, VecModel};
 
 slint::include_modules!();
 
-fn row(frame: CanFrame) -> FrameRow {
+fn signal_text(signal: DecodedSignal) -> String {
+    let value = signal.text.unwrap_or_else(|| signal.value.to_string());
+    if signal.unit.is_empty() {
+        format!("{}={value}", signal.name)
+    } else {
+        format!("{}={value} {}", signal.name, signal.unit)
+    }
+}
+
+fn row(frame: CanFrame, dbc: Option<&DbcDatabase>) -> FrameRow {
     let timestamp = frame.timestamp_us.map(|us| {
         format!("{}.{:06}", us / 1_000_000, us % 1_000_000)
     }).unwrap_or_else(|| "—".into());
@@ -27,6 +38,14 @@ fn row(frame: CanFrame) -> FrameRow {
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(" ");
+    let (message_name, decoded_values) = match dbc.map(|db| db.decode(&frame)) {
+        Some(Ok(Some(decoded))) => (
+            decoded.name,
+            decoded.signals.into_iter().map(signal_text).collect::<Vec<_>>().join("  |  "),
+        ),
+        Some(Err(error)) => (String::new(), format!("Decode error: {error}")),
+        _ => (String::new(), String::new()),
+    };
     let length = frame.len();
     FrameRow {
         timestamp: timestamp.into(),
@@ -35,25 +54,34 @@ fn row(frame: CanFrame) -> FrameRow {
         format: format.into(),
         length: length.to_string().into(),
         payload: payload.into(),
+        message_name: message_name.into(),
+        decoded_values: decoded_values.into(),
     }
 }
 
-fn open_trace(ui: &AppWindow, path: &str) -> Result<(), Box<dyn Error>> {
+fn open_trace(ui: &AppWindow, path: &str, dbc_path: &str) -> Result<(), Box<dyn Error>> {
+    let dbc = if dbc_path.trim().is_empty() {
+        None
+    } else {
+        Some(DbcDatabase::parse(&std::fs::read_to_string(dbc_path)?)?)
+    };
     let reader = BufReader::new(File::open(path)?);
     let frames = read_candump(reader)?;
     let summary = summarize(&frames);
 
-    // Bounded UI population for the initial preview. Streaming/filtering follows.
     const ROW_LIMIT: usize = 25_000;
-    let rows = frames.into_iter().take(ROW_LIMIT).map(row).collect::<Vec<_>>();
+    let rows = frames.into_iter().take(ROW_LIMIT)
+        .map(|frame| row(frame, dbc.as_ref()))
+        .collect::<Vec<_>>();
     ui.set_frames(ModelRc::new(VecModel::from(rows)));
     ui.set_status_text(format!(
-        "{} frames • {} distinct interface/ID pairs • {} classic • {} FD • {} RTR{}",
+        "{} frames • {} distinct interface/ID pairs • {} classic • {} FD • {} RTR{}{}",
         summary.frames,
         summary.unique_identifiers,
         summary.classic_frames,
         summary.fd_frames,
         summary.remote_requests,
+        dbc.as_ref().map(|db| format!(" • DBC: {} messages", db.messages.len())).unwrap_or_default(),
         if summary.frames > ROW_LIMIT { " • first 25,000 displayed" } else { "" },
     ).into());
     Ok(())
@@ -62,19 +90,21 @@ fn open_trace(ui: &AppWindow, path: &str) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let ui = AppWindow::new()?;
     let weak = ui.as_weak();
-    ui.on_open_trace(move |path| {
+    ui.on_open_trace(move |path, dbc_path| {
         if let Some(ui) = weak.upgrade() {
             if path.trim().is_empty() {
                 ui.set_status_text("Enter a log file path first.".into());
-            } else if let Err(error) = open_trace(&ui, path.as_str()) {
+            } else if let Err(error) = open_trace(&ui, path.as_str(), dbc_path.as_str()) {
                 ui.set_status_text(format!("Could not import trace: {error}").into());
             }
         }
     });
 
     if let Some(path) = std::env::args().nth(1) {
+        let dbc = std::env::args().nth(2).unwrap_or_default();
         ui.set_file_path(path.clone().into());
-        if let Err(error) = open_trace(&ui, &path) {
+        ui.set_dbc_path(dbc.clone().into());
+        if let Err(error) = open_trace(&ui, &path, &dbc) {
             ui.set_status_text(format!("Could not import trace: {error}").into());
         }
     }
