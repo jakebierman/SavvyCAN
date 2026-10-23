@@ -47,7 +47,7 @@ default typed expression, and RTR requests are never formatted.
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
-| Offline trace statistics, first 25,000 rows and interface/ID filtering | Done |
+| Offline trace statistics, 1,000-row paging and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
@@ -163,10 +163,13 @@ frames and flags, subject to candump's Rx/Tx-direction limitation described abov
 ## Non-destructive trace filtering
 
 The interface and CAN ID filters apply to the displayed rows, without changing
-the loaded frames or export data. Leave either input blank to match all.
+the loaded frames or export data. Export includes every retained frame, not
+just the current filter or page. Leave either input blank to match all.
 CAN IDs use hexadecimal; `S:123` and `X:123` distinguish 11/29-bit IDs even
-when the numeric value is identical. Offline display shows the first 25,000
-matching frames. During live capture, it shows the latest 2,000 matching frames.
+when the numeric value is identical. Offline viewing pages through all matching frames in 1,000-row increments,
+without deleting or reducing the imported data. During live capture, the
+viewer shows the latest 2,000 matching frames. After stopping capture,
+the retained frames can be browsed using the offline page controls.
 
 ## CI Linux preview binary
 

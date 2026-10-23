@@ -34,6 +34,7 @@ struct ViewerState {
     context: DecodeContext,
     live: bool,
     history_dropped: usize,
+    page_offset: usize,
 }
 
 fn decode_context(dbc_path: &str, format_spec: &str, rules_path: &str)
@@ -124,12 +125,20 @@ fn visible_rows(state: &ViewerState, filter: &TraceFilter, limit: usize) -> Vec<
         rows
     } else {
         state.frames.iter().filter(|frame| filter.matches(frame))
-            .take(limit).map(|frame| row(frame, &state.context)).collect()
+            .skip(state.page_offset).take(limit)
+            .map(|frame| row(frame, &state.context)).collect()
     }
 }
 
 fn filtered_count(state: &ViewerState, filter: &TraceFilter) -> usize {
     state.frames.iter().filter(|frame| filter.matches(frame)).count()
+}
+
+fn offline_page_text(state: &ViewerState, filter: &TraceFilter, page_size: usize) -> String {
+    let matching = filtered_count(state, filter);
+    let first = if matching == 0 { 0 } else { state.page_offset + 1 };
+    let last = matching.min(state.page_offset.saturating_add(page_size));
+    format!("Rows {first}–{last} of {matching} matching • {} total frames", state.frames.len())
 }
 
 fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
@@ -149,7 +158,7 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
         if context.formatter.is_some() { " • default formatter" } else { "" },
         if context.rules.is_some() { " • per-ID rules" } else { "" },
     );
-    Ok((ViewerState { frames, context, live: false, history_dropped: 0 }, message))
+    Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0 }, message))
 }
 
 fn export_trace(path: &str, frames: &[CanFrame]) -> Result<(), Box<dyn Error>> {
@@ -179,7 +188,7 @@ fn stop_capture(flag: &Rc<RefCell<Option<Arc<AtomicBool>>>>) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    const OFFLINE_ROWS: usize = 25_000;
+    const OFFLINE_ROWS: usize = 1_000;
     const LIVE_ROWS: usize = 2_000;
     const LIVE_HISTORY_LIMIT: usize = 100_000;
 
@@ -208,12 +217,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Ok((new_state, message)) => {
                         stop_capture(&flag_for_open);
                         *receiver_for_open.borrow_mut() = None;
-                        let rows = visible_rows(&new_state, &filter_for_open.borrow(), OFFLINE_ROWS);
-                        model_for_open.set_vec(rows);
-                        let truncated = new_state.frames.len() > OFFLINE_ROWS;
+                        let filter = filter_for_open.borrow();
+                        model_for_open.set_vec(visible_rows(&new_state, &filter, OFFLINE_ROWS));
+                        ui.set_page_text(offline_page_text(&new_state, &filter, OFFLINE_ROWS).into());
                         *state_for_open.borrow_mut() = new_state;
-                        ui.set_status_text(format!("{message}{}",
-                            if truncated { " • first 25,000 displayed" } else { "" }).into());
+                        ui.set_status_text(message.into());
                     }
                     Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
                 }
@@ -247,16 +255,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(ui) = weak.upgrade() {
             match TraceFilter::parse(interface.as_str(), id.as_str()) {
                 Ok(new_filter) => {
-                    let state = state_for_filter.borrow();
+                    let mut state = state_for_filter.borrow_mut();
+                    state.page_offset = 0;
                     let limit = if state.live { LIVE_ROWS } else { OFFLINE_ROWS };
                     let count = filtered_count(&state, &new_filter);
                     model_for_filter.set_vec(visible_rows(&state, &new_filter, limit));
+                    ui.set_page_text(if state.live {
+                        "Live: latest 2,000 matching rows".into()
+                    } else { offline_page_text(&state, &new_filter, OFFLINE_ROWS).into() });
                     *filter_for_apply.borrow_mut() = new_filter;
                     ui.set_status_text(format!("{count} matching frames • {} shown • filter active",
                         model_for_filter.row_count()).into());
                 }
                 Err(error) => ui.set_status_text(format!("Invalid trace filter: {error}").into()),
             }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state_for_previous = Rc::clone(&state);
+    let filter_for_previous = Rc::clone(&filter);
+    let model_for_previous = Rc::clone(&model);
+    ui.on_previous_page(move || {
+        if let Some(ui) = weak.upgrade() {
+            let mut state = state_for_previous.borrow_mut();
+            if state.live {
+                ui.set_status_text("Paging is available after stopping live capture.".into());
+                return;
+            }
+            state.page_offset = state.page_offset.saturating_sub(OFFLINE_ROWS);
+            let filter = filter_for_previous.borrow();
+            model_for_previous.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+            ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state_for_next = Rc::clone(&state);
+    let filter_for_next = Rc::clone(&filter);
+    let model_for_next = Rc::clone(&model);
+    ui.on_next_page(move || {
+        if let Some(ui) = weak.upgrade() {
+            let mut state = state_for_next.borrow_mut();
+            if state.live {
+                ui.set_status_text("Paging is available after stopping live capture.".into());
+                return;
+            }
+            let filter = filter_for_next.borrow();
+            let next = state.page_offset.saturating_add(OFFLINE_ROWS);
+            if next < filtered_count(&state, &filter) {
+                state.page_offset = next;
+            }
+            model_for_next.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+            ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
         }
     });
 
@@ -304,8 +355,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         *receiver_for_start.borrow_mut() = Some(rx);
                         *state_for_start.borrow_mut() = ViewerState {
                             frames: Vec::new(), context, live: true, history_dropped: 0,
+                            page_offset: 0,
                         };
                         model_for_start.clear();
+                        ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }
                     Err(error) => ui.set_status_text(format!("Cannot start capture: {error}").into()),
@@ -324,13 +377,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let flag_for_stop = Rc::clone(&capture_flag);
     let receiver_for_stop = Rc::clone(&receiver);
     let state_for_stop = Rc::clone(&state);
+    let model_for_stop = Rc::clone(&model);
+    let filter_for_stop = Rc::clone(&filter);
     ui.on_stop_live(move || {
         stop_capture(&flag_for_stop);
         *receiver_for_stop.borrow_mut() = None;
-        state_for_stop.borrow_mut().live = false;
+        let mut state = state_for_stop.borrow_mut();
+        state.live = false;
+        state.page_offset = 0;
         if let Some(ui) = weak.upgrade() {
+            let filter = filter_for_stop.borrow();
+            model_for_stop.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+            ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
             ui.set_status_text(format!("Capture stopped • {} frames retained",
-                state_for_stop.borrow().frames.len()).into());
+                state.frames.len()).into());
         }
     });
 
@@ -405,6 +465,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match open_trace(&path, &dbc, &format_spec, &rules_path) {
             Ok((new_state, message)) => {
                 model.set_vec(visible_rows(&new_state, &filter.borrow(), OFFLINE_ROWS));
+                ui.set_page_text(offline_page_text(&new_state, &filter.borrow(), OFFLINE_ROWS).into());
                 *state.borrow_mut() = new_state;
                 ui.set_status_text(message.into());
             }
