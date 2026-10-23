@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_socketcan_pcap,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
     CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -166,7 +166,9 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
     if path.trim().is_empty() { return Err("Enter an export path".into()); }
     let mut bytes = Vec::new();
     let lower = path.to_ascii_lowercase();
-    let signal_count = if lower.ends_with(".signals.csv") {
+    let signal_count = if lower.ends_with(".stats.csv") {
+        Some(write_id_stats_csv(&mut bytes, &state.frames)?)
+    } else if lower.ends_with(".signals.csv") {
         let dbc = state.context.dbc.as_ref()
             .ok_or("Load at least one DBC before exporting decoded signals")?;
         Some(write_decoded_csv(&mut bytes, &state.frames, dbc)?)
@@ -183,7 +185,7 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
         write_socketcan_pcap(&mut bytes, &state.frames)?;
         None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, or .signals.csv for export".into());
+        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .stats.csv or .signals.csv for export".into());
     };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -245,9 +247,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(ui) = weak.upgrade() {
             let state = state_for_export.borrow();
             match export_trace(path.as_str(), &state) {
-                Ok(Some(signals)) => ui.set_status_text(
-                    format!("Exported {signals} decoded DBC signal values to {path}").into()
-                ),
+                Ok(Some(rows)) => {
+                    let kind = if path.to_ascii_lowercase().ends_with(".stats.csv") {
+                        "CAN interface/ID statistics groups"
+                    } else { "decoded DBC signal values" };
+                    ui.set_status_text(format!("Exported {rows} {kind} to {path}").into());
+                },
                 Ok(None) => {
                     let candump = path.to_ascii_lowercase().ends_with(".log")
                         || path.to_ascii_lowercase().ends_with(".candump");

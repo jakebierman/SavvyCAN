@@ -52,6 +52,7 @@ default typed expression, and RTR requests are never formatted.
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
+| Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
 | Offline trace statistics, 1,000-row paging and interface/ID filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
@@ -141,7 +142,7 @@ exactly. Neither DBC decoding nor the underlying frame bytes are changed.
 ## Export limitations
 
 Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log`, `.candump`,
-`.pcap` or `.signals.csv`
+`.pcap`, `.stats.csv` or `.signals.csv`
 and click **Export trace**. The `.log`/`.candump` exporter supports classic
 CAN, CAN FD (including BRS/ESI flags), remote requests, interface identities
 and timestamps when present. Candump cannot encode Rx/Tx direction, and that
@@ -281,3 +282,13 @@ as seconds/microseconds rather than being rebased to the first frame.
 As this CSV does not explicitly identify CAN FD frames or their flags,
 payloads beyond eight bytes are rejected until a verified format extension
 is available. Direction is unknown rather than assumed received.
+
+## Offline CAN-ID traffic statistics
+
+Export to a **new** `.stats.csv` file to get one row per exact interface/ID
+combination, including counts of classic/FD/RTR messages, payload bytes,
+earliest/latest microsecond timestamps, minimum/maximum/mean interarrival
+intervals and estimated frequency. The analysis sorts timestamps within each
+ID before calculating intervals. Missing or insufficient timestamps leave
+frequency cells blank instead of inventing measurements. This export uses all
+retained frames; it does not apply the currently displayed filter or page.

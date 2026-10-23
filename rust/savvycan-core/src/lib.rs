@@ -14,6 +14,7 @@ pub mod dbc_stack;
 pub mod signal_export;
 pub mod isotp;
 pub mod pcap;
+pub mod trace_stats;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
@@ -28,6 +29,7 @@ pub use dbc_stack::DbcStack;
 pub use signal_export::{write_decoded_csv, SignalExportError};
 pub use isotp::{IsoTpAssembler, IsoTpError, IsoTpPacket};
 pub use pcap::write_socketcan_pcap;
+pub use trace_stats::{analyze_ids, write_id_stats_csv, IdStatistics};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};
