@@ -88,8 +88,16 @@ export component AppWindow inherits Window {
     in-out property <string> plot-interface: "";
     in-out property <string> plot-id: "S:123";
     in-out property <string> plot-signal: "RPM";
+    in-out property <string> plot-window-from: "";
+    in-out property <string> plot-window-through: "";
+    in-out property <bool> plot-independent-scales: true;
     in-out property <string> replay-speed: "1";
     in property <string> plot-commands: "";
+    in property <string> plot-commands-b: "";
+    in property <string> plot-commands-c: "";
+    in property <string> plot-legend-a: "";
+    in property <string> plot-legend-b: "";
+    in property <string> plot-legend-c: "";
     in property <string> plot-summary: "";
     in-out property <string> byte-interface: "";
     in-out property <string> byte-id: "";
@@ -123,7 +131,7 @@ export component AppWindow inherits Window {
     callback open-statistics();
     callback inspect-bam(string, string);
     callback inspect-bytes(string, string);
-    callback plot-signal-series(string, string, string);
+    callback plot-signal-series(string, string, string, string, string, bool);
     callback play-replay(string);
     callback pause-replay();
     callback step-replay();
@@ -371,15 +379,47 @@ export component AppWindow inherits Window {
             }
             LineEdit {
                 text <=> root.plot-id;
-                placeholder-text: "Exact plot CAN ID (S:123)";
+                placeholder-text: "Exact CAN ID (S:123)";
             }
             LineEdit {
                 text <=> root.plot-signal;
-                placeholder-text: "DBC signal name (e.g. RPM)";
+                placeholder-text: "Signals: RPM, Boost, EGT (up to 3)";
             }
             Button {
-                text: "Plot DBC signal";
-                clicked => { root.plot-signal-series(root.plot-interface, root.plot-id, root.plot-signal); }
+                text: "Plot DBC signals";
+                clicked => {
+                    root.plot-signal-series(root.plot-interface, root.plot-id,
+                        root.plot-signal, root.plot-window-from,
+                        root.plot-window-through, root.plot-independent-scales);
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "Plot window relative to first sample:";
+                color: #8da4bf;
+                font-size: 13px;
+            }
+            LineEdit {
+                text <=> root.plot-window-from;
+                placeholder-text: "From (s or frames)";
+                width: 180px;
+            }
+            LineEdit {
+                text <=> root.plot-window-through;
+                placeholder-text: "Through (s or frames)";
+                width: 180px;
+            }
+            CheckBox {
+                text: "Independent Y scales";
+                checked <=> root.plot-independent-scales;
+            }
+            Text {
+                text: "Blank range = full trace; replot to apply";
+                color: #8195aa;
+                font-size: 12px;
             }
         }
 
@@ -568,21 +608,67 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.show-plot : HorizontalBox {
+            spacing: 18px;
+            Text { text: root.plot-legend-a; color: #65d8cf; font-size: 13px; }
+            if root.plot-legend-b != "" : Text {
+                text: root.plot-legend-b; color: #e3b86b; font-size: 13px;
+            }
+            if root.plot-legend-c != "" : Text {
+                text: root.plot-legend-c; color: #d6a8ef; font-size: 13px;
+            }
+        }
+
         if root.show-plot : Rectangle {
-            height: 340px;
+            height: 320px;
             width: parent.width;
             background: #151f2d;
             border-color: #35445b;
             border-width: 1px;
             border-radius: 7px;
+            Rectangle {
+                x: 20px; y: 20px;
+                width: parent.width - 40px;
+                height: 1px;
+                background: #35445b;
+            }
+            Rectangle {
+                x: 20px; y: parent.height / 2;
+                width: parent.width - 40px;
+                height: 1px;
+                background: #35445b;
+            }
+            Rectangle {
+                x: 20px; y: parent.height - 20px;
+                width: parent.width - 40px;
+                height: 1px;
+                background: #35445b;
+            }
             Path {
-                x: 20px;
-                y: 20px;
+                x: 20px; y: 20px;
                 width: parent.width - 40px;
                 height: parent.height - 40px;
                 commands: root.plot-commands;
                 fill: transparent;
                 stroke: #65d8cf;
+                stroke-width: 2px;
+            }
+            Path {
+                x: 20px; y: 20px;
+                width: parent.width - 40px;
+                height: parent.height - 40px;
+                commands: root.plot-commands-b;
+                fill: transparent;
+                stroke: #e3b86b;
+                stroke-width: 2px;
+            }
+            Path {
+                x: 20px; y: 20px;
+                width: parent.width - 40px;
+                height: parent.height - 40px;
+                commands: root.plot-commands-c;
+                fill: transparent;
+                stroke: #d6a8ef;
                 stroke-width: 2px;
             }
         }

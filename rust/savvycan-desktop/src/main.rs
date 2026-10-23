@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path_on_axes, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -383,6 +383,48 @@ fn stop_capture(flag: &Rc<RefCell<Option<Arc<AtomicBool>>>>) {
     if let Some(running) = flag.borrow_mut().take() {
         running.store(false, Ordering::Relaxed);
     }
+}
+
+/// Interpret optional graph bounds relative to the earliest selected DBC
+/// observation. Timestamped plots use seconds; timestamp-less plots use
+/// integer frame offsets. This deliberately avoids combining the two units.
+fn plot_window_bounds(
+    first: u64, last: u64, axis: HorizontalAxis,
+    from: &str, through: &str,
+) -> Result<(u64, u64), String> {
+    let offset = |raw: &str| -> Result<Option<u64>, String> {
+        if raw.trim().is_empty() { return Ok(None); }
+        let parsed = raw.trim().parse::<f64>()
+            .map_err(|_| "Plot window must contain numeric bounds.".to_owned())?;
+        if !parsed.is_finite() || parsed < 0.0 {
+            return Err("Plot window bounds must be non-negative and finite.".into());
+        }
+        let scale = if axis == HorizontalAxis::TimestampMicroseconds {
+            1_000_000.0
+        } else { 1.0 };
+        let scaled = parsed * scale;
+        if !scaled.is_finite() || scaled >= u64::MAX as f64 {
+            return Err("Plot window bound is too large.".into());
+        }
+        if axis == HorizontalAxis::FrameIndex && parsed.fract() != 0.0 {
+            return Err("Frame-index plot bounds must be whole numbers.".into());
+        }
+        Ok(Some(scaled.round() as u64))
+    };
+    let start = match offset(from)? {
+        Some(offset) => first.checked_add(offset)
+            .ok_or("Plot start overflows trace time.".to_owned())?,
+        None => first,
+    };
+    let end = match offset(through)? {
+        Some(offset) => first.checked_add(offset)
+            .ok_or("Plot end overflows trace time.".to_owned())?,
+        None => last.max(first.saturating_add(1)),
+    };
+    if start >= end {
+        return Err("Plot window end must be greater than start.".into());
+    }
+    Ok((start, end))
 }
 
 type ImportResult = Result<(ViewerState, String), String>;
@@ -826,11 +868,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_status_text(message.into());
     });
 
-    // Passive DBC signal trend for one exact CAN ID. The plotted series
-    // is derived from retained history, with no hardware reads or writes.
+    // Up to three passive decoded DBC trends, all on the same exact CAN ID
+    // and shared X axis. Independent Y scales keep different engineering
+    // units interpretable without suggesting they share a physical scale.
     let weak = ui.as_weak();
     let state_for_plot = Rc::clone(&state);
-    ui.on_plot_signal_series(move |interface, id, name| {
+    ui.on_plot_signal_series(move |interface, id, names, from, through, independent| {
         let Some(ui) = weak.upgrade() else { return; };
         let selector = match TraceFilter::parse(interface.as_str(), id.as_str()) {
             Ok(filter) if matches!(filter.id, Some(IdFilter::Exact(_))) => filter,
@@ -843,56 +886,129 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
         };
+        let selected_names = names.as_str().split(|c: char| c == ',' || c == ';')
+            .map(str::trim).filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        if selected_names.is_empty() || selected_names.len() > 3 {
+            ui.set_status_text("Enter one to three DBC signal names, separated by commas.".into());
+            return;
+        }
+        if selected_names.iter().enumerate().any(|(index, name)|
+            selected_names[..index].contains(name))
+        {
+            ui.set_status_text("Enter each plotted signal name only once.".into());
+            return;
+        }
         let state = state_for_plot.borrow();
         if state.live {
-            ui.set_status_text("Stop live capture before plotting a DBC signal.".into());
+            ui.set_status_text("Stop live capture before plotting DBC signals.".into());
             return;
         }
         let Some(dbc) = state.context.dbc.as_ref() else {
             ui.set_status_text("Load a DBC before plotting decoded signals.".into());
             return;
         };
-        let series = match extract_numeric_series(&state.frames, dbc, &selector, name.as_str()) {
-            Ok(series) => series,
+        let mut series = Vec::with_capacity(selected_names.len());
+        for selected in selected_names {
+            match extract_numeric_series(&state.frames, dbc, &selector, selected) {
+                Ok(found) => series.push(found),
+                Err(error) => {
+                    ui.set_status_text(error.into());
+                    return;
+                }
+            }
+        }
+        let axis = series[0].axis;
+        if series.iter().any(|value| value.axis != axis) {
+            ui.set_status_text("Selected signals have incompatible time bases; choose signals with consistent timestamps.".into());
+            return;
+        }
+        if !independent && series.iter().any(|value| value.unit != series[0].unit) {
+            ui.set_status_text("Shared Y scale requires matching signal units; enable independent Y scales.".into());
+            return;
+        }
+        let first = series.iter().flat_map(|s| s.points.iter().map(|p| p.0))
+            .min().expect("decoded series is nonempty");
+        let last = series.iter().flat_map(|s| s.points.iter().map(|p| p.0))
+            .max().expect("decoded series is nonempty");
+        let (x_start, x_end) = match plot_window_bounds(first, last, axis,
+            from.as_str(), through.as_str()) {
+            Ok(window) => window,
             Err(error) => {
                 ui.set_status_text(error.into());
                 return;
             }
         };
-        let plot = match plot_path(&series.points, 800) {
-            Ok(plot) => plot,
-            Err(error) => {
-                ui.set_status_text(error.into());
-                return;
-            }
-        };
-        let axis = match series.axis {
-            HorizontalAxis::TimestampMicroseconds => {
-                format!("time {:.6}–{:.6} s",
-                    plot.first_x as f64 / 1_000_000.0,
-                    plot.last_x as f64 / 1_000_000.0)
-            }
-            HorizontalAxis::FrameIndex =>
-                format!("frame index {}–{}", plot.first_x, plot.last_x),
-        };
-        let unit = if series.unit.is_empty() { "".to_owned() }
-            else { format!(" {}", series.unit) };
-        let message = format!(
-            "{} • {} points ({} drawn) • min {:.3}{unit} / max {:.3}{unit} • {axis}{}",
-            series.signal, plot.source_points, plot.plotted_points,
-            plot.min_y, plot.max_y,
-            if series.decode_errors > 0 {
-                format!(" • {} undecodable frames ignored", series.decode_errors)
-            } else { String::new() }
+        let ranges = series.iter().map(|signal| {
+            signal.points.iter().filter(|(x, _)| *x >= x_start && *x <= x_end)
+                .fold(None, |acc: Option<(f64, f64, usize)>, (_, value)| {
+                    Some(match acc {
+                        Some((min, max, count)) => (min.min(*value), max.max(*value), count + 1),
+                        None => (*value, *value, 1),
+                    })
+                })
+        }).collect::<Vec<_>>();
+        if ranges.iter().all(Option::is_none) {
+            ui.set_status_text("No decoded signal samples inside this plot window.".into());
+            return;
+        }
+        let shared_min = ranges.iter().flatten().map(|(min, _, _)| *min)
+            .fold(f64::INFINITY, f64::min);
+        let shared_max = ranges.iter().flatten().map(|(_, max, _)| *max)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let mut commands = [String::new(), String::new(), String::new()];
+        let mut legends = [String::new(), String::new(), String::new()];
+        let mut all_samples = 0usize;
+        for (index, signal) in series.iter().enumerate() {
+            let Some((minimum, maximum, count)) = ranges[index] else {
+                legends[index] = format!("{}: no samples in window", signal.signal);
+                continue;
+            };
+            let (lower, upper) = if independent {
+                (minimum, maximum)
+            } else { (shared_min, shared_max) };
+            let plot = match plot_path_on_axes(&signal.points, 800,
+                x_start, x_end, lower, upper) {
+                Ok(plot) => plot,
+                Err(error) => {
+                    ui.set_status_text(error.into());
+                    return;
+                }
+            };
+            commands[index] = plot.commands;
+            all_samples += count;
+            let units = if signal.unit.is_empty() { String::new() }
+                else { format!(" {}", signal.unit) };
+            legends[index] = format!("{}: {:.3}–{:.3}{} ({} samples)",
+                signal.signal, minimum, maximum, units, count);
+        }
+        let divisor = if axis == HorizontalAxis::TimestampMicroseconds {
+            1_000_000.0
+        } else { 1.0 };
+        let unit = if axis == HorizontalAxis::TimestampMicroseconds {
+            "seconds"
+        } else { "frame offsets" };
+        let label = format!(
+            "{} signals • {} visible samples • {:.3}–{:.3} {} since first sample • {} Y scales",
+            series.len(), all_samples,
+            x_start.saturating_sub(first) as f64 / divisor,
+            x_end.saturating_sub(first) as f64 / divisor,
+            unit, if independent { "independent" } else { "shared" }
         );
-        ui.set_plot_commands(plot.commands.into());
-        ui.set_plot_summary(message.clone().into());
+        ui.set_plot_commands(commands[0].clone().into());
+        ui.set_plot_commands_b(commands[1].clone().into());
+        ui.set_plot_commands_c(commands[2].clone().into());
+        ui.set_plot_legend_a(legends[0].clone().into());
+        ui.set_plot_legend_b(legends[1].clone().into());
+        ui.set_plot_legend_c(legends[2].clone().into());
+        ui.set_plot_summary(label.clone().into());
         ui.set_show_isotp(false);
         ui.set_show_stats(false);
         ui.set_show_bam(false);
         ui.set_show_bytes(false);
         ui.set_show_plot(true);
-        ui.set_status_text(message.into());
+        ui.set_status_text(label.into());
     });
 
     let weak = ui.as_weak();
@@ -1348,6 +1464,23 @@ mod export_view_tests {
         let none = TraceFilter::parse_with_time("", "S:777", "", "").unwrap();
         assert!(selected_export_frames(&frames, Some(&none)).is_empty());
     }
+    #[test]
+    fn relative_plot_windows_use_the_correct_time_base() {
+        assert_eq!(plot_window_bounds(5_000_000, 10_000_000,
+            HorizontalAxis::TimestampMicroseconds, "1.25", "3").unwrap(),
+            (6_250_000, 8_000_000));
+        assert_eq!(plot_window_bounds(50, 80,
+            HorizontalAxis::FrameIndex, "2", "20").unwrap(), (52, 70));
+        assert_eq!(plot_window_bounds(50, 80,
+            HorizontalAxis::FrameIndex, "", "").unwrap(), (50, 80));
+        assert!(plot_window_bounds(50, 80,
+            HorizontalAxis::FrameIndex, "2.5", "10").is_err());
+        assert!(plot_window_bounds(50, 80,
+            HorizontalAxis::FrameIndex, "30", "10").is_err());
+        assert!(plot_window_bounds(50, 80,
+            HorizontalAxis::FrameIndex, "NaN", "").is_err());
+    }
+
     #[test]
     fn offline_replay_displays_only_revealed_frames_and_restores_full_view() {
         let frames = vec![frame(1_000_000, 0x123, 0x11),

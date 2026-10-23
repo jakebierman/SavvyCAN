@@ -62,7 +62,7 @@ default typed expression, and RTR requests are never formatted.
 | Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
 | Per-interface/CAN-ID/byte `.bytes.csv` activity export | Done; sample counts, distinct values, adjacent value changes and bit flips in capture order |
 | Slint on-screen byte activity inspector | Done; optional interface/ID selection and top 256 byte positions ranked by bit flips |
-| Slint passive DBC signal trend plot | Initial single-signal view with timestamp/index axis, numeric range and peak-preserving downsampling |
+| Slint passive DBC signal trend plot | Up to 3 decoded signals with time-aligned X, optional relative time/frame window, independent or compatible-unit shared Y scales, spike-preserving downsampling |
 | Slint offline replay of imported traces | Initial read-only Play/Pause/Step/Stop viewer, filtered-frame playback at 0.1–100x; no hardware transmissions |
 | Read-only `savvycan-byte-activity` CLI | Done; CSV to stdout for offline scripting, with optional interface/ID selector |
 | Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
@@ -83,11 +83,11 @@ default typed expression, and RTR requests are never formatted.
 | SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |
 | Native open/save dialogs (trace, DBC, rules, export) | Initial desktop support; selecting an export path never overwrites an existing file |
 | GVRET device handshake/activation and TCP, QtSerialBus equivalents, MQTT | Not yet |
-| Advanced graphing (multi-series, zoom), hardware playback/transmit, scripting, OBD, active UDS, CANopen, AI | Not yet |
+| Advanced graphing (interactive zoom/pan, >3 series), hardware playback/transmit, scripting, OBD, active UDS, CANopen, AI | Not yet |
 
 Exports can optionally apply the current interface/ID/time/payload filter using **Only matching**. This exports every retained matching frame, including frames outside the displayed 1,000-row page; it does not change the underlying capture. When no rows match, the exporter reports an error without creating an output file. The default is a complete, unfiltered export.
 
-The read-only DBC signal trend plot accepts an exact CAN ID, an optional interface, and one DBC signal name. It uses real timestamps when all selected decoded observations have them; otherwise it switches the entire horizontal axis to frame indices. The plot is limited to 800 drawn samples using min/max bucketing to preserve short spikes, and the full decoded history remains unchanged. Multiplexed signals only contribute readings when decoded on their active branch. This initial plot has no interactive zoom, multi-series overlay or real-time updates yet.
+The read-only DBC signal trend plot accepts an exact CAN ID, an optional interface, and **one to three comma-separated DBC signal names**. All lines use the same horizontal coordinates, real timestamps when every selected signal has them, or frame indices when signals agree on the fallback time base. Mixing incompatible time bases is explicitly rejected. The default independent Y scale gives each signal its own visible min/max range; a shared Y scale is available when all selected signals use the same DBC units. A relative **From/Through** interval limits the visible region (seconds for timestamped captures; whole-frame offsets otherwise). Leave either field blank for the trace's natural extent. Every line is reduced to at most 800 samples using min/max bucketing to preserve brief peaks, without altering the stored data. Multiplexed signals contribute readings only on their active branch. Mouse/touch zoom and drag-to-pan, more than three series, and real-time graph updates are not yet implemented.
 
 Offline replay uses the current trace filter and presents the most recent 1,000 revealed matching frames. **Play** follows source timestamps when all matched frames provide them, otherwise it uses a consistent 10 ms/frame timeline; speeds from 0.1x to 100x are supported. **Pause** and **Step +1** let you inspect individual frames; **Stop / Full trace** restores the paged trace browser. Offline replay is a viewer feature only: it never sends frames to an adapter or vehicle network.
 
