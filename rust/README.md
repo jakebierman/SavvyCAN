@@ -46,7 +46,7 @@ default typed expression, and RTR requests are never formatted.
 | PEAK PCAN `.trc` (1.1/1.2/1.3/2.0/2.1) | Initial support: classic, CAN FD DLC mapping, RTR and Rx/Tx |
 | IXXAT MiniLog quoted CSV | Initial support, compatible with legacy SavvyCAN writer (Std/Ext ID and time of day) |
 | Vehicle Spy CSV | Initial support: quoted descriptions, ID width, direction, payload and sub-second timestamps |
-| SocketCAN classic PCAP (linktype 227) | Initial support: classic CAN, CAN FD, RTR, micro/nanosecond file timestamps |
+| SocketCAN classic PCAP (linktype 227) | Initial import/export support: classic CAN, CAN FD, RTR, micro/nanosecond reads |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
@@ -139,8 +139,8 @@ exactly. Neither DBC decoding nor the underlying frame bytes are changed.
 
 ## Export limitations
 
-Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log`, `.candump`
-or `.signals.csv`
+Select an output path ending in `.crtd`, `.crt`, `.csv`, `.log`, `.candump`,
+`.pcap` or `.signals.csv`
 and click **Export trace**. The `.log`/`.candump` exporter supports classic
 CAN, CAN FD (including BRS/ESI flags), remote requests, interface identities
 and timestamps when present. Candump cannot encode Rx/Tx direction, and that
@@ -264,6 +264,10 @@ Classic PCAP files with linktype 227 are auto-detected and decoded without
 a libpcap runtime. Both file byte orders and microsecond/nanosecond PCAP
 timestamp variants are accepted; CAN-ID flags use network byte order.
 Classic CAN, CAN FD (BRS/ESI), RTR and capture timestamps are represented.
+A `.pcap` export produces classic microsecond-precision PCAP, requires a timestamp
+on every frame, and refuses multiple interfaces instead of silently merging
+independent buses. PCAP timestamps are interpreted as epoch-based by external
+viewers even when the source trace used a relative clock.
 PCAP has no standard per-frame interface or Rx/Tx field for this linktype,
 so imports default to `bus0` and direction unknown. Truncated records,
 error frames, unexpected linktypes and pcapng are rejected explicitly.

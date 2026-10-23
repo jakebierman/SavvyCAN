@@ -1,8 +1,8 @@
 //! Classic PCAP LINKTYPE_CAN_SOCKETCAN (227) import. No libpcap runtime needed.
 //! pcapng and Linux cooked captures are separate formats, rejected explicitly.
 use crate::{CanFrame, CanId, Direction, FdFlags, FrameKind};
-use crate::file_formats::{ImportError, ImportedTrace, TraceFormat};
-use std::io::{self, Read};
+use crate::file_formats::{ExportError, ImportError, ImportedTrace, TraceFormat};
+use std::io::{Read, Write};
 
 pub fn is_pcap_magic(buffer: &[u8]) -> bool {
     if buffer.len() < 4 { return false; }
@@ -131,6 +131,64 @@ pub fn read_socketcan_pcap<R: Read>(mut reader: R) -> Result<ImportedTrace, Impo
     Ok(ImportedTrace { format: TraceFormat::SocketCanPcap, frames })
 }
 
+
+/// Write classic little-endian PCAP containing DLT_CAN_SOCKETCAN frames.
+/// PCAP requires timestamps; interface and direction cannot be represented.
+/// Multiple interfaces are rejected so packets from independent buses are
+/// never merged without explicit user selection.
+pub fn write_socketcan_pcap<W: Write>(
+    mut writer: W, frames: &[CanFrame],
+) -> Result<(), ExportError> {
+    let iface = frames.first().map(|frame| frame.interface.as_str());
+    for (index, frame) in frames.iter().enumerate() {
+        if iface != Some(frame.interface.as_str()) {
+            return Err(ExportError::Unsupported {
+                index, reason: "SocketCAN PCAP cannot represent multiple interfaces".into(),
+            });
+        }
+        let seconds = frame.timestamp_us.ok_or_else(|| ExportError::Unsupported {
+            index, reason: "SocketCAN PCAP requires timestamps".into(),
+        })? / 1_000_000;
+        if seconds > u64::from(u32::MAX) {
+            return Err(ExportError::Unsupported {
+                index, reason: "PCAP timestamp seconds exceed u32 range".into(),
+            });
+        }
+    }
+    writer.write_all(&[0xd4, 0xc3, 0xb2, 0xa1])?;
+    writer.write_all(&2_u16.to_le_bytes())?;
+    writer.write_all(&4_u16.to_le_bytes())?;
+    writer.write_all(&[0u8; 8])?;
+    writer.write_all(&72_u32.to_le_bytes())?;
+    writer.write_all(&227_u32.to_le_bytes())?;
+
+    for frame in frames {
+        let us = frame.timestamp_us.expect("validated above");
+        let sec = (us / 1_000_000) as u32;
+        writer.write_all(&sec.to_le_bytes())?;
+        writer.write_all(&((us % 1_000_000) as u32).to_le_bytes())?;
+        let length = if frame.is_fd { 72_u32 } else { 16_u32 };
+        writer.write_all(&length.to_le_bytes())?;
+        writer.write_all(&length.to_le_bytes())?;
+
+        let mut wire = [0_u8; 72];
+        let mut id = frame.id.value();
+        if frame.id.is_extended() { id |= 0x8000_0000; }
+        if matches!(frame.kind, FrameKind::RemoteRequest { .. }) {
+            id |= 0x4000_0000;
+        }
+        wire[..4].copy_from_slice(&id.to_be_bytes());
+        wire[4] = frame.len() as u8;
+        if frame.is_fd {
+            wire[5] = u8::from(frame.fd_flags.bitrate_switch)
+                | (u8::from(frame.fd_flags.error_state_indicator) << 1);
+        }
+        wire[8..8 + frame.data.len()].copy_from_slice(&frame.data);
+        writer.write_all(&wire[..length as usize])?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +226,42 @@ mod tests {
             assert!(index < 3);
         }
         bytes
+    }
+
+    #[test]
+    fn pcap_writer_round_trips_classic_fd_and_rtr() {
+        let standard = CanFrame::new(Some(1_234_567), "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![0xaa, 0xbb], false, FdFlags::default()).unwrap();
+        let fd = CanFrame::new(Some(1_234_600), "can0", CanId::Extended(0x18ff50e5),
+            FrameKind::Data, (0..12).collect(), true,
+            FdFlags { bitrate_switch: true, error_state_indicator: true }).unwrap();
+        let rtr = CanFrame::new(Some(1_234_700), "can0", CanId::Standard(0x456),
+            FrameKind::RemoteRequest { dlc: 4 }, Vec::new(), false, FdFlags::default()).unwrap();
+        let mut bytes = Vec::new();
+        write_socketcan_pcap(&mut bytes, &[standard.clone(), fd.clone(), rtr.clone()]).unwrap();
+        let parsed = read_trace(Cursor::new(bytes)).unwrap();
+        for (frame, expected) in parsed.frames.iter().zip([standard, fd, rtr]) {
+            assert_eq!(frame.timestamp_us, expected.timestamp_us);
+            assert_eq!(frame.id, expected.id);
+            assert_eq!(frame.kind, expected.kind);
+            assert_eq!(frame.data, expected.data);
+            assert_eq!(frame.fd_flags, expected.fd_flags);
+            assert_eq!(frame.interface, "bus0");
+            assert_eq!(frame.direction, Direction::Unknown);
+        }
+    }
+
+    #[test]
+    fn pcap_writer_rejects_missing_timestamps_and_mixed_interfaces() {
+        let a = CanFrame::new(None, "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![0], false, FdFlags::default()).unwrap();
+        let mut out = Vec::new();
+        assert!(write_socketcan_pcap(&mut out, &[a]).is_err());
+        let a = CanFrame::new(Some(0), "can0", CanId::Standard(0x123),
+            FrameKind::Data, vec![0], false, FdFlags::default()).unwrap();
+        let b = CanFrame::new(Some(0), "can1", CanId::Standard(0x456),
+            FrameKind::Data, vec![1], false, FdFlags::default()).unwrap();
+        assert!(write_socketcan_pcap(&mut out, &[a, b]).is_err());
     }
 
     #[test]

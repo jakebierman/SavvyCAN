@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_socketcan_pcap,
     CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -179,8 +179,11 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
     } else if lower.ends_with(".log") || lower.ends_with(".candump") {
         write_candump(&mut bytes, &state.frames)?;
         None
+    } else if lower.ends_with(".pcap") {
+        write_socketcan_pcap(&mut bytes, &state.frames)?;
+        None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, .candump, or .signals.csv for export".into());
+        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, or .signals.csv for export".into());
     };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -248,7 +251,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(None) => {
                     let candump = path.to_ascii_lowercase().ends_with(".log")
                         || path.to_ascii_lowercase().ends_with(".candump");
-                    let caveat = if candump { " • candump does not store Rx/Tx direction" } else { "" };
+                    let caveat = if candump { " • candump does not store Rx/Tx direction" }
+                        else if path.to_ascii_lowercase().ends_with(".pcap") {
+                            " • PCAP omits interface and Rx/Tx direction"
+                        } else { "" };
                     ui.set_status_text(format!("Exported {} frames to {path}{caveat}",
                         state.frames.len()).into());
                 },

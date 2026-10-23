@@ -27,6 +27,7 @@ pub use frame::{CanFrame, CanId, Direction, FdFlags, FrameError, FrameKind};
 pub use dbc_stack::DbcStack;
 pub use signal_export::{write_decoded_csv, SignalExportError};
 pub use isotp::{IsoTpAssembler, IsoTpError, IsoTpPacket};
+pub use pcap::write_socketcan_pcap;
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};
