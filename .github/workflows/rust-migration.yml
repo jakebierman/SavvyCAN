@@ -72,3 +72,51 @@ jobs:
           path: rust/target/debug/savvycan-desktop.exe
           if-no-files-found: error
           retention-days: 7
+
+  rust-preview-release:
+    name: Publish Rust/Slint preview release
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/feature/rust-slint-migration' &&
+      contains(github.event.head_commit.message, '[rust-preview-release]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [core, desktop, windows]
+    steps:
+      - name: Download Linux preview
+        uses: actions/download-artifact@v4
+        with:
+          name: savvycan-rust-slint-linux-x86_64
+          path: preview-linux
+      - name: Download Windows preview
+        uses: actions/download-artifact@v4
+        with:
+          name: savvycan-rust-slint-windows-x86_64
+          path: preview-windows
+      - name: Package preview archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          tar -C preview-linux -czf "release-assets/savvycan-rust-slint-linux-x86_64.tar.gz" .
+          (cd preview-windows && zip -r "../release-assets/savvycan-rust-slint-windows-x86_64.zip" .)
+          printf 'Source commit: %s\nBranch: %s\nBuild type: debug preview (not a production installer)\n' \
+            "$GITHUB_SHA" "$GITHUB_REF_NAME" > release-assets/BUILD-INFO.txt
+          (cd release-assets && sha256sum savvycan-rust-slint-*.zip savvycan-rust-slint-*.tar.gz BUILD-INFO.txt > SHA256SUMS.txt)
+      - name: Publish immutable-tagged prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: rust-slint-preview-2026-10-23
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to replace assets." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "SavvyCAN Rust/Slint preview — 23 October 2026" \
+            --notes "Early experimental Rust/Slint desktop rewrite. Linux x86-64 and Windows x86-64 debug previews; not installers or a production release. Includes offline trace import/replay, DBC decoding, and synchronized multi-signal plotting. CAN interfaces are receive-only: no hardware transmit, UDS active diagnostics, or programming. Original Qt SavvyCAN remains unchanged on master. See BUILD-INFO.txt and SHA256SUMS.txt for provenance."
