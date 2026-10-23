@@ -9,19 +9,21 @@ export struct FrameRow {
     payload: string,
     message-name: string,
     decoded-values: string,
+    typed-values: string,
 }
 
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
-    preferred-width: 1480px;
+    preferred-width: 1720px;
     preferred-height: 760px;
     background: #101722;
 
     in-out property <string> file-path: "";
     in-out property <string> dbc-path: "";
+    in-out property <string> format-spec: "";
     in property <string> status-text: "Enter a candump log path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
-    callback open-trace(string, string);
+    callback open-trace(string, string, string);
 
     VerticalBox {
         padding: 16px;
@@ -35,7 +37,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "Rust / Slint — CAN trace and DBC decoder";
+            text: "Rust / Slint — CAN trace, DBC decoder and typed payload formatter";
             color: #8da4bf;
             font-size: 14px;
         }
@@ -52,8 +54,13 @@ export component AppWindow inherits Window {
             }
             Button {
                 text: "Open trace";
-                clicked => { root.open-trace(root.file-path, root.dbc-path); }
+                clicked => { root.open-trace(root.file-path, root.dbc-path, root.format-spec); }
             }
+        }
+
+        LineEdit {
+            text <=> root.format-spec;
+            placeholder-text: "Optional typed format (e.g. rpm:u16be@0/4[rpm]{1} temp:i8@2-40[C]) — applied to every data frame";
         }
 
         Text {
@@ -75,7 +82,8 @@ export component AppWindow inherits Window {
                 Text { text: "DLC"; width: 42px; color: #f2f6ff; }
                 Text { text: "Payload"; width: 235px; color: #f2f6ff; }
                 Text { text: "Message"; width: 165px; color: #f2f6ff; }
-                Text { text: "Decoded signals"; color: #f2f6ff; }
+                Text { text: "DBC signals"; width: 350px; color: #f2f6ff; }
+                Text { text: "Typed values"; color: #f2f6ff; }
             }
         }
 
@@ -94,13 +102,14 @@ export component AppWindow inherits Window {
                     Text { text: frame.length; width: 42px; color: #d5e1ee; }
                     Text { text: frame.payload; width: 235px; color: #e5edf5; }
                     Text { text: frame.message-name; width: 165px; color: #e3b86b; }
-                    Text { text: frame.decoded-values; color: #9cdbc1; }
+                    Text { text: frame.decoded-values; width: 350px; color: #9cdbc1; }
+                    Text { text: frame.typed-values; color: #d9bbec; }
                 }
             }
         }
 
         Text {
-            text: "Offline and read-only • DBC decoding never transmits or writes to a CAN device";
+            text: "Offline and read-only • DBC and typed formatting never transmit or write to a CAN device";
             color: #8195aa;
             font-size: 12px;
         }

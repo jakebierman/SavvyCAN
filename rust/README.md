@@ -8,10 +8,10 @@ pipeline yet.
 ## Why this layout?
 
 - **savvycan-core**: portable pure-Rust CAN frames, validation, candump import,
-  DBC loading and decoding, and summary metrics. Shared by Slint, CLI tools,
+  DBC loading and decoding, typed payload formatting, and summary metrics. Shared by Slint, CLI tools,
   tests and future adapters. No Qt, Slint or operating-system-specific code.
 - **savvycan-desktop**: Slint graphical shell. Currently **offline and read-only**.
-  Open a Linux candump log, optionally load a DBC, and browse raw and decoded
+  Open a Linux candump log, optionally load a DBC and a typed format, then browse raw and decoded
   frames. Input errors include source line numbers.
 
 ## Run
@@ -22,11 +22,14 @@ From this directory:
 
 ~~~sh
 cargo test -p savvycan-core
-cargo run -p savvycan-desktop -- /path/to/candump.log /path/to/signals.dbc
+cargo run -p savvycan-desktop -- /path/to/candump.log /path/to/signals.dbc "rpm:u16be@0/4[rpm]{1}"
 ~~~
 
-The second argument is optional. You can also run the desktop without arguments
-and enter the log and optional DBC paths in the UI.
+The DBC path and typed format are optional. To pass a format without a DBC, use
+an empty string for the DBC argument. You can also enter log/DBC paths and the
+formatter expression directly in the UI. Typed formatting applies globally to
+all data rows for now; core per-interface/ID routing is available for future UI
+assignment. It never formats RTR requests.
 
 ## Current feature boundary
 
@@ -40,9 +43,17 @@ and enter the log and optional DBC paths in the UI.
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
 | GVRET, CRTD, BLF, PCAP, CSV and other source formats | Not yet |
-| Custom typed payload formatter and per-ID rules (separate from DBC) | Not yet |
+| Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, tests and global Slint preview |
 | SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
+
+The pure-Rust typed formatter supports integer/float byte order, signed values,
+text, individual bits, masks and shifts, arithmetic, units, fixed precision,
+enum labels, missing-byte markers, validation warnings and repeated fields. A
+format is compiled once before opening a trace. Invalid formats fail with a
+user-visible error. Per-interface/ID-specific and legacy ID fallback routing
+are implemented in the core but are not yet editable in the Slint viewer.
+Refer to ../help/payload_formatter.md for grammar details.
 
 DBC parsing covers BO_, SG_, VAL_, SIG_VALTYPE_, and SG_MUL_VAL_ directives.
 Other metadata is not imported yet. A malformed supported directive or
