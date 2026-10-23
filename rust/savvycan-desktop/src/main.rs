@@ -427,6 +427,56 @@ fn plot_window_bounds(
     Ok((start, end))
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PlotNavigation {
+    first: u64,
+    last: u64,
+    start: u64,
+    end: u64,
+    axis: HorizontalAxis,
+}
+
+/// Navigation always stays within the original decoded capture, even when
+/// the user originally entered a cropped plotting window.
+fn navigate_plot_window(window: PlotNavigation, action: &str) -> Result<(u64, u64), String> {
+    let last = window.last.max(window.first.saturating_add(1));
+    let full = last - window.first;
+    let span = window.end.saturating_sub(window.start).max(1).min(full);
+    let clamp_start = |start: u64, width: u64| start.clamp(window.first, last - width);
+    let bounds = match action {
+        "fit" => (window.first, last),
+        "left" => {
+            let offset = (span / 4).max(1);
+            let start = clamp_start(window.start.saturating_sub(offset), span);
+            (start, start + span)
+        }
+        "right" => {
+            let offset = (span / 4).max(1);
+            let start = clamp_start(window.start.saturating_add(offset), span);
+            (start, start + span)
+        }
+        "in" | "out" => {
+            let width = if action == "in" { (span / 2).max(1) }
+                else { span.saturating_mul(2).min(full) };
+            let centre = window.start.saturating_add(
+                window.end.saturating_sub(window.start) / 2);
+            let start = clamp_start(centre.saturating_sub(width / 2), width);
+            (start, start + width)
+        }
+        _ => return Err("Unknown plot navigation action.".into()),
+    };
+    Ok(bounds)
+}
+
+fn plot_relative_offset(value: u64, first: u64, axis: HorizontalAxis) -> String {
+    let relative = value.saturating_sub(first);
+    match axis {
+        HorizontalAxis::TimestampMicroseconds =>
+            format!("{}.{:06}", relative / 1_000_000, relative % 1_000_000),
+        HorizontalAxis::FrameIndex => relative.to_string(),
+    }
+}
+
 type ImportResult = Result<(ViewerState, String), String>;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -871,6 +921,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Up to three passive decoded DBC trends, all on the same exact CAN ID
     // and shared X axis. Independent Y scales keep different engineering
     // units interpretable without suggesting they share a physical scale.
+    let plot_navigation = Rc::new(RefCell::new(None::<PlotNavigation>));
+    let nav_for_plot = Rc::clone(&plot_navigation);
     let weak = ui.as_weak();
     let state_for_plot = Rc::clone(&state);
     ui.on_plot_signal_series(move |interface, id, names, from, through, independent| {
@@ -1001,12 +1053,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         ui.set_plot_legend_b(legends[1].clone().into());
         ui.set_plot_legend_c(legends[2].clone().into());
         ui.set_plot_summary(label.clone().into());
+        *nav_for_plot.borrow_mut() = Some(PlotNavigation {
+            first, last, start: x_start, end: x_end, axis,
+        });
         ui.set_show_isotp(false);
         ui.set_show_stats(false);
         ui.set_show_bam(false);
         ui.set_show_bytes(false);
         ui.set_show_plot(true);
         ui.set_status_text(label.into());
+    });
+
+    let weak = ui.as_weak();
+    let nav_for_controls = Rc::clone(&plot_navigation);
+    ui.on_navigate_plot(move |action| {
+        let Some(ui) = weak.upgrade() else { return; };
+        if !ui.get_show_plot() {
+            ui.set_status_text("Plot DBC signals before navigating.".into());
+            return;
+        }
+        let Some(window) = *nav_for_controls.borrow() else { return; };
+        match navigate_plot_window(window, action.as_str()) {
+            Ok((start, end)) => {
+                ui.set_plot_window_from(
+                    plot_relative_offset(start, window.first, window.axis).into());
+                ui.set_plot_window_through(
+                    plot_relative_offset(end, window.first, window.axis).into());
+                ui.invoke_plot_signal_series(
+                    ui.get_plot_interface(), ui.get_plot_id(),
+                    ui.get_plot_signal(), ui.get_plot_window_from(),
+                    ui.get_plot_window_through(), ui.get_plot_independent_scales());
+            }
+            Err(error) => ui.set_status_text(error.into()),
+        }
     });
 
     let weak = ui.as_weak();
@@ -1477,6 +1556,37 @@ mod export_view_tests {
             HorizontalAxis::FrameIndex, "30", "10").is_err());
         assert!(plot_window_bounds(50, 80,
             HorizontalAxis::FrameIndex, "NaN", "").is_err());
+    }
+
+    #[test]
+    fn plot_navigation_clamps_and_zooms_around_the_window_centre() {
+        let mut window = PlotNavigation {
+            first: 0, last: 1_000, start: 200, end: 600,
+            axis: HorizontalAxis::TimestampMicroseconds,
+        };
+        assert_eq!(navigate_plot_window(window, "in").unwrap(), (300, 500));
+        assert_eq!(navigate_plot_window(window, "out").unwrap(), (0, 800));
+        assert_eq!(navigate_plot_window(window, "right").unwrap(), (300, 700));
+        assert_eq!(navigate_plot_window(window, "left").unwrap(), (100, 500));
+        assert_eq!(navigate_plot_window(window, "fit").unwrap(), (0, 1_000));
+        window.start = 900;
+        window.end = 1_000;
+        assert_eq!(navigate_plot_window(window, "right").unwrap(), (900, 1_000));
+        window.start = 0;
+        window.end = 100;
+        assert_eq!(navigate_plot_window(window, "left").unwrap(), (0, 100));
+        assert!(navigate_plot_window(window, "unknown").is_err());
+    }
+
+    #[test]
+    fn plot_navigation_offsets_preserve_microsecond_precision() {
+        assert_eq!(plot_relative_offset(6_234_567, 5_000_000,
+            HorizontalAxis::TimestampMicroseconds), "1.234567");
+        assert_eq!(plot_relative_offset(54, 50, HorizontalAxis::FrameIndex), "4");
+        let navigation = PlotNavigation {
+            first: 10, last: 10, start: 10, end: 11, axis: HorizontalAxis::FrameIndex,
+        };
+        assert_eq!(navigate_plot_window(navigation, "fit").unwrap(), (10, 11));
     }
 
     #[test]

@@ -132,6 +132,7 @@ export component AppWindow inherits Window {
     callback inspect-bam(string, string);
     callback inspect-bytes(string, string);
     callback plot-signal-series(string, string, string, string, string, bool);
+    callback navigate-plot(string);
     callback play-replay(string);
     callback pause-replay();
     callback step-replay();
@@ -605,6 +606,20 @@ export component AppWindow inherits Window {
                     Text { text: message.length; width: 65px; color: #f2f6ff; }
                     Text { text: message.payload; color: #9cdbc1; }
                 }
+            }
+        }
+
+        if root.show-plot : HorizontalBox {
+            spacing: 8px;
+            Button { text: "◀ Pan"; clicked => { root.navigate-plot("left"); } }
+            Button { text: "Pan ▶"; clicked => { root.navigate-plot("right"); } }
+            Button { text: "Zoom +"; clicked => { root.navigate-plot("in"); } }
+            Button { text: "Zoom −"; clicked => { root.navigate-plot("out"); } }
+            Button { text: "Fit all"; clicked => { root.navigate-plot("fit"); } }
+            Text {
+                text: "Navigation stays within the loaded trace";
+                color: #8195aa;
+                font-size: 12px;
             }
         }
 
