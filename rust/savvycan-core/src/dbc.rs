@@ -54,6 +54,8 @@ pub struct DbcMessage {
 #[derive(Debug, Clone, Default)]
 pub struct DbcDatabase {
     pub messages: HashMap<CanId, DbcMessage>,
+    /// Enabled only for DBCs declaring the J1939 network protocol.
+    pub j1939_pgn_matching: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,17 @@ fn parse_id(text: &str, line: usize) -> Result<CanId, DbcParseError> {
         let value: u16 = value.try_into().map_err(|_| bad(line, "DBC standard ID out of range"))?;
         CanId::standard(value).map_err(|err| bad(line, err.to_string()))
     }
+}
+
+/// J1939 PGN from a 29-bit identifier. PDU1 uses PS as destination,
+/// not as part of the PGN; PDU2 includes PS as group extension.
+fn j1939_pgn(id: CanId) -> Option<u32> {
+    let CanId::Extended(raw) = id else { return None; };
+    let mut pgn = (raw >> 8) & 0x3ffff;
+    if ((raw >> 16) & 0xff) < 240 {
+        pgn &= !0xff;
+    }
+    Some(pgn)
 }
 
 fn signal_layout(layout: &str, message_len: usize, line: usize)
@@ -265,6 +278,16 @@ impl DbcDatabase {
                     return Err(bad(line, "floating point signal width must be 32 or 64"));
                 }
                 signal.kind = kind;
+            } else if let Some(rest) = entry.strip_prefix("BA_ ") {
+                // Global protocol attributes; BA_DEF_/BA_DEF_DEF_ are not
+                // protocol declarations and cannot opt in implicitly.
+                let fields: Vec<_> = rest.trim_end_matches(';').split_whitespace().collect();
+                if matches!(fields.as_slice(),
+                    ["\"ProtocolType\"", "\"J1939\""] |
+                    ["\"BusType\"", "\"J1939\""])
+                {
+                    result.j1939_pgn_matching = true;
+                }
             } else if let Some(rest) = entry.strip_prefix("SG_MUL_VAL_ ") {
                 let mut words = rest.split_whitespace();
                 let id = parse_id(words.next().ok_or_else(|| bad(line, "missing mux message ID"))?, line)?;
@@ -284,13 +307,33 @@ impl DbcDatabase {
         Ok(result)
     }
 
+    /// Prefer exact CAN IDs; J1939 profile databases also match unique PGNs
+    /// across priority, source and (for PDU1) destination. Ambiguous PGNs
+    /// are not decoded without an exact identifier match.
+    pub fn matching_message_id(&self, id: CanId) -> Option<CanId> {
+        if self.messages.contains_key(&id) {
+            return Some(id);
+        }
+        if !self.j1939_pgn_matching { return None; }
+        let pgn = j1939_pgn(id)?;
+        let mut matched = None;
+        for candidate in self.messages.keys().copied() {
+            if j1939_pgn(candidate) == Some(pgn) {
+                if matched.is_some() { return None; }
+                matched = Some(candidate);
+            }
+        }
+        matched
+    }
+
     pub fn decode(&self, frame: &CanFrame) -> Result<Option<DecodedMessage>, DecodeError> {
         if !matches!(frame.kind, FrameKind::Data) {
             return Ok(None);
         }
-        let Some(message) = self.messages.get(&frame.id) else {
+        let Some(message_id) = self.matching_message_id(frame.id) else {
             return Ok(None);
         };
+        let message = &self.messages[&message_id];
         let mut decoded = Vec::new();
         for signal in &message.signals {
             if !message.active(signal, &frame.data, &mut Vec::new())? {
@@ -400,3 +443,49 @@ impl fmt::Display for DecodeError {
     }
 }
 impl std::error::Error for DecodeError {}
+
+#[cfg(test)]
+mod j1939_tests {
+    use super::*;
+    use crate::FdFlags;
+
+    fn database(id: u32, name: &str, protocol: &str) -> DbcDatabase {
+        let marked = if protocol.is_empty() { String::new() }
+            else { format!("BA_ \"{protocol}\" \"J1939\";\n") };
+        DbcDatabase::parse(&format!(
+            "BO_ {} {name}: 2 ECU\n SG_ Value : 0|8@1+ (1,0) [0|255] \"V\" ECU\n{marked}",
+            id | 0x8000_0000
+        )).unwrap()
+    }
+
+    fn frame(id: u32) -> CanFrame {
+        CanFrame::new(None, "can0", CanId::Extended(id), FrameKind::Data,
+            vec![0x42, 0], false, FdFlags::default()).unwrap()
+    }
+
+    #[test]
+    fn pdu2_pgn_matches_priority_and_source_only_when_opted_in() {
+        let plain = database(0x18f0_0400, "Engine", "");
+        let j1939 = database(0x18f0_0400, "Engine", "ProtocolType");
+        assert!(!plain.j1939_pgn_matching);
+        assert!(plain.decode(&frame(0x0cf0_04a5)).unwrap().is_none());
+        assert_eq!(j1939.decode(&frame(0x0cf0_04a5)).unwrap().unwrap().name, "Engine");
+        assert!(j1939.decode(&frame(0x0cf0_03a5)).unwrap().is_none());
+    }
+
+    #[test]
+    fn pdu1_pgn_ignores_destination_octet_but_not_pdu_format() {
+        let j1939 = database(0x18ea_00fe, "Request", "BusType");
+        assert_eq!(j1939.decode(&frame(0x0cea_45a0)).unwrap().unwrap().name, "Request");
+        assert!(j1939.decode(&frame(0x0ceb_45a0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn ambiguous_pgn_is_not_guessed_but_exact_ids_work() {
+        let mut dbc = database(0x18f0_0400, "EngineA", "ProtocolType");
+        let other = database(0x0cf0_0401, "EngineB", "");
+        dbc.messages.extend(other.messages);
+        assert!(dbc.decode(&frame(0x18f0_0455)).unwrap().is_none());
+        assert_eq!(dbc.decode(&frame(0x18f0_0400)).unwrap().unwrap().name, "EngineA");
+    }
+}

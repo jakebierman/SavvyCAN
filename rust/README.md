@@ -50,7 +50,8 @@ default typed expression, and RTR requests are never formatted.
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | Ordered multiple DBC files and per-interface precedence | Initial support (semicolon-separated viewer paths) |
-| DBC J1939/GMLAN PGN profile matching | Not yet |
+| DBC J1939 PGN matching | Initial support; enabled by a DBC global protocol attribute; exact ID preferred |
+| GMLAN and other DBC protocol profiles | Not yet |
 | BLF, PCAP, Vector CAN FD ASC, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
@@ -74,7 +75,7 @@ through a text file loaded by the Slint viewer. An interactive per-ID rule
 editor is still pending.
 Refer to ../help/payload_formatter.md for grammar details.
 
-DBC parsing covers BO_, SG_, VAL_, SIG_VALTYPE_, and SG_MUL_VAL_ directives.
+DBC parsing covers BO_, SG_, VAL_, SIG_VALTYPE_, SG_MUL_VAL_, and global J1939 protocol BA_ directives.
 Other metadata is not imported yet. A malformed supported directive or
 out-of-range signal is reported rather than silently producing a value.
 Extended ID flags use the standard DBC bit-31 convention. Decoding only applies
@@ -182,6 +183,12 @@ associate it with that interface. For example:
 /path/general.dbc;can0=/path/powertrain.dbc;can0=/path/auxiliary.dbc;can1=/path/chassis.dbc
 ~~~
 
-The first database defining a matching CAN ID wins, with interface-specific
-databases searched before the globals. Existing DBC decoders and typed payload
-formats remain independent.
+For exact CAN IDs, the first matching database wins, with interface-specific
+databases searched before the globals. A database explicitly declaring
+`BA_ "ProtocolType" "J1939";` (or `BA_ "BusType" "J1939";`) also matches
+29-bit identifiers by J1939 PGN. This ignores priority and source address;
+for PDU1 messages it also ignores the destination address. Exact IDs are
+checked before PGN fallbacks across all databases, and ambiguous PGNs within
+a database are left undecoded. Generic extended-ID DBCs retain exact matching
+unless the protocol declaration opts in. J1939 transport-protocol reassembly
+is not yet implemented. Typed payload formats remain independent.

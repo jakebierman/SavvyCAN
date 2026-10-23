@@ -2,8 +2,9 @@
 use crate::{CanFrame, DbcDatabase, DecodeError, DecodedMessage};
 use std::collections::HashMap;
 
-/// First matching database wins. Interface-specific databases are searched
-/// before globally assigned databases, preserving insertion order within each.
+/// Exact CAN-ID matches win over J1939 PGN fallbacks. Within each matching
+/// class, interface-specific databases precede globals and insertion order
+/// is preserved; ambiguous PGNs in a single DBC are not guessed.
 #[derive(Debug, Clone, Default)]
 pub struct DbcStack {
     per_interface: HashMap<String, Vec<DbcDatabase>>,
@@ -26,9 +27,15 @@ impl DbcStack {
     }
 
     pub fn decode(&self, frame: &CanFrame) -> Result<Option<DecodedMessage>, DecodeError> {
-        let scoped = self.per_interface.get(&frame.interface).into_iter().flatten();
-        for dbc in scoped.chain(self.global.iter()) {
+        let candidates = || self.per_interface.get(&frame.interface)
+            .into_iter().flatten().chain(self.global.iter());
+        for dbc in candidates() {
             if dbc.messages.contains_key(&frame.id) {
+                return dbc.decode(frame);
+            }
+        }
+        for dbc in candidates() {
+            if dbc.j1939_pgn_matching && dbc.matching_message_id(frame.id).is_some() {
                 return dbc.decode(frame);
             }
         }
@@ -49,6 +56,35 @@ mod tests {
     fn frame(interface: &str, id: CanId) -> CanFrame {
         CanFrame::new(None, interface, id, FrameKind::Data, vec![12, 0],
             false, FdFlags::default()).unwrap()
+    }
+
+    fn j1939(name: &str, template: u32) -> DbcDatabase {
+        DbcDatabase::parse(&format!(
+            "BO_ {} {name}: 2 ECU\n SG_ Voltage : 0|8@1+ (1,0) [0|255] \"V\" ECU\nBA_ \"ProtocolType\" \"J1939\";\n",
+            template | 0x8000_0000
+        )).unwrap()
+    }
+
+    #[test]
+    fn j1939_pgn_fallback_follows_interface_precedence() {
+        let mut stack = DbcStack::new();
+        stack.add_global(j1939("GlobalJ1939", 0x18f00400));
+        stack.add_for_interface("can0", j1939("EngineJ1939", 0x18f00400));
+        assert_eq!(stack.decode(&frame("can0", CanId::Extended(0x0cf004a5)))
+            .unwrap().unwrap().name, "EngineJ1939");
+        assert_eq!(stack.decode(&frame("can1", CanId::Extended(0x0cf004a5)))
+            .unwrap().unwrap().name, "GlobalJ1939");
+        assert!(stack.decode(&frame("can0", CanId::Extended(0x0cf005a5)))
+            .unwrap().is_none());
+    }
+
+    #[test]
+    fn exact_id_across_databases_precedes_j1939_pgn_fallback() {
+        let mut stack = DbcStack::new();
+        stack.add_for_interface("can0", j1939("PgnFallback", 0x18f00400));
+        stack.add_global(j1939("ExactGlobal", 0x0cf004a5));
+        assert_eq!(stack.decode(&frame("can0", CanId::Extended(0x0cf004a5)))
+            .unwrap().unwrap().name, "ExactGlobal");
     }
 
     #[test]
