@@ -176,7 +176,7 @@ mod tests {
         stack.add_global(DbcDatabase::parse("BO_ 292 Empty: 1 ECU\n").unwrap());
         stack.add_for_interface("can1", sample("Later"));
         stack.add_for_interface("can0", DbcDatabase::parse(
-            "BO_ 291 Engine: 2 ECU\n SG_ RPM : 0|8@1+ (2,1) [0|255] \"rpm\" ECU\n SG_ Temp : 8|8@0- (1,-40) [-40|215] \"C\" ECU\n"
+            "BO_ 291 Engine: 2 ECU\n SG_ RPM : 0|8@1+ (2,1) [0|255] \"rpm\" ECU\n SG_ Temp : 15|8@0- (1,-40) [-40|215] \"C\" ECU\n"
         ).unwrap());
         let (rows, total) = stack.catalog_rows("", 20);
         assert_eq!(total, 4);
