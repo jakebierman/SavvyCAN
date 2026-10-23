@@ -166,7 +166,9 @@ The interface and CAN ID filters apply to the displayed rows, without changing
 the loaded frames or export data. Export includes every retained frame, not
 just the current filter or page. Leave either input blank to match all.
 CAN IDs use hexadecimal; `S:123` and `X:123` distinguish 11/29-bit IDs even
-when the numeric value is identical. Offline viewing pages through all matching frames in 1,000-row increments,
+when the numeric value is identical. You can also filter `S:100-1FF` ranges,
+`X:18FF0000/1FFF0000` ID/mask combinations, and J1939 PGNs such as `PGN:F004`
+or `PGN:EA00` (PDU1 destination ignored, PDU2 group extension retained). Offline viewing pages through all matching frames in 1,000-row increments,
 without deleting or reducing the imported data. During live capture, the
 viewer shows the latest 2,000 matching frames. After stopping capture,
 the retained frames can be browsed using the offline page controls.

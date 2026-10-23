@@ -118,7 +118,7 @@ export component AppWindow inherits Window {
             }
             LineEdit {
                 text <=> root.filter-id;
-                placeholder-text: "Filter hex CAN ID (123, S:123 or X:123)";
+                placeholder-text: "Filter CAN ID / range / mask / PGN (S:123, X:18FF0000/1FFF0000)";
             }
             Button {
                 text: "Apply filter";
