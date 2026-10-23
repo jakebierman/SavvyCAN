@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 savvycan-core = { path = "../savvycan-core" }
+savvycan-transports = { path = "../savvycan-transports" }
 slint = "1.18.1"
 
 [build-dependencies]

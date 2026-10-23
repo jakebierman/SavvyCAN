@@ -51,7 +51,7 @@ default typed expression, and RTR requests are never formatted.
 | BLF, PCAP, CANalyzer, PCAN and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
-| Linux SocketCAN classic/FD/RTR receive adapter | Initial support; compiled and unit tested, UI integration pending |
+| Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
 
@@ -82,8 +82,12 @@ ordering. Do not assume full DBC compatibility yet.
 **Safety:** the Rust GUI has no transmit or device-control path. The transport
 trait and SocketCAN adapter are deliberately receive-only; no frame transmission
 API exists in the Rust migration yet. SocketCAN timestamps are currently sampled
-in user space, not kernel/hardware timestamps. The source must be opened by the
-future live-capture UI integration. When those are
+in user space, not kernel/hardware timestamps. The Slint viewer can open a
+Linux SocketCAN interface in a worker thread and stop it without blocking the UI.
+Its input queue is bounded; the live display shows the latest 2,000 frames and
+live capture retains at most 100,000 frames for export, explicitly reporting
+how many older frames were discarded. Hardware integration testing is still
+required before the live adapter is considered production-ready. When those are
 ported, preserve SavvyCAN's read-only default, access/arming/confirmation policy,
 and explicit adapter capability validation.
 
@@ -126,3 +130,18 @@ known microsecond timestamps, bus numbers and Rx/Tx directions. It rejects
 CAN FD, RTR and missing metadata before creating the output file; an existing
 file is never replaced. The current exporters are intentionally conservative
 because the legacy formats cannot represent every field.
+
+## Read-only live SocketCAN capture
+
+On Linux, configure a SocketCAN interface (such as `can0` or a test `vcan0`)
+before starting SavvyCAN Rust. Enter its name in **Linux SocketCAN interface**
+and click **Start receive-only capture**. The worker receives classic CAN, FD
+and remote requests, preserving frame identity and FD flags. Press **Stop** to
+end the session. No CAN frames are transmitted, and no device configuration
+operations are exposed.
+
+The UI refreshes every 100 ms and renders the latest 2,000 frames. The
+receive queue holds at most 4,096 pending frames. History is capped at 100,000
+received frames; the status line tells you how many older frames have been
+discarded. Export writes only those retained frames and follows the conservative
+legacy-format restrictions described above.

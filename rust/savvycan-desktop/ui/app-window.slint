@@ -23,10 +23,13 @@ export component AppWindow inherits Window {
     in-out property <string> format-spec: "";
     in-out property <string> rules-path: "";
     in-out property <string> export-path: "";
+    in-out property <string> live-interface: "can0";
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
     callback open-trace(string, string, string, string);
     callback export-trace(string);
+    callback start-live(string, string, string, string);
+    callback stop-live();
 
     VerticalBox {
         padding: 16px;
@@ -82,6 +85,25 @@ export component AppWindow inherits Window {
             }
         }
 
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.live-interface;
+                placeholder-text: "Linux SocketCAN interface (can0 or vcan0)";
+            }
+            Button {
+                text: "Start receive-only capture";
+                clicked => {
+                    root.start-live(root.live-interface, root.dbc-path,
+                        root.format-spec, root.rules-path);
+                }
+            }
+            Button {
+                text: "Stop";
+                clicked => { root.stop-live(); }
+            }
+        }
+
         Text {
             text: root.status-text;
             color: #9fcaee;
@@ -128,7 +150,7 @@ export component AppWindow inherits Window {
         }
 
         Text {
-            text: "Offline CAN inspection • Export creates a new file only • No CAN transmission or device writes";
+            text: "Offline and Linux live receive-only inspection • Export creates a new file only • No CAN transmission";
             color: #8195aa;
             font-size: 12px;
         }
