@@ -20,7 +20,7 @@ pub use dbc::{
 };
 pub use format_rules::{parse_format_rules, RuleParseError};
 pub use payload_format::{FormatError, FormattedField, PayloadFormatRouter, PayloadFormatter};
-pub use file_formats::{read_trace, write_crtd, write_gvret_csv, ExportError, ImportError, ImportedTrace, TraceFormat};
+pub use file_formats::{read_trace, write_candump, write_crtd, write_gvret_csv, ExportError, ImportError, ImportedTrace, TraceFormat};
 pub use frame::{CanFrame, CanId, Direction, FdFlags, FrameError, FrameKind};
 pub use dbc_stack::DbcStack;
 pub use signal_export::{write_decoded_csv, SignalExportError};
