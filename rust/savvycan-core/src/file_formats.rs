@@ -15,6 +15,7 @@ pub enum TraceFormat {
     CarbusAnalyzer,
     VectorAsc,
     PcanTrc,
+    IxxatMinilog,
 }
 
 impl fmt::Display for TraceFormat {
@@ -29,6 +30,7 @@ impl fmt::Display for TraceFormat {
             Self::CarbusAnalyzer => "CARBUS Analyzer trace",
             Self::VectorAsc => "Vector CANalyzer ASC (classic)",
             Self::PcanTrc => "PEAK PCAN TRC",
+            Self::IxxatMinilog => "IXXAT MiniLog CSV",
         })
     }
 }
@@ -91,7 +93,9 @@ impl From<io::Error> for ExportError {
 fn detect(first: &str) -> Result<TraceFormat, ImportError> {
     let line = first.trim_start_matches('\u{feff}').trim();
     let normalized = line.to_ascii_lowercase();
-    if normalized.starts_with(";$fileversion=") {
+    if normalized.starts_with("ascii trace ixxat") {
+        Ok(TraceFormat::IxxatMinilog)
+    } else if normalized.starts_with(";$fileversion=") {
         Ok(TraceFormat::PcanTrc)
     } else if normalized.starts_with("date ") || normalized.starts_with("base hex ") {
         Ok(TraceFormat::VectorAsc)
@@ -175,6 +179,7 @@ pub fn read_trace<R: BufRead>(reader: R) -> Result<ImportedTrace, ImportError> {
                     else { parse_carbus_line(trimmed, carbus_v2) }
                 }
                 TraceFormat::VectorAsc => parse_vector_asc_line(trimmed),
+                TraceFormat::IxxatMinilog => parse_ixxat_line(trimmed),
                 TraceFormat::PcanTrc => {
                     if let Some(value) = trimmed.strip_prefix(";$FILEVERSION=") {
                         pcan_version = match value.trim().trim_end_matches(';') {
@@ -388,6 +393,58 @@ fn validate_pcan_columns(cols: &[String]) -> Result<(), String> {
 fn pcan_fd_dlc_bytes(dlc: usize) -> Result<usize, String> {
     const LENGTHS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
     LENGTHS.get(dlc).copied().ok_or("PCAN CAN FD DLC exceeds 15".into())
+}
+
+
+fn ixxat_clock_us(raw: &str) -> Result<u64, String> {
+    let parts: Vec<&str> = raw.split(':').collect();
+    if parts.len() != 3 {
+        return Err("IXXAT timestamp must have hour:minute:second.fraction".into());
+    }
+    let hours = parts[0].parse::<u64>().map_err(|_| "invalid IXXAT hour")?;
+    let minutes = parts[1].parse::<u64>().map_err(|_| "invalid IXXAT minute")?;
+    let (secs, fraction) = parts[2].split_once('.').unwrap_or((parts[2], ""));
+    let seconds = secs.parse::<u64>().map_err(|_| "invalid IXXAT second")?;
+    if hours > 23 || minutes > 59 || seconds > 59 || fraction.len() > 6
+        || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("IXXAT timestamp is outside the clock range".into());
+    }
+    let microseconds = if fraction.is_empty() { 0 } else {
+        fraction.parse::<u64>().map_err(|_| "invalid IXXAT sub-second digits")?
+            * 10_u64.pow((6 - fraction.len()) as u32)
+    };
+    Ok(((hours * 60 + minutes) * 60 + seconds) * 1_000_000 + microseconds)
+}
+
+fn parse_ixxat_line(line: &str) -> Result<Option<CanFrame>, String> {
+    // SavvyCAN's IXXAT MiniLog writer emits six metadata lines and one
+    // quoted CSV heading before its five quoted data columns.
+    if !line.starts_with('"') || line.starts_with("\"Time\"") {
+        return Ok(None);
+    }
+    let content = line.strip_prefix('"').and_then(|v| v.strip_suffix('"'))
+        .ok_or("IXXAT CSV row must have quoted fields")?;
+    let fields: Vec<&str> = content.split("\",\"").collect();
+    if fields.len() != 5 {
+        return Err("IXXAT CSV row must have five quoted fields".into());
+    }
+    let timestamp = ixxat_clock_us(fields[0])?;
+    let extended = match fields[2].to_ascii_lowercase().as_str() {
+        "std" => false, "ext" => true,
+        other => return Err(format!("unsupported IXXAT frame format '{other}'")),
+    };
+    let id = parse_hex_id(fields[1], extended)?;
+    if !extended && id.is_extended() {
+        return Err("IXXAT Std frame has CAN ID above 7FF".into());
+    }
+    if !fields[3].trim().is_empty() {
+        return Err("IXXAT frame flags are not yet supported".into());
+    }
+    let payload = fields[4].split_whitespace().map(parse_hex_byte)
+        .collect::<Result<Vec<_>, _>>()?;
+    // IXXAT CSV does not encode Rx/Tx direction or bus in each data row.
+    Ok(Some(frame(Some(timestamp), "bus0".into(),
+        id, payload, Direction::Unknown)?))
 }
 
 fn parse_pcan_line(line: &str, version: u8, columns: &[String]) -> Result<Option<CanFrame>, String> {
@@ -989,6 +1046,33 @@ mod tests {
               1 1334.416 FD 1 0500 Rx - 9 01 02\n"
         )).unwrap_err();
         assert!(bad_dlc.to_string().contains("length 12"));
+    }
+
+    #[test]
+    fn ixxat_minilog_csv_matches_savvycan_writer_and_distinguishes_id_width() {
+        let input = "ASCII Trace IXXAT SavvyCAN V1\n\
+            Date: 23:10:2026\nStart time: 0:0:0\nStop time: 0:0:2\n\
+            Overruns: 0\nBaudrate: 500 kbit/s\n\
+            \"Time\",\"Identifier (hex)\",\"Format\",\"Flags\",\"Data (hex)\"\n\
+            \"0:0:1.250\",\"00000123\",\"Std\",\"\",\"AA 11 \"\n\
+            \"0:0:2.000\",\"00000123\",\"Ext\",\"\",\"01 \"\n";
+        let trace = load(input);
+        assert_eq!(trace.format, TraceFormat::IxxatMinilog);
+        assert_eq!(trace.frames.len(), 2);
+        assert_eq!(trace.frames[0].timestamp_us, Some(1_250_000));
+        assert_eq!(trace.frames[0].id, CanId::Standard(0x123));
+        assert_eq!(trace.frames[0].data, vec![0xaa, 0x11]);
+        assert_eq!(trace.frames[0].direction, Direction::Unknown);
+        assert_eq!(trace.frames[1].id, CanId::Extended(0x123));
+    }
+
+    #[test]
+    fn ixxat_bad_flags_and_payload_are_not_discarded_silently() {
+        let prefix = "ASCII Trace IXXAT SavvyCAN V1\n";
+        let flags = format!("{prefix}\"0:0:2.000\",\"00000123\",\"Std\",\"ERR\",\"01\"\n");
+        assert!(read_trace(Cursor::new(flags)).unwrap_err().to_string().contains("flags"));
+        let bytes = format!("{prefix}\"0:0:2.000\",\"00000123\",\"Std\",\"\",\"GG\"\n");
+        assert!(read_trace(Cursor::new(bytes)).unwrap_err().to_string().contains("invalid"));
     }
 
     #[test]

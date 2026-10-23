@@ -44,6 +44,7 @@ default typed expression, and RTR requests are never formatted.
 | BUSMASTER and Microchip Analyzer classic CAN logs | Done (including BUSMASTER RTR and Tx/Rx direction) |
 | CARBUS Analyzer V2/V3 text traces | Done (including CR-only line endings) |
 | PEAK PCAN `.trc` (1.1/1.2/1.3/2.0/2.1) | Initial support: classic, CAN FD DLC mapping, RTR and Rx/Tx |
+| IXXAT MiniLog quoted CSV | Initial support, compatible with legacy SavvyCAN writer (Std/Ext ID and time of day) |
 | Vector CANalyzer ASC classic CAN frames | Initial support (including RTR; CAN FD records rejected explicitly) |
 | CRTD and GVRET native CSV V2 exports | Done for representable classic frames; UI creates new files only |
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
@@ -63,7 +64,7 @@ default typed expression, and RTR requests are never formatted.
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
-Microchip, CARBUS Analyzer V2/V3 and PEAK PCAN TRC 1.1–2.1 text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
+Microchip, CARBUS Analyzer V2/V3, PEAK PCAN TRC 1.1–2.1 and IXXAT MiniLog text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
 existing paths are never overwritten. Those writers deliberately reject frames they cannot
 round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
 than truncate or invent data. Generic ID/data CSV has no timestamps or direction
@@ -236,3 +237,11 @@ or scanning tool. A caller must explicitly select the diagnostic CAN IDs to
 reassemble; unrelated CAN traffic can otherwise be mistaken for ISO-TP.
 Extended/mixed addressing, UDS semantic decoding, and ISO-TP transmit remain
 outside the current feature boundary.
+
+## IXXAT MiniLog import
+
+The IXXAT quoted-CSV importer preserves 11/29-bit ID format and microsecond
+precision from the recorded time of day. The file has no per-frame Rx/Tx or
+bus metadata, so direction remains unknown and the interface defaults to
+`bus0`. Unsupported nonempty frame flags produce a line-numbered error;
+multi-day date reconstruction is not yet implemented.
