@@ -17,6 +17,7 @@ pub mod j1939_bam;
 pub mod pcap;
 pub mod pcapng;
 pub mod trace_stats;
+pub mod byte_activity;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
@@ -34,6 +35,7 @@ pub use j1939_bam::{J1939BamAssembler, J1939BamError, J1939BamPacket};
 pub use pcap::write_socketcan_pcap;
 pub use pcapng::write_socketcan_pcapng;
 pub use trace_stats::{analyze_ids, write_id_stats_csv, IdStatistics};
+pub use byte_activity::{analyze_byte_activity, write_byte_activity_csv, ByteActivity};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};

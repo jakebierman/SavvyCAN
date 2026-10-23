@@ -148,7 +148,7 @@ export component AppWindow inherits Window {
             Button { text: "Browse"; clicked => { root.browse-rules(); } }
             LineEdit {
                 text <=> root.export-path;
-                placeholder-text: "New export (.crtd, .csv, .log, .pcap, .pcapng, .stats.csv, .signals.csv)";
+                placeholder-text: "New export (.crtd, .csv, .log, .pcap, .pcapng, .stats.csv, .bytes.csv, .signals.csv)";
             }
             Button { text: "Save as"; clicked => { root.browse-export(); } }
             CheckBox {

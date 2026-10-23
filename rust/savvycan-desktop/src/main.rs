@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use savvycan_core::{
-    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap, write_socketcan_pcapng,
+    parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
     analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
@@ -325,7 +325,9 @@ fn export_trace(
     if frames.is_empty() { return Err("No frames match the current export filter".into()); }
     let mut bytes = Vec::new();
     let lower = path.to_ascii_lowercase();
-    let signal_count = if lower.ends_with(".stats.csv") {
+    let signal_count = if lower.ends_with(".bytes.csv") {
+        Some(write_byte_activity_csv(&mut bytes, frames.as_ref())?)
+    } else if lower.ends_with(".stats.csv") {
         Some(write_id_stats_csv(&mut bytes, frames.as_ref())?)
     } else if lower.ends_with(".signals.csv") {
         let dbc = state.context.dbc.as_ref()
@@ -347,7 +349,7 @@ fn export_trace(
         write_socketcan_pcap(&mut bytes, frames.as_ref())?;
         None
     } else {
-        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .pcapng, .stats.csv or .signals.csv for export".into());
+        return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .pcapng, .stats.csv, .bytes.csv or .signals.csv for export".into());
     };
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -473,7 +475,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let filter = filter_for_export.borrow();
             match export_trace(path.as_str(), &state, matching.then_some(&*filter)) {
                 Ok((Some(rows), count)) => {
-                    let kind = if path.to_ascii_lowercase().ends_with(".stats.csv") {
+                    let kind = if path.to_ascii_lowercase().ends_with(".bytes.csv") {
+                        "per-byte CAN activity rows"
+                    } else if path.to_ascii_lowercase().ends_with(".stats.csv") {
                         "CAN interface/ID statistics groups"
                     } else { "decoded DBC signal values" };
                     ui.set_status_text(format!("Exported {rows} {kind} from {count} frames to {path}").into());
