@@ -303,31 +303,42 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
     Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0 }, message))
 }
 
-fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dyn Error>> {
+fn export_trace(
+    path: &str, state: &ViewerState, filter: Option<&TraceFilter>,
+) -> Result<(Option<usize>, usize), Box<dyn Error>> {
     if state.frames.is_empty() { return Err("Load a non-empty trace before exporting".into()); }
     if path.trim().is_empty() { return Err("Enter an export path".into()); }
+    // Never page-limit exports. The optional filter is evaluated across
+    // the entire retained trace; unfiltered exports borrow without a copy.
+    let frames: std::borrow::Cow<'_, [CanFrame]> = match filter {
+        Some(filter) if !filter.is_empty() => std::borrow::Cow::Owned(
+            state.frames.iter().filter(|frame| filter.matches(frame)).cloned().collect()
+        ),
+        _ => std::borrow::Cow::Borrowed(&state.frames),
+    };
+    if frames.is_empty() { return Err("No frames match the current export filter".into()); }
     let mut bytes = Vec::new();
     let lower = path.to_ascii_lowercase();
     let signal_count = if lower.ends_with(".stats.csv") {
-        Some(write_id_stats_csv(&mut bytes, &state.frames)?)
+        Some(write_id_stats_csv(&mut bytes, frames.as_ref())?)
     } else if lower.ends_with(".signals.csv") {
         let dbc = state.context.dbc.as_ref()
             .ok_or("Load at least one DBC before exporting decoded signals")?;
-        Some(write_decoded_csv(&mut bytes, &state.frames, dbc)?)
+        Some(write_decoded_csv(&mut bytes, frames.as_ref(), dbc)?)
     } else if lower.ends_with(".crtd") || lower.ends_with(".crt") {
-        write_crtd(&mut bytes, &state.frames)?;
+        write_crtd(&mut bytes, frames.as_ref())?;
         None
     } else if lower.ends_with(".csv") {
-        write_gvret_csv(&mut bytes, &state.frames)?;
+        write_gvret_csv(&mut bytes, frames.as_ref())?;
         None
     } else if lower.ends_with(".log") || lower.ends_with(".candump") {
-        write_candump(&mut bytes, &state.frames)?;
+        write_candump(&mut bytes, frames.as_ref())?;
         None
     } else if lower.ends_with(".pcapng") {
-        write_socketcan_pcapng(&mut bytes, &state.frames)?;
+        write_socketcan_pcapng(&mut bytes, frames.as_ref())?;
         None
     } else if lower.ends_with(".pcap") {
-        write_socketcan_pcap(&mut bytes, &state.frames)?;
+        write_socketcan_pcap(&mut bytes, frames.as_ref())?;
         None
     } else {
         return Err("Use .crt/.crtd, .csv, .log, .candump, .pcap, .pcapng, .stats.csv or .signals.csv for export".into());
@@ -335,7 +346,7 @@ fn export_trace(path: &str, state: &ViewerState) -> Result<Option<usize>, Box<dy
     // No overwrite and no partial output on format-validation failure.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(&bytes)?;
-    Ok(signal_count)
+    Ok((signal_count, frames.len()))
 }
 
 fn stop_capture(flag: &Rc<RefCell<Option<Arc<AtomicBool>>>>) {
@@ -449,25 +460,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let weak = ui.as_weak();
     let state_for_export = Rc::clone(&state);
-    ui.on_export_trace(move |path| {
+    let filter_for_export = Rc::clone(&filter);
+    ui.on_export_trace(move |path, matching| {
         if let Some(ui) = weak.upgrade() {
             let state = state_for_export.borrow();
-            match export_trace(path.as_str(), &state) {
-                Ok(Some(rows)) => {
+            let filter = filter_for_export.borrow();
+            match export_trace(path.as_str(), &state, matching.then_some(&*filter)) {
+                Ok((Some(rows), count)) => {
                     let kind = if path.to_ascii_lowercase().ends_with(".stats.csv") {
                         "CAN interface/ID statistics groups"
                     } else { "decoded DBC signal values" };
-                    ui.set_status_text(format!("Exported {rows} {kind} to {path}").into());
+                    ui.set_status_text(format!("Exported {rows} {kind} from {count} frames to {path}").into());
                 },
-                Ok(None) => {
+                Ok((None, count)) => {
                     let candump = path.to_ascii_lowercase().ends_with(".log")
                         || path.to_ascii_lowercase().ends_with(".candump");
                     let caveat = if candump { " • candump does not store Rx/Tx direction" }
                         else if path.to_ascii_lowercase().ends_with(".pcap") {
                             " • PCAP omits interface and Rx/Tx direction"
                         } else { "" };
-                    ui.set_status_text(format!("Exported {} frames to {path}{caveat}",
-                        state.frames.len()).into());
+                    ui.set_status_text(format!("Exported {count} frames to {path}{caveat}").into());
                 },
                 Err(error) => ui.set_status_text(format!("Could not export: {error}").into()),
             }

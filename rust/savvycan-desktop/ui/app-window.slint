@@ -1,4 +1,4 @@
-import { Button, LineEdit, HorizontalBox, VerticalBox, ListView } from "std-widgets.slint";
+import { Button, CheckBox, LineEdit, HorizontalBox, VerticalBox, ListView } from "std-widgets.slint";
 
 export struct FrameRow {
     timestamp: string,
@@ -56,6 +56,7 @@ export component AppWindow inherits Window {
     in-out property <string> format-spec: "";
     in-out property <string> rules-path: "";
     in-out property <string> export-path: "";
+    in-out property <bool> export-matching: false;
     in-out property <string> live-interface: "can0";
     in-out property <string> serial-path: "";
     in-out property <string> serial-baud: "115200";
@@ -86,7 +87,7 @@ export component AppWindow inherits Window {
     callback browse-dbc();
     callback browse-rules();
     callback browse-export();
-    callback export-trace(string);
+    callback export-trace(string, bool);
     callback start-live(string, string, string, string);
     callback stop-live();
     callback start-slcan(string, string, string, string, string, string);
@@ -150,9 +151,13 @@ export component AppWindow inherits Window {
                 placeholder-text: "New export (.crtd, .csv, .log, .pcap, .pcapng, .stats.csv, .signals.csv)";
             }
             Button { text: "Save as"; clicked => { root.browse-export(); } }
+            CheckBox {
+                text: "Only matching";
+                checked <=> root.export-matching;
+            }
             Button {
                 text: "Export trace";
-                clicked => { root.export-trace(root.export-path); }
+                clicked => { root.export-trace(root.export-path, root.export-matching); }
             }
         }
 
