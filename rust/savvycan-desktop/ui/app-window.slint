@@ -1,4 +1,4 @@
-import { Button, LineEdit, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { Button, LineEdit, HorizontalBox, VerticalBox, ListView } from "std-widgets.slint";
 
 export struct FrameRow {
     timestamp: string,
@@ -73,6 +73,7 @@ export component AppWindow inherits Window {
         ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
+                width: parent.width;
                 background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
                 HorizontalBox {
                     padding-left: 8px;
