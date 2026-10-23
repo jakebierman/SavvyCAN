@@ -31,6 +31,8 @@ jobs:
       - name: Linux GUI build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libdbus-1-dev
       - run: cargo check --manifest-path rust/Cargo.toml -p savvycan-desktop
+      - name: Test desktop data/view logic
+        run: cargo test --manifest-path rust/Cargo.toml -p savvycan-desktop
       - name: Build runnable Linux preview
         run: cargo build --manifest-path rust/Cargo.toml -p savvycan-desktop
       - name: Build read-only ISO-TP trace inspector

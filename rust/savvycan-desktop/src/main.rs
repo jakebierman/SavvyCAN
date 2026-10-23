@@ -303,19 +303,25 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
     Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0 }, message))
 }
 
+/// Apply the current query across all retained frames, regardless of UI page.
+fn selected_export_frames<'a>(
+    frames: &'a [CanFrame], filter: Option<&TraceFilter>,
+) -> std::borrow::Cow<'a, [CanFrame]> {
+    match filter {
+        Some(filter) if !filter.is_empty() => std::borrow::Cow::Owned(
+            frames.iter().filter(|frame| filter.matches(frame)).cloned().collect()
+        ),
+        _ => std::borrow::Cow::Borrowed(frames),
+    }
+}
+
 fn export_trace(
     path: &str, state: &ViewerState, filter: Option<&TraceFilter>,
 ) -> Result<(Option<usize>, usize), Box<dyn Error>> {
     if state.frames.is_empty() { return Err("Load a non-empty trace before exporting".into()); }
     if path.trim().is_empty() { return Err("Enter an export path".into()); }
-    // Never page-limit exports. The optional filter is evaluated across
-    // the entire retained trace; unfiltered exports borrow without a copy.
-    let frames: std::borrow::Cow<'_, [CanFrame]> = match filter {
-        Some(filter) if !filter.is_empty() => std::borrow::Cow::Owned(
-            state.frames.iter().filter(|frame| filter.matches(frame)).cloned().collect()
-        ),
-        _ => std::borrow::Cow::Borrowed(&state.frames),
-    };
+    // Never page-limit exports. Unfiltered exports borrow without a copy.
+    let frames = selected_export_frames(&state.frames, filter);
     if frames.is_empty() { return Err("No frames match the current export filter".into()); }
     let mut bytes = Vec::new();
     let lower = path.to_ascii_lowercase();
@@ -995,4 +1001,43 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui.run()?;
     stop_capture(&capture_flag);
     Ok(())
+}
+
+#[cfg(test)]
+mod export_view_tests {
+    use super::*;
+    use savvycan_core::{CanId, FdFlags};
+
+    fn frame(us: u64, id: u16, value: u8) -> CanFrame {
+        CanFrame::new(Some(us), "can0", CanId::Standard(id),
+            FrameKind::Data, vec![value], false, FdFlags::default()).unwrap()
+    }
+
+    #[test]
+    fn empty_filter_borrows_all_retained_frames() {
+        let frames = vec![frame(1, 0x123, 0x11), frame(2, 0x456, 0x22)];
+        assert!(matches!(selected_export_frames(&frames, None),
+            std::borrow::Cow::Borrowed(_)));
+        assert_eq!(selected_export_frames(&frames, None).len(), 2);
+        let all = TraceFilter::default();
+        assert!(matches!(selected_export_frames(&frames, Some(&all)),
+            std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn filtered_export_uses_all_matches_not_only_visible_page() {
+        let frames = vec![
+            frame(1_000_000, 0x123, 0x11),
+            frame(2_000_000, 0x456, 0x22),
+            frame(3_000_000, 0x123, 0x33),
+            frame(4_000_000, 0x123, 0x44),
+        ];
+        let query = TraceFilter::parse_with_time_and_payload(
+            "can0", "S:123", "2", "4", "33").unwrap();
+        let matching = selected_export_frames(&frames, Some(&query));
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].data, vec![0x33]);
+        let none = TraceFilter::parse_with_time("", "S:777", "", "").unwrap();
+        assert!(selected_export_frames(&frames, Some(&none)).is_empty());
+    }
 }
