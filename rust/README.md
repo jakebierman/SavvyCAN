@@ -57,9 +57,10 @@ default typed expression, and RTR requests are never formatted.
 | BLF, PCAP, Vector CAN FD ASC and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
+| Passive ISO-TP normal-addressing payload reassembly | Initial core support (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
-| Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
+| Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
 Microchip, CARBUS Analyzer V2/V3 and PEAK PCAN TRC 1.1–2.1 text logs. The viewer also exports CRTD, GVRET CSV V2 and compact candump `.log` to a user-selected **new** file;
@@ -209,3 +210,18 @@ checked before PGN fallbacks across all databases, and ambiguous PGNs within
 a database are left undecoded. Generic extended-ID DBCs retain exact matching
 unless the protocol declaration opts in. J1939 transport-protocol reassembly
 is not yet implemented. Typed payload formats remain independent.
+
+## Passive ISO-TP groundwork
+
+`IsoTpAssembler` in the portable core reconstructs selected normal-addressed
+ISO 15765-2 messages from already captured CAN or CAN FD traffic. Single frames,
+multi-frame first/consecutive frames, CAN FD extended single-frame lengths,
+32-bit first-frame lengths, sequence rollover, per-interface/CAN-ID/direction
+isolation, timeout checks and payload/session limits are supported. Flow-control
+records are observed only; nothing is sent on the bus.
+
+This is a core API for future diagnostic views, **not** a UDS session-control
+or scanning tool. A caller must explicitly select the diagnostic CAN IDs to
+reassemble; unrelated CAN traffic can otherwise be mistaken for ISO-TP.
+Extended/mixed addressing, UDS semantic decoding, and ISO-TP transmit remain
+outside the current feature boundary.

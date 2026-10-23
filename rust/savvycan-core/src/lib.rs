@@ -12,6 +12,7 @@ pub mod receiver;
 pub mod filter;
 pub mod dbc_stack;
 pub mod signal_export;
+pub mod isotp;
 
 pub use candump::{parse_candump_line, read_candump, CandumpError, TraceReadError};
 pub use dbc::{
@@ -24,6 +25,7 @@ pub use file_formats::{read_trace, write_candump, write_crtd, write_gvret_csv, E
 pub use frame::{CanFrame, CanId, Direction, FdFlags, FrameError, FrameKind};
 pub use dbc_stack::DbcStack;
 pub use signal_export::{write_decoded_csv, SignalExportError};
+pub use isotp::{IsoTpAssembler, IsoTpError, IsoTpPacket};
 pub use filter::{FilterError, IdFilter, TraceFilter};
 pub use receiver::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 pub use trace::{summarize, TraceSummary};
