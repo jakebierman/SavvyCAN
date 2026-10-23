@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path_on_axes, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series_batch, plot_path_on_axes, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -908,16 +908,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_status_text("Load a DBC before plotting decoded signals.".into());
             return;
         };
-        let mut series = Vec::with_capacity(selected_names.len());
-        for selected in selected_names {
-            match extract_numeric_series(&state.frames, dbc, &selector, selected) {
-                Ok(found) => series.push(found),
-                Err(error) => {
-                    ui.set_status_text(error.into());
-                    return;
-                }
+        let series = match extract_numeric_series_batch(
+            &state.frames, dbc, &selector, &selected_names) {
+            Ok(series) => series,
+            Err(error) => {
+                ui.set_status_text(error.into());
+                return;
             }
-        }
+        };
         let axis = series[0].axis;
         if series.iter().any(|value| value.axis != axis) {
             ui.set_status_text("Selected signals have incompatible time bases; choose signals with consistent timestamps.".into());

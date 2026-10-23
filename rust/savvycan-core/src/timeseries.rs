@@ -57,6 +57,66 @@ pub fn extract_numeric_series(
     Ok(NumericSeries { signal: name.into(), unit, axis, points, decode_errors })
 }
 
+/// Decode several DBC signals in one pass over the trace.
+///
+/// Every returned series uses the same time base: if *any* observed selected
+/// signal lacks a timestamp, all returned series use original frame indices.
+/// This keeps multiplexed signals synchronized without re-decoding the same
+/// high-volume trace once per plotted signal.
+pub fn extract_numeric_series_batch(
+    frames: &[CanFrame], stack: &DbcStack, filter: &TraceFilter, names: &[&str],
+) -> Result<Vec<NumericSeries>, String> {
+    if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
+        return Err("Select at least one non-empty DBC signal.".into());
+    }
+    if names.iter().enumerate().any(|(index, name)|
+        names[..index].contains(name))
+    {
+        return Err("DBC signal names must be unique.".into());
+    }
+    let mut observations = vec![Vec::<(usize, Option<u64>, f64)>::new(); names.len()];
+    let mut units = vec![String::new(); names.len()];
+    let mut decode_errors = 0usize;
+    for (index, frame) in frames.iter().enumerate() {
+        if !matches!(frame.kind, FrameKind::Data) || !filter.matches(frame) { continue; }
+        match stack.decode(frame) {
+            Ok(Some(decoded)) => {
+                for signal in decoded.signals.iter() {
+                    if !signal.value.is_finite() { continue; }
+                    if let Some(position) = names.iter().position(|name| *name == signal.name.as_str()) {
+                        if units[position].is_empty() { units[position] = signal.unit.clone(); }
+                        observations[position].push((index, frame.timestamp_us, signal.value));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(_) => decode_errors += 1,
+        }
+    }
+    let complete_timestamps = observations.iter().flatten()
+        .all(|(_, timestamp, _)| timestamp.is_some());
+    let axis = if complete_timestamps {
+        HorizontalAxis::TimestampMicroseconds
+    } else {
+        HorizontalAxis::FrameIndex
+    };
+    observations.into_iter().zip(names.iter()).zip(units).map(
+        |((samples, name), unit)| {
+            if samples.is_empty() {
+                return Err(format!("No finite samples for DBC signal '{name}' in the selected trace."));
+            }
+            let points = samples.into_iter().map(|(index, timestamp, value)| (
+                if complete_timestamps {
+                    timestamp.expect("timestamp presence validated")
+                } else { index as u64 }, value
+            )).collect();
+            Ok(NumericSeries {
+                signal: (*name).to_owned(), unit, axis, points, decode_errors,
+            })
+        }
+    ).collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlotPath {
     pub commands: String,
@@ -221,6 +281,28 @@ mod tests {
         assert_eq!(single.commands, "M 500.00 150.00");
         assert!(plot_path(&[(1, f64::NAN), (2, f64::INFINITY)], 20).is_err());
     }
+    #[test]
+    fn batch_decodes_multiple_signals_once_and_synchronizes_missing_timestamps() {
+        let mut stack = DbcStack::new();
+        stack.add_global(DbcDatabase::parse(
+            "BO_ 291 Engine: 2 ECU\n SG_ RPM : 0|8@1+ (2,0) [0|510] \"rpm\" ECU\n SG_ Temp : 8|8@1+ (1,-40) [-40|215] \"C\" ECU\n"
+        ).unwrap());
+        let frames = vec![
+            CanFrame::new(Some(100), "can0", CanId::Standard(0x123),
+                FrameKind::Data, vec![2, 60], false, FdFlags::default()).unwrap(),
+            CanFrame::new(None, "can0", CanId::Standard(0x123),
+                FrameKind::Data, vec![4, 70], false, FdFlags::default()).unwrap(),
+        ];
+        let batch = extract_numeric_series_batch(&frames, &stack,
+            &TraceFilter::default(), &["RPM", "Temp"]).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().all(|signal| signal.axis == HorizontalAxis::FrameIndex));
+        assert_eq!(batch[0].points, vec![(0, 4.0), (1, 8.0)]);
+        assert_eq!(batch[1].points, vec![(0, 20.0), (1, 30.0)]);
+        assert!(extract_numeric_series_batch(&frames, &stack,
+            &TraceFilter::default(), &["RPM", "missing"]).is_err());
+    }
+
     #[test]
     fn shared_axes_align_different_series_in_time() {
         let a = plot_path_on_axes(&[(100, 0.0), (200, 10.0)], 100,
