@@ -11,7 +11,7 @@ use std::time::Duration;
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
     analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
-    CanReceive, FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
+    CanReceive, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
 use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
