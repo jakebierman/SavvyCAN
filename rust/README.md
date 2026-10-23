@@ -66,7 +66,8 @@ default typed expression, and RTR requests are never formatted.
 | Passive ISO-TP normal-addressing payload reassembly | Initial core support and selectable read-only Slint inspector (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET binary receive stream | Initial classic/FD byte parser and tests; serial/TCP connection, setup and hardware validation not yet |
-| GVRET serial/TCP attachment, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
+| LAWICEL/SLCAN receive stream | Initial parser for classic CAN, RTR, optional timestamp and rollover; physical serial attachment not yet |
+| GVRET/SLCAN serial attachment, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
@@ -319,3 +320,16 @@ live capture. Physical GVRET attachment and hardware tests are required before
 claiming a working GVRET device adapter. The legacy implementation and
 [M2RET protocol specification](https://github.com/collin80/M2RET/blob/master/CommProtocol.txt)
 were consulted for frame layout.
+
+## LAWICEL/SLCAN ASCII receive groundwork
+
+`savvycan-transports::SlcanStreamDecoder` consumes arbitrary serial-byte
+chunks and reconstructs CR-terminated `t/T` standard/extended classic CAN
+frames and `r/R` remote requests. It handles optional 4-hex-digit
+LAWICEL timestamps, unwraps the vendor's documented 60-second millisecond
+counter, ignores ordinary command acknowledgement/status text and rejects
+invalid IDs, DLCs, payloads and overlong records. Frames without a
+recorded timestamp keep it unknown. The parser does not transmit anything or
+open/configure a serial port, and CAN FD extensions remain unsupported until
+their dialect is explicitly identified and tested. See the
+[LAWICEL CAN232 manual](https://www.canusb.com/files/can232_v3.pdf).
