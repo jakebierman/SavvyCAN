@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
-    describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -144,6 +144,37 @@ fn offline_page_text(state: &ViewerState, filter: &TraceFilter, page_size: usize
 }
 
 
+
+fn traffic_statistics_rows(frames: &[CanFrame], limit: usize) -> (Vec<StatsRow>, usize) {
+    let mut groups = analyze_ids(frames);
+    let all = groups.len();
+    groups.sort_by(|a, b| b.count.cmp(&a.count)
+        .then_with(|| a.interface.cmp(&b.interface))
+        .then_with(|| a.id.value().cmp(&b.id.value()))
+        .then_with(|| a.id.is_extended().cmp(&b.id.is_extended())));
+    let rows = groups.into_iter().take(limit).map(|stat| {
+        let format_time = |v: Option<u64>| v
+            .map(|us| format!("{}.{:06}", us / 1_000_000, us % 1_000_000))
+            .unwrap_or_else(|| "—".into());
+        StatsRow {
+            channel: stat.interface.into(),
+            can_id: stat.id.to_string().into(),
+            count: stat.count.to_string().into(),
+            classic: stat.classic_count.to_string().into(),
+            fd: stat.fd_count.to_string().into(),
+            remote: stat.remote_count.to_string().into(),
+            payload_bytes: stat.payload_bytes.to_string().into(),
+            first: format_time(stat.first_us).into(),
+            last: format_time(stat.last_us).into(),
+            mean_period: stat.average_period_us
+                .map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into()).into(),
+            hz: stat.estimated_hz
+                .map(|v| format!("{v:.2}")).unwrap_or_else(|| "—".into()).into(),
+        }
+    }).collect();
+    (rows, all)
+}
+
 fn passive_isotp_rows(
     state: &ViewerState, filter: &TraceFilter, limit: usize,
 ) -> (Vec<IsoTpRow>, String) {
@@ -266,6 +297,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model = Rc::new(VecModel::<FrameRow>::from(Vec::new()));
     let isotp_model = Rc::new(VecModel::<IsoTpRow>::from(Vec::new()));
     ui.set_isotp_rows(ModelRc::from(Rc::clone(&isotp_model)));
+    let stats_model = Rc::new(VecModel::<StatsRow>::from(Vec::new()));
+    ui.set_stats_rows(ModelRc::from(Rc::clone(&stats_model)));
     ui.set_frames(ModelRc::from(Rc::clone(&model)));
     let state = Rc::new(RefCell::new(ViewerState::default()));
     let filter = Rc::new(RefCell::new(TraceFilter::default()));
@@ -294,6 +327,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         ui.set_page_text(offline_page_text(&new_state, &filter, OFFLINE_ROWS).into());
                         *state_for_open.borrow_mut() = new_state;
                         ui.set_show_isotp(false);
+                        ui.set_show_stats(false);
                         ui.set_status_text(message.into());
                     }
                     Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
@@ -418,6 +452,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     model_for_isotp.set_vec(rows);
                     ui.set_isotp_summary(summary.clone().into());
                     ui.set_show_isotp(true);
+                    ui.set_show_stats(false);
                     ui.set_status_text(summary.into());
                 }
                 Ok(_) => ui.set_status_text(
@@ -425,6 +460,34 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ),
                 Err(error) => ui.set_status_text(format!("Invalid ISO-TP selector: {error}").into()),
             }
+        }
+    });
+
+
+    let weak = ui.as_weak();
+    let state_for_stats = Rc::clone(&state);
+    let model_for_stats = Rc::clone(&stats_model);
+    ui.on_open_statistics(move || {
+        if let Some(ui) = weak.upgrade() {
+            let state = state_for_stats.borrow();
+            if state.live {
+                ui.set_status_text("Stop live capture before generating traffic statistics.".into());
+                return;
+            }
+            if state.frames.is_empty() {
+                ui.set_status_text("Load a trace or stop a capture before viewing statistics.".into());
+                return;
+            }
+            let (rows, total) = traffic_statistics_rows(&state.frames, 2_000);
+            let shown = rows.len();
+            model_for_stats.set_vec(rows);
+            let message = format!(
+                "{total} interface/ID groups • top {shown} shown by count • full report: .stats.csv"
+            );
+            ui.set_stats_summary(message.clone().into());
+            ui.set_show_isotp(false);
+            ui.set_show_stats(true);
+            ui.set_status_text(message.into());
         }
     });
 
@@ -476,6 +539,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         };
                         model_for_start.clear();
                         ui.set_show_isotp(false);
+                        ui.set_show_stats(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }

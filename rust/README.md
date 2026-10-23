@@ -53,6 +53,7 @@ default typed expression, and RTR requests are never formatted.
 | Linux candump compact `.log` export (classic, CAN FD, RTR) | Done; timestamps/FD flags retained, Rx/Tx direction unavailable in candump |
 | Decoded DBC signals `.signals.csv` export | Done; one row per signal for spreadsheets/plotting |
 | Per-interface/CAN-ID `.stats.csv` export | Done; counts, timestamps, interarrival times and estimated frequency |
+| Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
 | Offline trace statistics, 1,000-row paging and interface/ID/time filtering | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
@@ -287,6 +288,8 @@ payloads beyond eight bytes are rejected until a verified format extension
 is available. Direction is unknown rather than assumed received.
 
 ## Offline CAN-ID traffic statistics
+
+Click **Traffic statistics** to inspect the top 2,000 interface/ID groups ranked by frame count, including first/last time, mean interarrival and estimated frequency. The table uses all retained frames and is available after loading a file or stopping live capture. Click **Trace frames** to return to the CAN-frame table.
 
 Export to a **new** `.stats.csv` file to get one row per exact interface/ID
 combination, including counts of classic/FD/RTR messages, payload bytes,
