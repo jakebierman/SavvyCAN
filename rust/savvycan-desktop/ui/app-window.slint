@@ -73,7 +73,7 @@ export component AppWindow inherits Window {
         ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
-                background: i % 2 == 0 ? #182233 : #131e2d;
+                background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
                 HorizontalBox {
                     padding-left: 8px;
                     spacing: 8px;
