@@ -11,7 +11,7 @@ pipeline yet.
   DBC loading and decoding, typed payload formatting, and summary metrics. Shared by Slint, CLI tools,
   tests and future adapters. No Qt, Slint or operating-system-specific code.
 - **savvycan-desktop**: Slint graphical shell. Currently **offline and read-only**.
-  Open a Linux candump log, optionally load a DBC and a typed format, then browse raw and decoded
+  Open a supported CAN trace, optionally load a DBC and a typed format, then browse raw and decoded
   frames. Input errors include source line numbers.
 
 ## Run
@@ -38,14 +38,23 @@ assignment. It never formats RTR requests.
 | Validated 11/29-bit identifiers, classic CAN and CAN FD payloads | Done |
 | Per-interface identity, microsecond timestamps, FD flags and RTR | Done |
 | Linux candump compact and simple bracketed-text log import | Done |
+| CRTD, GVRET native CSV (V1/V2), generic ID/data CSV imports | Done (content autodetection and source-line errors) |
+| CRTD and GVRET native CSV V2 exports | Core writer only (classic CAN, lossless preflight checks) |
 | Offline trace statistics and first 25,000 rows in a Slint viewer | Done |
 | DBC message/signal load, signed/unsigned Intel/Motorola, scale/offset | Initial support |
 | DBC enumerations, IEEE 32/64-bit float, simple and nested mux ranges | Initial support |
 | DBC matching for J1939/GMLAN PGN profiles, multi-file precedence | Not yet |
-| GVRET, CRTD, BLF, PCAP, CSV and other source formats | Not yet |
+| BLF, PCAP, BusMaster, Microchip and other source formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, tests and global Slint preview |
 | SocketCAN, GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, UDS, CANopen, graphing, AI | Not yet |
+
+Capture import autodetects candump, CRTD and the original GVRET/generic CSV
+headers. The core can also serialize CRTD and GVRET CSV V2, but the viewer does
+not expose export yet. Those writers deliberately reject frames they cannot
+round-trip (CAN FD, RTR, missing timestamps or unknown Rx/Tx direction) rather
+than truncate or invent data. Generic ID/data CSV has no timestamps or direction
+and retains those values as unknown.
 
 The pure-Rust typed formatter supports integer/float byte order, signed values,
 text, individual bits, masks and shifts, arithmetic, units, fixed precision,

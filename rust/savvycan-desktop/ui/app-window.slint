@@ -21,7 +21,7 @@ export component AppWindow inherits Window {
     in-out property <string> file-path: "";
     in-out property <string> dbc-path: "";
     in-out property <string> format-spec: "";
-    in property <string> status-text: "Enter a candump log path to inspect an offline trace.";
+    in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <[FrameRow]> frames: [];
     callback open-trace(string, string, string);
 
@@ -46,7 +46,7 @@ export component AppWindow inherits Window {
             spacing: 8px;
             LineEdit {
                 text <=> root.file-path;
-                placeholder-text: "Path to candump .log file";
+                placeholder-text: "Path to CAN trace (.log, .crt, .crtd, .csv)";
             }
             LineEdit {
                 text <=> root.dbc-path;

@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 
 use savvycan_core::{
-    read_candump, summarize, CanFrame, DbcDatabase, DecodedSignal, FrameKind, PayloadFormatter,
+    read_trace, summarize, CanFrame, DbcDatabase, DecodedSignal, FrameKind, PayloadFormatter,
 };
 use slint::{ModelRc, VecModel};
 
@@ -75,7 +75,9 @@ fn open_trace(ui: &AppWindow, path: &str, dbc_path: &str, format_spec: &str) -> 
         Some(DbcDatabase::parse(&std::fs::read_to_string(dbc_path)?)?)
     };
     let reader = BufReader::new(File::open(path)?);
-    let frames = read_candump(reader)?;
+    let imported = read_trace(reader)?;
+    let format = imported.format;
+    let frames = imported.frames;
     let summary = summarize(&frames);
 
     const ROW_LIMIT: usize = 25_000;
@@ -84,7 +86,7 @@ fn open_trace(ui: &AppWindow, path: &str, dbc_path: &str, format_spec: &str) -> 
         .collect::<Vec<_>>();
     ui.set_frames(ModelRc::new(VecModel::from(rows)));
     ui.set_status_text(format!(
-        "{} frames • {} distinct interface/ID pairs • {} classic • {} FD • {} RTR{}{}{}",
+        "{} frames • {} distinct interface/ID pairs • {} classic • {} FD • {} RTR • {format}{}{}{}",
         summary.frames,
         summary.unique_identifiers,
         summary.classic_frames,
