@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Write};
@@ -9,7 +10,8 @@ use std::time::Duration;
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_socketcan_pcap,
-    CanFrame, DbcDatabase, DbcStack, DecodedSignal, FrameKind, PayloadFormatter,
+    describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    FrameKind, IdFilter, IsoTpAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
 use slint::{Model, ModelRc, VecModel, Timer, TimerMode};
@@ -141,6 +143,62 @@ fn offline_page_text(state: &ViewerState, filter: &TraceFilter, page_size: usize
     format!("Rows {first}–{last} of {matching} matching • {} total frames", state.frames.len())
 }
 
+
+fn passive_isotp_rows(
+    state: &ViewerState, filter: &TraceFilter, limit: usize,
+) -> (Vec<IsoTpRow>, String) {
+    let mut assembler = IsoTpAssembler::new();
+    let mut visible = VecDeque::new();
+    let mut checked = 0usize;
+    let mut reconstructed = 0usize;
+    let mut invalid = 0usize;
+    let mut first_errors = Vec::new();
+    for (index, frame) in state.frames.iter().enumerate() {
+        if !filter.matches(frame) { continue; }
+        checked += 1;
+        match assembler.push(frame) {
+            Ok(Some(packet)) => {
+                reconstructed += 1;
+                let bytes = packet.payload.iter().take(64)
+                    .map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+                let payload = if packet.payload.len() > 64 {
+                    format!("{bytes} … ({} more bytes)", packet.payload.len() - 64)
+                } else { bytes };
+                let timestamp = packet.end_timestamp_us
+                    .map(|us| format!("{}.{:06}", us / 1_000_000, us % 1_000_000))
+                    .unwrap_or_else(|| "—".into());
+                if visible.len() == limit { visible.pop_front(); }
+                visible.push_back(IsoTpRow {
+                    timestamp: timestamp.into(),
+                    channel: packet.interface.into(),
+                    can_id: packet.id.to_string().into(),
+                    direction: format!("{:?}", packet.direction).into(),
+                    length: packet.payload.len().to_string().into(),
+                    payload: payload.into(),
+                    summary: describe_uds_like_payload(&packet.payload).into(),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                invalid += 1;
+                if first_errors.len() < 3 {
+                    first_errors.push(format!("frame {}: {error}", index + 1));
+                }
+            }
+        }
+    }
+    let unfinished = assembler.pending_count();
+    let notice = if invalid > 0 {
+        format!(" • examples: {}", first_errors.join("; "))
+    } else { String::new() };
+    let message = format!(
+        "Passive ISO-TP • {checked} frames inspected • {reconstructed} packets • \
+         {invalid} errors • {unfinished} unfinished • latest {} shown{notice}",
+        visible.len()
+    );
+    (visible.into_iter().collect(), message)
+}
+
 fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
     -> Result<(ViewerState, String), Box<dyn Error>>
 {
@@ -206,6 +264,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let ui = AppWindow::new()?;
     let model = Rc::new(VecModel::<FrameRow>::from(Vec::new()));
+    let isotp_model = Rc::new(VecModel::<IsoTpRow>::from(Vec::new()));
+    ui.set_isotp_rows(ModelRc::from(Rc::clone(&isotp_model)));
     ui.set_frames(ModelRc::from(Rc::clone(&model)));
     let state = Rc::new(RefCell::new(ViewerState::default()));
     let filter = Rc::new(RefCell::new(TraceFilter::default()));
@@ -233,6 +293,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         model_for_open.set_vec(visible_rows(&new_state, &filter, OFFLINE_ROWS));
                         ui.set_page_text(offline_page_text(&new_state, &filter, OFFLINE_ROWS).into());
                         *state_for_open.borrow_mut() = new_state;
+                        ui.set_show_isotp(false);
                         ui.set_status_text(message.into());
                     }
                     Err(error) => ui.set_status_text(format!("Could not import trace: {error}").into()),
@@ -333,6 +394,40 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+
+    // Passive, explicitly selected diagnostic ID. Never transmits or
+    // generates flow-control frames. Inspects full retained trace in
+    // source order, independently of display filter and offline page.
+    let weak = ui.as_weak();
+    let state_for_isotp = Rc::clone(&state);
+    let model_for_isotp = Rc::clone(&isotp_model);
+    ui.on_inspect_isotp(move |interface, id| {
+        if let Some(ui) = weak.upgrade() {
+            if id.trim().is_empty() {
+                ui.set_status_text("Select one exact ISO-TP CAN ID (e.g. S:7E8).".into());
+                return;
+            }
+            match TraceFilter::parse(interface.as_str(), id.as_str()) {
+                Ok(filter) if matches!(filter.id, Some(IdFilter::Exact(_))) => {
+                    let state = state_for_isotp.borrow();
+                    if state.live {
+                        ui.set_status_text("Stop live capture before inspecting ISO-TP history.".into());
+                        return;
+                    }
+                    let (rows, summary) = passive_isotp_rows(&state, &filter, 2_000);
+                    model_for_isotp.set_vec(rows);
+                    ui.set_isotp_summary(summary.clone().into());
+                    ui.set_show_isotp(true);
+                    ui.set_status_text(summary.into());
+                }
+                Ok(_) => ui.set_status_text(
+                    "ISO-TP requires an exact CAN ID, not a range, mask or PGN.".into()
+                ),
+                Err(error) => ui.set_status_text(format!("Invalid ISO-TP selector: {error}").into()),
+            }
+        }
+    });
+
     let weak = ui.as_weak();
     let state_for_start = Rc::clone(&state);
     let model_for_start = Rc::clone(&model);
@@ -380,6 +475,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             page_offset: 0,
                         };
                         model_for_start.clear();
+                        ui.set_show_isotp(false);
                         ui.set_page_text("Live: latest 2,000 matching rows".into());
                         ui.set_status_text("Opening receive-only SocketCAN interface…".into());
                     }

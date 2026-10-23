@@ -62,7 +62,7 @@ default typed expression, and RTR requests are never formatted.
 | BLF, PCAPNG, other PCAP linktypes, Vector CAN FD ASC and other formats | Not yet |
 | Custom typed payload formatter and per-ID rules (separate from DBC) | Initial support: portable parser/router, Slint global and rules-file previews |
 | Modular receive-only transport contract and replay mock | Done |
-| Passive ISO-TP normal-addressing payload reassembly | Initial core support (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
+| Passive ISO-TP normal-addressing payload reassembly | Initial core support and selectable read-only Slint inspector (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
 | GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
@@ -238,10 +238,12 @@ interface. The tool prints reconstructed payloads and UDS-like service hints
 and warns about incomplete or invalid sequences. The Linux CI preview artifact
 now includes this companion executable alongside the Slint desktop binary.
 
-This is a core API for future diagnostic views, **not** a UDS session-control
+The Slint desktop also has a **Passive ISO-TP** inspector. After loading a trace or stopping capture, enter an exact diagnostic CAN ID such as `S:7E8` or `X:18DAF110`, optionally restrict the interface, and press **Inspect passive ISO-TP**. The separate table displays up to the latest 2,000 reconstructed packets from the full retained history (not just the displayed page or other filters), with truncated 64-byte hex previews, cautious UDS-like service hints, and error/unfinished counts. You must select a diagnostic ID explicitly; patterns and PGNs are rejected to avoid mixing non-diagnostic frames. No requests or flow-control frames are transmitted.
+
+This is groundwork for future diagnostic views, **not** a UDS session-control
 or scanning tool. A caller must explicitly select the diagnostic CAN IDs to
 reassemble; unrelated CAN traffic can otherwise be mistaken for ISO-TP.
-Extended/mixed addressing, UDS semantic decoding, and ISO-TP transmit remain
+Extended/mixed addressing, full UDS semantic decoding, and ISO-TP transmit remain
 outside the current feature boundary.
 
 ## IXXAT MiniLog import

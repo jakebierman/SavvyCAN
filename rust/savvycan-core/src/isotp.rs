@@ -202,6 +202,22 @@ impl IsoTpAssembler {
     }
 }
 
+
+/** A conservative service hint for passive payload display, not a UDS decoder.
+ *  It does not infer a request/response relationship or authenticate an ECU.
+ */
+pub fn describe_uds_like_payload(bytes: &[u8]) -> String {
+    if bytes.len() >= 3 && bytes[0] == 0x7f {
+        format!("UDS-like negative response to {:02X}, NRC {:02X}", bytes[1], bytes[2])
+    } else if let Some(&sid) = bytes.first() {
+        if (0x40..=0x7e).contains(&sid) {
+            format!("UDS-like positive response SID {sid:02X}")
+        } else {
+            format!("payload SID {sid:02X} (not classified)")
+        }
+    } else { "empty payload".into() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +226,13 @@ mod tests {
     fn frame(us: u64, interface: &str, id: u16, bytes: &[u8], fd: bool) -> CanFrame {
         CanFrame::new(Some(us), interface, CanId::Standard(id),
             FrameKind::Data, bytes.to_vec(), fd, FdFlags::default()).unwrap()
+    }
+
+    #[test]
+    fn passive_service_hints_are_conservative() {
+        assert!(describe_uds_like_payload(&[0x62, 0xf1, 0x90]).contains("positive"));
+        assert!(describe_uds_like_payload(&[0x7f, 0x22, 0x31]).contains("NRC 31"));
+        assert!(describe_uds_like_payload(&[0x10, 0x03]).contains("not classified"));
     }
 
     #[test]

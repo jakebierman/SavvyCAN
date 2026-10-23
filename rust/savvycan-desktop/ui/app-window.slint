@@ -12,6 +12,16 @@ export struct FrameRow {
     typed-values: string,
 }
 
+export struct IsoTpRow {
+    timestamp: string,
+    channel: string,
+    can-id: string,
+    direction: string,
+    length: string,
+    payload: string,
+    summary: string,
+}
+
 export component AppWindow inherits Window {
     title: "SavvyCAN — Rust Preview";
     preferred-width: 1720px;
@@ -28,6 +38,11 @@ export component AppWindow inherits Window {
     in-out property <string> filter-id: "";
     in-out property <string> filter-from: "";
     in-out property <string> filter-through: "";
+    in-out property <string> isotp-interface: "";
+    in-out property <string> isotp-id: "S:7E8";
+    in-out property <bool> show-isotp: false;
+    in property <string> isotp-summary: "No ISO-TP inspection performed";
+    in property <[IsoTpRow]> isotp-rows: [];
     in property <string> status-text: "Enter a CAN trace path to inspect an offline trace.";
     in property <string> page-text: "No trace loaded";
     in property <[FrameRow]> frames: [];
@@ -38,6 +53,7 @@ export component AppWindow inherits Window {
     callback apply-filter(string, string, string, string);
     callback previous-page();
     callback next-page();
+    callback inspect-isotp(string, string);
 
     VerticalBox {
         padding: 16px;
@@ -154,13 +170,39 @@ export component AppWindow inherits Window {
             }
         }
 
+
+        HorizontalBox {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.isotp-interface;
+                placeholder-text: "ISO-TP interface (blank = all)";
+            }
+            LineEdit {
+                text <=> root.isotp-id;
+                placeholder-text: "Exact ISO-TP ID, e.g. S:7E8 or X:18DAF110";
+            }
+            Button {
+                text: "Inspect passive ISO-TP";
+                clicked => { root.inspect-isotp(root.isotp-interface, root.isotp-id); }
+            }
+            Button {
+                text: "Trace frames";
+                clicked => { root.show-isotp = false; }
+            }
+        }
+        if root.show-isotp : Text {
+            text: root.isotp-summary;
+            color: #9cdbc1;
+            font-size: 13px;
+        }
+
         Text {
             text: root.status-text;
             color: #9fcaee;
             font-size: 13px;
         }
 
-        Rectangle {
+        if !root.show-isotp : Rectangle {
             height: 34px;
             background: #243247;
             HorizontalBox {
@@ -178,7 +220,23 @@ export component AppWindow inherits Window {
             }
         }
 
-        ListView {
+        if root.show-isotp : Rectangle {
+            height: 34px;
+            background: #243247;
+            HorizontalBox {
+                padding-left: 8px;
+                spacing: 8px;
+                Text { text: "End timestamp"; width: 158px; color: #f2f6ff; }
+                Text { text: "Interface"; width: 90px; color: #f2f6ff; }
+                Text { text: "CAN ID"; width: 100px; color: #f2f6ff; }
+                Text { text: "Direction"; width: 115px; color: #f2f6ff; }
+                Text { text: "Bytes"; width: 55px; color: #f2f6ff; }
+                Text { text: "Reassembled payload (first 64 bytes)"; width: 625px; color: #f2f6ff; }
+                Text { text: "UDS-like hint"; color: #f2f6ff; }
+            }
+        }
+
+        if !root.show-isotp : ListView {
             for frame[i] in root.frames: Rectangle {
                 height: 30px;
                 width: parent.width;
@@ -199,8 +257,27 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.show-isotp : ListView {
+            for packet[i] in root.isotp-rows: Rectangle {
+                height: 30px;
+                width: parent.width;
+                background: Math.mod(i, 2) == 0 ? #182233 : #131e2d;
+                HorizontalBox {
+                    padding-left: 8px;
+                    spacing: 8px;
+                    Text { text: packet.timestamp; width: 158px; color: #b9d2ed; }
+                    Text { text: packet.channel; width: 90px; color: #c5d7eb; }
+                    Text { text: packet.can-id; width: 100px; color: #68d9d5; }
+                    Text { text: packet.direction; width: 115px; color: #d5e1ee; }
+                    Text { text: packet.length; width: 55px; color: #d5e1ee; }
+                    Text { text: packet.payload; width: 625px; color: #e5edf5; }
+                    Text { text: packet.summary; color: #9cdbc1; }
+                }
+            }
+        }
+
         Text {
-            text: "Offline paging • Export always includes all retained frames, regardless of filter/page • Receive-only";
+            text: "Offline paging • Export includes all retained frames • ISO-TP inspection uses full selected-ID trace • Receive-only";
             color: #8195aa;
             font-size: 12px;
         }

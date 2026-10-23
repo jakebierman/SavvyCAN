@@ -1,5 +1,5 @@
 //! Read-only diagnostic trace inspector. Never opens or transmits to a CAN adapter.
-use savvycan_core::{read_trace, IsoTpAssembler, TraceFilter};
+use savvycan_core::{describe_uds_like_payload, read_trace, IsoTpAssembler, TraceFilter};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
@@ -9,17 +9,6 @@ const HELP: &str = "Usage: savvycan-isotp <trace-file> <CAN-ID-filter> [interfac
   Reassembles normal-addressed ISO-TP from imported frames only.\n\
   No CAN transmission, flow-control, or diagnostic request is performed.";
 
-fn describe_payload(bytes: &[u8]) -> String {
-    if bytes.len() >= 3 && bytes[0] == 0x7f {
-        format!("UDS-like negative response to {:02X}, NRC {:02X}", bytes[1], bytes[2])
-    } else if let Some(&sid) = bytes.first() {
-        if (0x40..=0x7e).contains(&sid) {
-            format!("UDS-like positive response SID {sid:02X}")
-        } else {
-            format!("payload SID {sid:02X} (not classified)")
-        }
-    } else { "empty payload".into() }
-}
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
@@ -56,7 +45,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     .map(|value| format!("{value:02X}")).collect::<Vec<_>>().join(" ");
                 println!("{timestamp} us  {} {}  len={}  {hex}  [{}]",
                     packet.interface, packet.id, packet.payload.len(),
-                    describe_payload(&packet.payload));
+                    describe_uds_like_payload(&packet.payload));
             }
             Ok(None) => {}
             Err(error) => {
@@ -84,9 +73,9 @@ mod tests {
 
     #[test]
     fn uds_like_labels_do_not_require_diagnostic_writes() {
-        assert!(describe_payload(&[0x62, 0xf1, 0x90]).contains("positive"));
-        assert!(describe_payload(&[0x7f, 0x22, 0x31]).contains("NRC 31"));
-        assert!(describe_payload(&[0x10, 0x03]).contains("not classified"));
-        assert_eq!(describe_payload(&[]), "empty payload");
+        assert!(describe_uds_like_payload(&[0x62, 0xf1, 0x90]).contains("positive"));
+        assert!(describe_uds_like_payload(&[0x7f, 0x22, 0x31]).contains("NRC 31"));
+        assert!(describe_uds_like_payload(&[0x10, 0x03]).contains("not classified"));
+        assert_eq!(describe_uds_like_payload(&[]), "empty payload");
     }
 }
