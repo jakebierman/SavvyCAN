@@ -6,11 +6,11 @@ use std::io::{BufReader, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use savvycan_core::{
     parse_format_rules, read_trace, summarize, write_candump, write_crtd, write_decoded_csv, write_gvret_csv, write_id_stats_csv, write_byte_activity_csv, write_socketcan_pcap, write_socketcan_pcapng,
-    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path, HorizontalAxis, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
+    analyze_ids, analyze_byte_activity_matching, extract_numeric_series, plot_path, HorizontalAxis, OfflineReplay, ReplayClock, describe_uds_like_payload, CanFrame, DbcDatabase, DbcStack, DecodedSignal,
     CanReceive, Direction, FrameKind, IdFilter, IsoTpAssembler, J1939BamAssembler, PayloadFormatter,
     PayloadFormatRouter, ReceiveError, TraceFilter,
 };
@@ -36,6 +36,10 @@ struct ViewerState {
     live: bool,
     history_dropped: usize,
     page_offset: usize,
+    replay: Option<OfflineReplay>,
+    replay_playing: bool,
+    replay_speed_factor: f64,
+    replay_last_tick: Option<Instant>,
 }
 
 fn decode_context(dbc_path: &str, format_spec: &str, rules_path: &str)
@@ -124,7 +128,11 @@ fn row(frame: &CanFrame, context: &DecodeContext) -> FrameRow {
 }
 
 fn visible_rows(state: &ViewerState, filter: &TraceFilter, limit: usize) -> Vec<FrameRow> {
-    if state.live {
+    if let Some(replay) = state.replay.as_ref() {
+        replay.recent_indices(limit).iter()
+            .filter_map(|index| state.frames.get(*index))
+            .map(|frame| row(frame, &state.context)).collect()
+    } else if state.live {
         let mut rows = state.frames.iter().rev().filter(|frame| filter.matches(frame))
             .take(limit).map(|frame| row(frame, &state.context)).collect::<Vec<_>>();
         rows.reverse();
@@ -141,6 +149,15 @@ fn filtered_count(state: &ViewerState, filter: &TraceFilter) -> usize {
 }
 
 fn offline_page_text(state: &ViewerState, filter: &TraceFilter, page_size: usize) -> String {
+    if let Some(replay) = state.replay.as_ref() {
+        let clock = match replay.clock() {
+            ReplayClock::SourceTimestamps => "capture timestamps",
+            ReplayClock::FixedTenMilliseconds => "10 ms/frame fallback",
+        };
+        return format!("Offline replay • {} / {} frames • {:.3}/{:.3} s • {clock}",
+            replay.position(), replay.total(), replay.elapsed_us() as f64 / 1e6,
+            replay.duration_us() as f64 / 1e6);
+    }
     let matching = filtered_count(state, filter);
     let first = if matching == 0 { 0 } else { state.page_offset + 1 };
     let last = matching.min(state.page_offset.saturating_add(page_size));
@@ -305,7 +322,7 @@ fn open_trace(path: &str, dbc_path: &str, format_spec: &str, rules_path: &str)
         if context.formatter.is_some() { " • default formatter" } else { "" },
         if context.rules.is_some() { " • per-ID rules" } else { "" },
     );
-    Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0 }, message))
+    Ok((ViewerState { frames, context, live: false, history_dropped: 0, page_offset: 0, ..Default::default() }, message))
 }
 
 /// Apply the current query across all retained frames, regardless of UI page.
@@ -514,6 +531,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(new_filter) => {
                     let mut state = state_for_filter.borrow_mut();
                     state.page_offset = 0;
+                    state.replay = None;
+                    state.replay_playing = false;
+                    state.replay_last_tick = None;
                     let limit = if state.live { LIVE_ROWS } else { OFFLINE_ROWS };
                     let count = filtered_count(&state, &new_filter);
                     model_for_filter.set_vec(visible_rows(&state, &new_filter, limit));
@@ -540,6 +560,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_status_text("Paging is available after stopping live capture.".into());
                 return;
             }
+            if state.replay.is_some() {
+                ui.set_status_text("Stop offline replay before paging.".into());
+                return;
+            }
             state.page_offset = state.page_offset.saturating_sub(OFFLINE_ROWS);
             let filter = filter_for_previous.borrow();
             model_for_previous.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
@@ -558,6 +582,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui.set_status_text("Paging is available after stopping live capture.".into());
                 return;
             }
+            if state.replay.is_some() {
+                ui.set_status_text("Stop offline replay before paging.".into());
+                return;
+            }
             let filter = filter_for_next.borrow();
             let next = state.page_offset.saturating_add(OFFLINE_ROWS);
             if next < filtered_count(&state, &filter) {
@@ -568,6 +596,112 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+
+    // Offline playback reveals stored frames only. No CAN interface or
+    // sender is ever opened, so this cannot replay onto a vehicle bus.
+    let weak = ui.as_weak();
+    let state_for_replay = Rc::clone(&state);
+    let filter_for_replay = Rc::clone(&filter);
+    let model_for_replay = Rc::clone(&model);
+    ui.on_play_replay(move |requested_speed| {
+        let Some(ui) = weak.upgrade() else { return; };
+        let speed = match requested_speed.trim().parse::<f64>() {
+            Ok(value) if value.is_finite() && (0.1..=100.0).contains(&value) => value,
+            _ => {
+                ui.set_status_text("Replay speed must be between 0.1x and 100x.".into());
+                return;
+            }
+        };
+        let mut state = state_for_replay.borrow_mut();
+        if state.live {
+            ui.set_status_text("Stop live capture before replaying a trace.".into());
+            return;
+        }
+        if state.frames.is_empty() {
+            ui.set_status_text("Open a CAN trace before offline replay.".into());
+            return;
+        }
+        let filter = filter_for_replay.borrow();
+        if state.replay.is_none() {
+            let replay = OfflineReplay::new(&state.frames, &filter);
+            if replay.total() == 0 {
+                ui.set_status_text("No frames match the current replay filter.".into());
+                return;
+            }
+            state.replay = Some(replay);
+        }
+        let replay = state.replay.as_mut().expect("just populated replay");
+        if replay.finished() { replay.reset(); }
+        replay.advance(0);
+        state.replay_speed_factor = speed;
+        state.replay_playing = true;
+        state.replay_last_tick = Some(Instant::now());
+        model_for_replay.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+        ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
+        ui.set_show_isotp(false);
+        ui.set_show_stats(false);
+        ui.set_show_bam(false);
+        ui.set_show_bytes(false);
+        ui.set_show_plot(false);
+        ui.set_status_text(format!("Playing offline trace at {speed}x (never transmits CAN).").into());
+    });
+
+    let weak = ui.as_weak();
+    let state_for_pause = Rc::clone(&state);
+    ui.on_pause_replay(move || {
+        let Some(ui) = weak.upgrade() else { return; };
+        let mut state = state_for_pause.borrow_mut();
+        if state.replay.is_some() {
+            state.replay_playing = false;
+            state.replay_last_tick = None;
+            ui.set_status_text("Offline replay paused.".into());
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state_for_step = Rc::clone(&state);
+    let filter_for_step = Rc::clone(&filter);
+    let model_for_step = Rc::clone(&model);
+    ui.on_step_replay(move || {
+        let Some(ui) = weak.upgrade() else { return; };
+        let mut state = state_for_step.borrow_mut();
+        if state.live || state.frames.is_empty() {
+            ui.set_status_text("Stop live capture and open a trace before stepping.".into());
+            return;
+        }
+        let filter = filter_for_step.borrow();
+        if state.replay.is_none() {
+            state.replay = Some(OfflineReplay::new(&state.frames, &filter));
+        }
+        state.replay_playing = false;
+        state.replay_last_tick = None;
+        if let Some(replay) = state.replay.as_mut() { replay.step_frames(1); }
+        model_for_step.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+        ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
+        ui.set_show_isotp(false);
+        ui.set_show_stats(false);
+        ui.set_show_bam(false);
+        ui.set_show_bytes(false);
+        ui.set_show_plot(false);
+        ui.set_status_text("Offline replay stepped one matching frame.".into());
+    });
+
+    let weak = ui.as_weak();
+    let state_for_stop_replay = Rc::clone(&state);
+    let filter_for_stop_replay = Rc::clone(&filter);
+    let model_for_stop_replay = Rc::clone(&model);
+    ui.on_stop_replay(move || {
+        let Some(ui) = weak.upgrade() else { return; };
+        let mut state = state_for_stop_replay.borrow_mut();
+        state.replay = None;
+        state.replay_playing = false;
+        state.replay_last_tick = None;
+        state.page_offset = 0;
+        let filter = filter_for_stop_replay.borrow();
+        model_for_stop_replay.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+        ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
+        ui.set_status_text("Offline replay stopped; full trace view restored.".into());
+    });
 
     // Passive, explicitly selected diagnostic ID. Never transmits or
     // generates flow-control frames. Inspects full retained trace in
@@ -807,7 +941,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         *receiver_for_start.borrow_mut() = Some(rx);
                         *state_for_start.borrow_mut() = ViewerState {
                             frames: Vec::new(), context, live: true, history_dropped: 0,
-                            page_offset: 0,
+                            page_offset: 0, ..Default::default()
                         };
                         model_for_start.clear();
                         ui.set_show_isotp(false);
@@ -926,7 +1060,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     *flag_for_slcan.borrow_mut() = Some(running);
                     *receiver_for_slcan.borrow_mut() = Some(rx);
                     *state_for_slcan.borrow_mut() = ViewerState {
-                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0,
+                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0, ..Default::default()
                     };
                     model_for_slcan.clear();
                     ui.set_show_isotp(false);
@@ -999,7 +1133,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     *flag_for_gvret.borrow_mut() = Some(running);
                     *receiver_for_gvret.borrow_mut() = Some(rx);
                     *state_for_gvret.borrow_mut() = ViewerState {
-                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0,
+                        frames: Vec::new(), context, live: true, history_dropped: 0, page_offset: 0, ..Default::default()
                     };
                     model_for_gvret.clear();
                     ui.set_show_isotp(false);
@@ -1123,6 +1257,31 @@ fn main() -> Result<(), Box<dyn Error>> {
             ui.set_status_text(format!("Receiving • {} buffered • {matched} match • {} older frames discarded • {} shown",
                 state.frames.len(), state.history_dropped, model_for_timer.row_count()).into());
         }
+        {
+            let mut state = state_for_timer.borrow_mut();
+            if state.replay_playing && !state.live {
+                let now = Instant::now();
+                let elapsed = state.replay_last_tick.replace(now)
+                    .map(|previous| now.saturating_duration_since(previous).as_micros())
+                    .unwrap_or(0).min(u64::MAX as u128) as u64;
+                let simulated_delta = (elapsed as f64 * state.replay_speed_factor)
+                    .clamp(0.0, u64::MAX as f64) as u64;
+                let (newly_visible, finished) = state.replay.as_mut().map(|replay| {
+                    let count = replay.advance(simulated_delta);
+                    (count, replay.finished())
+                }).unwrap_or((0, true));
+                if newly_visible > 0 || finished {
+                    let filter = filter_for_timer.borrow();
+                    model_for_timer.set_vec(visible_rows(&state, &filter, OFFLINE_ROWS));
+                    ui.set_page_text(offline_page_text(&state, &filter, OFFLINE_ROWS).into());
+                }
+                if finished {
+                    state.replay_playing = false;
+                    state.replay_last_tick = None;
+                    ui.set_status_text("Offline replay complete; use Play to restart.".into());
+                }
+            }
+        }
         if let Some(error) = error_text {
             ui.set_status_text(format!("Live capture stopped: {error}").into());
         } else if disconnected {
@@ -1189,4 +1348,23 @@ mod export_view_tests {
         let none = TraceFilter::parse_with_time("", "S:777", "", "").unwrap();
         assert!(selected_export_frames(&frames, Some(&none)).is_empty());
     }
+    #[test]
+    fn offline_replay_displays_only_revealed_frames_and_restores_full_view() {
+        let frames = vec![frame(1_000_000, 0x123, 0x11),
+            frame(1_100_000, 0x456, 0x22), frame(1_200_000, 0x123, 0x33)];
+        let filter = TraceFilter::parse("", "S:123").unwrap();
+        let mut state = ViewerState { frames, ..Default::default() };
+        assert_eq!(visible_rows(&state, &filter, 100).len(), 2);
+        state.replay = Some(OfflineReplay::new(&state.frames, &filter));
+        assert!(visible_rows(&state, &filter, 100).is_empty());
+        state.replay.as_mut().unwrap().step_frames(1);
+        assert_eq!(visible_rows(&state, &filter, 100).len(), 1);
+        assert!(offline_page_text(&state, &filter, 100).contains("1 / 2 frames"));
+        state.replay.as_mut().unwrap().step_frames(1);
+        assert_eq!(visible_rows(&state, &filter, 100).len(), 2);
+        state.replay = None;
+        assert_eq!(visible_rows(&state, &filter, 100).len(), 2);
+        assert!(offline_page_text(&state, &filter, 100).contains("matching"));
+    }
+
 }

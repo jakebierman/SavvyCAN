@@ -63,6 +63,7 @@ default typed expression, and RTR requests are never formatted.
 | Per-interface/CAN-ID/byte `.bytes.csv` activity export | Done; sample counts, distinct values, adjacent value changes and bit flips in capture order |
 | Slint on-screen byte activity inspector | Done; optional interface/ID selection and top 256 byte positions ranked by bit flips |
 | Slint passive DBC signal trend plot | Initial single-signal view with timestamp/index axis, numeric range and peak-preserving downsampling |
+| Slint offline replay of imported traces | Initial read-only Play/Pause/Step/Stop viewer, filtered-frame playback at 0.1–100x; no hardware transmissions |
 | Read-only `savvycan-byte-activity` CLI | Done; CSV to stdout for offline scripting, with optional interface/ID selector |
 | Slint traffic-statistics browser | Done; ranked CAN IDs with counts, byte totals, timing and rates |
 | Background offline trace import, 1,000-row paging and interface/ID/time/payload filtering | Initial implementation; byte patterns support `??` wildcard and substring matches |
@@ -82,11 +83,13 @@ default typed expression, and RTR requests are never formatted.
 | SLCAN serial receive attachment | Initial opt-in adapter for preconfigured auto-streaming devices; hardware not yet tested |
 | Native open/save dialogs (trace, DBC, rules, export) | Initial desktop support; selecting an export path never overwrites an existing file |
 | GVRET device handshake/activation and TCP, QtSerialBus equivalents, MQTT | Not yet |
-| Advanced graphing (multi-series, zoom), playback, transmit, scripting, OBD, active UDS, CANopen, AI | Not yet |
+| Advanced graphing (multi-series, zoom), hardware playback/transmit, scripting, OBD, active UDS, CANopen, AI | Not yet |
 
 Exports can optionally apply the current interface/ID/time/payload filter using **Only matching**. This exports every retained matching frame, including frames outside the displayed 1,000-row page; it does not change the underlying capture. When no rows match, the exporter reports an error without creating an output file. The default is a complete, unfiltered export.
 
 The read-only DBC signal trend plot accepts an exact CAN ID, an optional interface, and one DBC signal name. It uses real timestamps when all selected decoded observations have them; otherwise it switches the entire horizontal axis to frame indices. The plot is limited to 800 drawn samples using min/max bucketing to preserve short spikes, and the full decoded history remains unchanged. Multiplexed signals only contribute readings when decoded on their active branch. This initial plot has no interactive zoom, multi-series overlay or real-time updates yet.
+
+Offline replay uses the current trace filter and presents the most recent 1,000 revealed matching frames. **Play** follows source timestamps when all matched frames provide them, otherwise it uses a consistent 10 ms/frame timeline; speeds from 0.1x to 100x are supported. **Pause** and **Step +1** let you inspect individual frames; **Stop / Full trace** restores the paged trace browser. Offline replay is a viewer feature only: it never sends frames to an adapter or vehicle network.
 
 For signal hunting, save a capture as `.bytes.csv` to export per-byte activity. The report counts distinct observed values and bit changes between consecutive data frames of the same exact interface and CAN ID. When a byte is absent from an intervening short payload, it is not treated as zero. RTR requests are excluded, and `.bytes.csv` export respects the **Only matching** option.
 

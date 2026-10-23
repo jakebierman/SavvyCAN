@@ -88,6 +88,7 @@ export component AppWindow inherits Window {
     in-out property <string> plot-interface: "";
     in-out property <string> plot-id: "S:123";
     in-out property <string> plot-signal: "RPM";
+    in-out property <string> replay-speed: "1";
     in property <string> plot-commands: "";
     in property <string> plot-summary: "";
     in-out property <string> byte-interface: "";
@@ -123,6 +124,10 @@ export component AppWindow inherits Window {
     callback inspect-bam(string, string);
     callback inspect-bytes(string, string);
     callback plot-signal-series(string, string, string);
+    callback play-replay(string);
+    callback pause-replay();
+    callback step-replay();
+    callback stop-replay();
 
     VerticalBox {
         padding: 16px;
@@ -278,6 +283,23 @@ export component AppWindow inherits Window {
             }
         }
 
+
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "Offline replay (no CAN TX)";
+                color: #9cdbc1;
+            }
+            LineEdit {
+                text <=> root.replay-speed;
+                placeholder-text: "Speed 0.1–100x";
+                width: 130px;
+            }
+            Button { text: "Play"; clicked => { root.play-replay(root.replay-speed); } }
+            Button { text: "Pause"; clicked => { root.pause-replay(); } }
+            Button { text: "Step +1"; clicked => { root.step-replay(); } }
+            Button { text: "Stop / Full trace"; clicked => { root.stop-replay(); } }
+        }
 
         HorizontalBox {
             spacing: 8px;
