@@ -65,7 +65,8 @@ default typed expression, and RTR requests are never formatted.
 | Modular receive-only transport contract and replay mock | Done |
 | Passive ISO-TP normal-addressing payload reassembly | Initial core support and selectable read-only Slint inspector (classic/FD SF/FF/CF, sequence and timeout validation); no transmit |
 | Linux SocketCAN classic/FD/RTR receive adapter | Initial support; read-only live capture in Slint |
-| GVRET serial, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
+| GVRET binary receive stream | Initial classic/FD byte parser and tests; serial/TCP connection, setup and hardware validation not yet |
+| GVRET serial/TCP attachment, SLCAN, QtSerialBus equivalents, MQTT | Not yet |
 | Playback, transmit, scripting, OBD, active UDS, CANopen, native graphing, AI | Not yet |
 
 Capture import autodetects candump, CRTD, GVRET/generic CSV, BUSMASTER,
@@ -298,3 +299,23 @@ intervals and estimated frequency. The analysis sorts timestamps within each
 ID before calculating intervals. Missing or insufficient timestamps leave
 frequency cells blank instead of inventing measurements. This export uses all
 retained frames; it does not apply the currently displayed filter or page.
+
+## GVRET binary receive groundwork
+
+`savvycan-transports::GvretStreamDecoder` incrementally parses receive-only
+GVRET `F1 00` classic and `F1 14` CAN FD byte streams, preserving the
+11/29-bit CAN ID flag, source bus, timestamp in device-relative microseconds,
+and 32-bit timestamp rollover. It tolerates arbitrary chunk boundaries,
+zero-length frames, binary data containing framing-marker bytes, and known
+fixed-length device metadata replies. Malformed identifiers and DLC values
+return errors; BRS/ESI/RTR are **not** inferred when the wire record does
+not encode them. High CAN FD length bits and unverified 64-byte encodings
+are rejected pending firmware-specific validation.
+
+The decoder is deliberately only a byte-stream component; it does not open a
+serial/TCP device, enter binary mode (`0xE7`), change bit rates, request device
+settings, or send CAN frames. The current Slint UI still uses SocketCAN for
+live capture. Physical GVRET attachment and hardware tests are required before
+claiming a working GVRET device adapter. The legacy implementation and
+[M2RET protocol specification](https://github.com/collin80/M2RET/blob/master/CommProtocol.txt)
+were consulted for frame layout.

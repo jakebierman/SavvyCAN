@@ -3,6 +3,9 @@
 
 pub use savvycan_core::{CanReceive, ReceiveCapabilities, ReceiveDescriptor, ReceiveError, ReplayReceive};
 
+pub mod gvret;
+pub use gvret::{GvretDecodeError, GvretStreamDecoder};
+
 #[cfg(target_os = "linux")]
 mod linux {
     use savvycan_core::{
