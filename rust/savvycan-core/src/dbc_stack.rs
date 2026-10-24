@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(rows[0].id, "S:123");
         assert_eq!(rows[0].signal, "RPM");
         assert_eq!(rows[0].scale, "2 * raw + 1");
-        assert_eq!(rows[1].layout, "8|8@0-");
+        assert_eq!(rows[1].layout, "15|8@0-");
         assert_eq!(rows[1].kind, "signed");
         assert_eq!(rows[3].message, "Empty");
         assert_eq!(rows[3].signal, "");
